@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/bilinker",
+    "crates/bilinker-cli",
+]
+resolver = "2"
