@@ -19,7 +19,7 @@ fn workspace() -> PathBuf {
 
 fn persona_java() -> PathBuf {
     workspace()
-        .join("../expancode/tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java")
+        .join("../../expancode/tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java")
 }
 
 fn run(args: &[&str]) -> (String, String, bool) {
