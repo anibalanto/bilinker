@@ -1,21 +1,13 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub workspaces: HashMap<String, Workspace>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Workspace {
-    pub path: PathBuf,
-    pub language: String,
-}
+#[derive(Debug, Deserialize, Default)]
+pub struct Config {}
 
 impl Config {
-    /// Search for `.bilinker.toml` starting from `dir` upward.
+    /// Search for `.bilinker.toml` starting from `dir` upward and return
+    /// the directory that contains it (the project root).
     pub fn load_from(dir: &Path) -> Result<(PathBuf, Config)> {
         let mut current = dir.to_path_buf();
         loop {
@@ -31,11 +23,5 @@ impl Config {
                 anyhow::bail!(".bilinker.toml not found");
             }
         }
-    }
-
-    pub fn workspace_root(&self, root: &Path, name: &str) -> Result<PathBuf> {
-        let ws = self.workspaces.get(name)
-            .with_context(|| format!("workspace '{name}' not found in .bilinker.toml"))?;
-        Ok(root.join(&ws.path))
     }
 }

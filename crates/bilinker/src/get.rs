@@ -2,7 +2,6 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::bilink::BiLinkFile;
-use crate::config::Config;
 use crate::grammar;
 use crate::link::{LinkEndpoint, StructuralRef};
 use crate::query;
@@ -15,11 +14,10 @@ pub struct GetResult {
 }
 
 pub fn get(
-    config: &Config,
     root: &Path,
     bilink_name: &str,
-    endpoint: u8,            // 0 or 1
-    before: Option<(usize, usize)>, // (rows, cols)
+    endpoint: u8,
+    before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
     let bilinker_dir = root.join(".bilinker");
@@ -33,40 +31,45 @@ pub fn get(
 
     let sref = match link {
         LinkEndpoint::Structural(r) => r,
-        LinkEndpoint::BiLinkRef(id) => bail!(
-            "link.{endpoint} is a bilink reference to '{id}' — use 'get {id} <N>' instead"
+        LinkEndpoint::Layer(_) => bail!(
+            "link.{endpoint} is a layer path — structural 'get' requires a structural endpoint"
         ),
     };
 
-    resolve(config, root, sref, before, after)
+    resolve(root, sref, before, after)
 }
 
 fn resolve(
-    config: &Config,
     root: &Path,
     sref: &StructuralRef,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
-    let ws = config.workspaces.get(&sref.workspace)
-        .with_context(|| format!("workspace '{}' not found", sref.workspace))?;
-
-    let file_path = root.join(&ws.path).join(&sref.file);
+    let file_path = root.join(&sref.file);
     let source = std::fs::read_to_string(&file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
 
-    let language = grammar::for_language(&ws.language)?;
+    let Some(query_str) = &sref.query else {
+        let total = count_lines(&source);
+        return Ok(GetResult {
+            content: source,
+            file: sref.file.clone(),
+            start_line: 1,
+            end_line: total,
+        });
+    };
 
-    let (node_start, node_end) = query::find_target(language, &source, &sref.query)?
+    let lang = grammar::language_for_file(&sref.file);
+    let language = grammar::for_language(lang)?;
+
+    let (node_start, node_end) = query::find_target(language, &source, query_str)?
         .with_context(|| format!("query matched nothing in {}", sref.file))?;
 
-    // Apply start~end range within the node if present.
     let (frag_start, frag_end) = match &sref.range {
         Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
         None    => (node_start, node_end),
     };
 
-    // Extend to full lines for display.
     let line_start = byte_to_line(&source, frag_start);
     let line_end   = byte_to_line(&source, frag_end.saturating_sub(1));
 

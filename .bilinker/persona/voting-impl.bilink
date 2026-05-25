@@ -1,6 +1,6 @@
 id: persona-voting-impl
 
-link.0: java-demo :: src/main/java/ar/example/demo/persona/Persona.java :: (class_declaration
+link.0: tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java :: (class_declaration
   name: (identifier) @n0 (#eq? @n0 "Persona")
   body: (class_body
   (method_declaration

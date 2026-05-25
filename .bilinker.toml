@@ -1,3 +1,1 @@
-[workspaces.java-demo]
-path     = "../../expancode/tests/fixtures/java-app"
-language = "java"
+# bilinker project root

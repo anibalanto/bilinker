@@ -1,5 +1,7 @@
 pub mod bilink;
 pub mod capture;
+pub mod chain;
+pub mod check;
 pub mod config;
 pub mod get;
 pub mod grammar;

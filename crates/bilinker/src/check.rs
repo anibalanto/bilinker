@@ -1,0 +1,472 @@
+use std::path::{Path, PathBuf};
+use anyhow::{Context, Result};
+use chrono::Utc;
+
+use crate::bilink::{walkdir, BiLinkFile};
+use crate::chain::resolve_layer_link;
+use crate::grammar;
+use crate::hash;
+use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
+use crate::query;
+
+#[derive(Debug)]
+pub struct CheckResult {
+    pub uuid: String,
+    pub state0: EndpointState,
+    pub state1: EndpointState,
+    pub updated: bool,
+}
+
+impl CheckResult {
+    pub fn is_clean(&self) -> bool {
+        use EndpointState::*;
+        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded)
+            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded)
+    }
+}
+
+pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
+    let mut results = Vec::new();
+
+    if path.is_file() {
+        results.push(check_file(root, path)?);
+        return Ok(results);
+    }
+
+    let bilink_dir = if path.ends_with(".bilink") { path.to_path_buf() }
+                     else { path.join(".bilink") };
+
+    for entry in walkdir(&bilink_dir)? {
+        if entry.extension().and_then(|e| e.to_str()) == Some("bilink")
+            && !entry.ancestors().any(|a| a.ends_with(".pending"))
+        {
+            results.push(check_file(root, &entry)?);
+        }
+    }
+    Ok(results)
+}
+
+fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
+    let mut bl = BiLinkFile::load(bilink_path)?;
+
+    let layer_root = bilink_path
+        .parent().and_then(|p| p.parent())
+        .unwrap_or(root);
+
+    let uuid = bl.uuid.clone();
+
+    let (state0, hash0, range0) =
+        check_endpoint(root, layer_root, &bl.link0, &uuid,
+                       bl.hash0.as_deref(), bl.range0.as_ref())?;
+
+    let (state1, hash1, range1) =
+        check_endpoint(root, layer_root, &bl.link1, &uuid,
+                       bl.hash1.as_deref(), bl.range1.as_ref())?;
+
+    let updated = bl.state0.as_ref() != Some(&state0)
+        || bl.state1.as_ref() != Some(&state1)
+        || bl.hash0.as_deref() != Some(hash0.as_str())
+        || bl.hash1.as_deref() != Some(hash1.as_str());
+
+    bl.hash0       = Some(hash0);
+    bl.hash1       = Some(hash1);
+    bl.range0      = range0;
+    bl.range1      = range1;
+    bl.state0      = Some(state0.clone());
+    bl.state1      = Some(state1.clone());
+    bl.resolved_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+
+    bl.write(bilink_path)?;
+
+    Ok(CheckResult { uuid, state0, state1, updated })
+}
+
+fn check_endpoint(
+    root: &Path,
+    layer_root: &Path,
+    endpoint: &LinkEndpoint,
+    uuid: &str,
+    stored_hash: Option<&str>,
+    stored_range: Option<&ByteRange>,
+) -> Result<(EndpointState, String, Option<ByteRange>)> {
+    match endpoint {
+        LinkEndpoint::Structural(sref) => {
+            check_structural(root, sref, stored_hash, stored_range)
+        }
+        LinkEndpoint::Layer(tokens) => {
+            check_layer(layer_root, tokens, uuid, stored_hash)
+        }
+    }
+}
+
+fn check_structural(
+    root: &Path,
+    sref: &StructuralRef,
+    stored_hash: Option<&str>,
+    stored_range: Option<&ByteRange>,
+) -> Result<(EndpointState, String, Option<ByteRange>)> {
+    let file_path = root.join(&sref.file);
+
+    if !file_path.exists() {
+        return Ok((EndpointState::Broken, String::new(), None));
+    }
+
+    let source = std::fs::read_to_string(&file_path)?;
+
+    let Some(query_str) = &sref.query else {
+        let new_hash = hash::sha256(source.as_bytes());
+        let range    = ByteRange { start: 0, end: source.len() };
+        let state    = if stored_hash.map_or(false, |h| h == new_hash) {
+            EndpointState::Ok
+        } else if stored_hash.is_none() {
+            EndpointState::Ok
+        } else {
+            EndpointState::Altered
+        };
+        return Ok((state, new_hash, Some(range)));
+    };
+
+    let lang = grammar::language_for_file(&sref.file);
+    let language = grammar::for_language(lang)?;
+
+    let node_range = query::find_target(language, &source, query_str)?;
+
+    let Some((node_start, node_end)) = node_range else {
+        return Ok((EndpointState::Unanchored, String::new(), None));
+    };
+
+    let (frag_start, frag_end) = match &sref.range {
+        Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
+        None    => (node_start, node_end),
+    };
+    let fragment  = &source[frag_start..frag_end];
+    let new_hash  = hash::sha256(fragment.as_bytes());
+    let new_range = ByteRange { start: frag_start, end: frag_end };
+
+    if stored_hash.is_none() {
+        return Ok((EndpointState::Ok, new_hash, Some(new_range)));
+    }
+
+    let stored = stored_hash.unwrap();
+
+    if stored == new_hash {
+        return Ok((EndpointState::Ok, new_hash, Some(new_range)));
+    }
+
+    if let Some(sr) = stored_range {
+        let frag_len = sr.end - sr.start;
+        if let Some(displaced) = find_in_node(&source, node_start, node_end, stored, frag_len) {
+            let displaced_fragment = &source[displaced.start..displaced.end];
+            let displaced_hash = hash::sha256(displaced_fragment.as_bytes());
+            return Ok((EndpointState::Displaced, displaced_hash, Some(displaced)));
+        }
+    }
+
+    Ok((EndpointState::Altered, new_hash, Some(new_range)))
+}
+
+fn check_layer(
+    layer_root: &Path,
+    tokens: &estrato::EstratPath,
+    uuid: &str,
+    stored_hash: Option<&str>,
+) -> Result<(EndpointState, String, Option<ByteRange>)> {
+    let target_layer = match estrato::resolve(layer_root, layer_root, tokens) {
+        Ok(p)  => p,
+        Err(_) => return Ok((EndpointState::Broken, String::new(), None)),
+    };
+
+    let target_bilink = resolve_layer_link(
+        &layer_root.join(".bilink").join(format!("{uuid}.bilink")),
+        layer_root,
+        &target_layer,
+        uuid,
+    );
+
+    if !target_bilink.exists() {
+        return Ok((EndpointState::Broken, String::new(), None));
+    }
+
+    let content = std::fs::read(&target_bilink)?;
+    let new_hash = hash::sha256(&content);
+
+    let state = match stored_hash {
+        None    => EndpointState::Ok,
+        Some(h) if h == new_hash => EndpointState::Ok,
+        _       => EndpointState::ChainDirty,
+    };
+
+    Ok((state, new_hash, None))
+}
+
+fn find_in_node(
+    source: &str,
+    node_start: usize,
+    node_end: usize,
+    target_hash: &str,
+    frag_len: usize,
+) -> Option<ByteRange> {
+    if frag_len == 0 || frag_len > node_end.saturating_sub(node_start) {
+        return None;
+    }
+    let node = &source[node_start..node_end];
+    for start in 0..=(node.len() - frag_len) {
+        let end = start + frag_len;
+        if hash::sha256(node[start..end].as_bytes()) == target_hash {
+            return Some(ByteRange {
+                start: node_start + start,
+                end: node_start + end,
+            });
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bilink::BiLinkFile;
+    use crate::hash;
+    use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
+    use tempfile::tempdir;
+
+    fn whole_file_endpoint(file: &str) -> LinkEndpoint {
+        LinkEndpoint::Structural(StructuralRef {
+            file: file.into(),
+            query: None,
+            range: None,
+        })
+    }
+
+    fn layer_endpoint(path: &str) -> LinkEndpoint {
+        LinkEndpoint::Layer(estrato::parse_path(path).unwrap())
+    }
+
+    fn make_bilink(dir: &Path, uuid: &str, link0: LinkEndpoint, link1: LinkEndpoint) -> std::path::PathBuf {
+        let bl = BiLinkFile {
+            uuid: uuid.into(),
+            link0, link1,
+            hash0: None, hash1: None,
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        let path = dir.join(format!("{uuid}.bilink"));
+        bl.write(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn check_whole_file_first_time_is_ok() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "hello world").unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let path = make_bilink(&bilink_dir, "uuid1",
+            whole_file_endpoint("a.md"),
+            whole_file_endpoint("a.md"),
+        );
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Ok);
+        assert_eq!(result.state1, EndpointState::Ok);
+    }
+
+    #[test]
+    fn check_whole_file_ok_when_hash_matches() {
+        let dir = tempdir().unwrap();
+        let content = b"stable content";
+        std::fs::write(dir.path().join("a.md"), content).unwrap();
+        let stored_hash = hash::sha256(content);
+
+        let bilink_dir = dir.path().join(".bilink");
+        let bl = BiLinkFile {
+            uuid:   "uuid1".into(),
+            link0:  whole_file_endpoint("a.md"),
+            link1:  whole_file_endpoint("a.md"),
+            hash0:  Some(stored_hash.clone()),
+            hash1:  Some(stored_hash),
+            range0: Some(ByteRange { start: 0, end: content.len() }),
+            range1: Some(ByteRange { start: 0, end: content.len() }),
+            state0: Some(EndpointState::Ok),
+            state1: Some(EndpointState::Ok),
+            resolved_at: Some("2026-01-01T00:00:00Z".into()),
+        };
+        let path = bilink_dir.join("uuid1.bilink");
+        bl.write(&path).unwrap();
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Ok);
+    }
+
+    #[test]
+    fn check_whole_file_altered_when_content_changes() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "new content").unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let bl = BiLinkFile {
+            uuid:   "uuid1".into(),
+            link0:  whole_file_endpoint("a.md"),
+            link1:  whole_file_endpoint("a.md"),
+            hash0:  Some("old-hash-that-wont-match".into()),
+            hash1:  Some("old-hash-that-wont-match".into()),
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        let path = bilink_dir.join("uuid1.bilink");
+        bl.write(&path).unwrap();
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Altered);
+    }
+
+    #[test]
+    fn check_structural_broken_when_file_missing() {
+        let dir = tempdir().unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let path = make_bilink(&bilink_dir, "uuid1",
+            whole_file_endpoint("missing.md"),
+            whole_file_endpoint("missing.md"),
+        );
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Broken);
+    }
+
+    #[test]
+    fn check_layer_ok_on_first_check() {
+        let dir = tempdir().unwrap();
+        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
+
+        let adj_dir = dir.path().join(".estrato/impl/.bilink");
+        std::fs::create_dir_all(&adj_dir).unwrap();
+        std::fs::write(adj_dir.join(format!("{uuid}.bilink")), "link.0: a.md\nlink.1: b.md\n").unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let path = make_bilink(&bilink_dir, uuid,
+            whole_file_endpoint("a.md"),
+            layer_endpoint(".estrato/impl"),
+        );
+        std::fs::write(dir.path().join("a.md"), "content").unwrap();
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state1, EndpointState::Ok);
+    }
+
+    #[test]
+    fn check_layer_chain_dirty_when_adjacent_changed() {
+        let dir = tempdir().unwrap();
+        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
+
+        let adj_dir = dir.path().join(".estrato/impl/.bilink");
+        std::fs::create_dir_all(&adj_dir).unwrap();
+        let adj_content = "link.0: a.md\nlink.1: b.md\n";
+        std::fs::write(adj_dir.join(format!("{uuid}.bilink")), adj_content).unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let bl = BiLinkFile {
+            uuid: uuid.into(),
+            link0: whole_file_endpoint("a.md"),
+            link1: layer_endpoint(".estrato/impl"),
+            hash0: None,
+            hash1: Some("wrong-hash-000".into()),
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        let path = bilink_dir.join(format!("{uuid}.bilink"));
+        bl.write(&path).unwrap();
+        std::fs::write(dir.path().join("a.md"), "content").unwrap();
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state1, EndpointState::ChainDirty);
+    }
+
+    #[test]
+    fn check_layer_broken_when_adjacent_missing() {
+        let dir = tempdir().unwrap();
+        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
+
+        let bilink_dir = dir.path().join(".bilink");
+        std::fs::write(dir.path().join("a.md"), "content").unwrap();
+        let path = make_bilink(&bilink_dir, uuid,
+            whole_file_endpoint("a.md"),
+            layer_endpoint(".estrato/impl"),
+        );
+
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state1, EndpointState::Broken);
+    }
+
+    #[test]
+    fn check_writes_cache_to_bilink_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("doc.md"), "# Title\nContent here.").unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        let path = make_bilink(&bilink_dir, "uuid1",
+            whole_file_endpoint("doc.md"),
+            whole_file_endpoint("doc.md"),
+        );
+
+        check_file(dir.path(), &path).unwrap();
+
+        let updated = BiLinkFile::load(&path).unwrap();
+        assert!(updated.hash0.is_some(),       "hash.0 should be written");
+        assert!(updated.state0.is_some(),      "state.0 should be written");
+        assert!(updated.resolved_at.is_some(), "resolved_at should be written");
+    }
+
+    #[test]
+    fn check_dir_processes_all_bilinks() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "content a").unwrap();
+        std::fs::write(dir.path().join("b.md"), "content b").unwrap();
+
+        let bilink_dir = dir.path().join(".bilink");
+        make_bilink(&bilink_dir, "uuid1",
+            whole_file_endpoint("a.md"),
+            whole_file_endpoint("a.md"),
+        );
+        make_bilink(&bilink_dir, "uuid2",
+            whole_file_endpoint("b.md"),
+            whole_file_endpoint("b.md"),
+        );
+
+        let results = check(dir.path(), dir.path()).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.state0 == EndpointState::Ok));
+    }
+}
+
+/// Finds all `.bilink` files under `root` (recursively) whose structural endpoints
+/// reference `file_path`. Returns `(bilink_path, endpoint_index, absolute_range)`.
+pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, ByteRange)>> {
+    let mut results = Vec::new();
+
+    let file_str = file_path.to_str().unwrap_or("");
+
+    for entry in walkdir(root)? {
+        if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
+        if entry.ancestors().any(|a| a.ends_with(".pending")) { continue; }
+
+        let Ok(bl) = BiLinkFile::load(&entry) else { continue };
+
+        for (n, link, range) in [
+            (0u8, &bl.link0, &bl.range0),
+            (1u8, &bl.link1, &bl.range1),
+        ] {
+            if let LinkEndpoint::Structural(sref) = link {
+                if sref.file.contains(file_str) || file_str.contains(&sref.file) {
+                    if let Some(r) = range {
+                        results.push((entry.clone(), n, r.clone()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(results)
+}

@@ -1,20 +1,74 @@
 use std::fmt;
 use std::str::FromStr;
 use anyhow::{bail, Context};
+use estrato::EstratPath;
 
-/// A parsed bilink endpoint: `workspace :: file :: query [:: start~end]`
-/// or a reference to another bilink by id.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EndpointState {
+    Ok,
+    Moved,
+    Displaced,
+    Reanchored,
+    Expanded,
+    Unanchored,
+    Altered,
+    Deleted,
+    Broken,
+    ChainDirty,
+}
+
+impl fmt::Display for EndpointState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ok          => write!(f, "OK"),
+            Self::Moved       => write!(f, "MOVED"),
+            Self::Displaced   => write!(f, "DISPLACED"),
+            Self::Reanchored  => write!(f, "REANCHORED"),
+            Self::Expanded    => write!(f, "EXPANDED"),
+            Self::Unanchored  => write!(f, "UNANCHORED"),
+            Self::Altered     => write!(f, "ALTERED"),
+            Self::Deleted     => write!(f, "DELETED"),
+            Self::Broken      => write!(f, "BROKEN"),
+            Self::ChainDirty  => write!(f, "CHAIN_DIRTY"),
+        }
+    }
+}
+
+impl FromStr for EndpointState {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "OK"           => Ok(Self::Ok),
+            "MOVED"        => Ok(Self::Moved),
+            "DISPLACED"    => Ok(Self::Displaced),
+            "REANCHORED"   => Ok(Self::Reanchored),
+            "EXPANDED"     => Ok(Self::Expanded),
+            "UNANCHORED"   => Ok(Self::Unanchored),
+            "ALTERED"      => Ok(Self::Altered),
+            "DELETED"      => Ok(Self::Deleted),
+            "BROKEN"       => Ok(Self::Broken),
+            "CHAIN_DIRTY"  => Ok(Self::ChainDirty),
+            other          => bail!("estado desconocido: '{other}'"),
+        }
+    }
+}
+
+/// A parsed bilink endpoint: `file [:: query [:: start~end]]`
+/// or an estrato path pointing to a layer directory.
+///
+/// Disambiguation: if the string contains `::` it is always Structural.
+/// If it has no `::`, it is Structural when the last path component has a
+/// file extension (e.g. `spec.md`, `src/Foo.java`); otherwise it is a Layer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinkEndpoint {
     Structural(StructuralRef),
-    BiLinkRef(String),
+    Layer(EstratPath),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructuralRef {
-    pub workspace: String,
     pub file: String,
-    pub query: String,
+    pub query: Option<String>,
     pub range: Option<ByteRange>,
 }
 
@@ -38,11 +92,25 @@ impl FromStr for LinkEndpoint {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // If it contains "::", it's a structural ref; otherwise a bilink id.
-        if !s.contains("::") {
-            return Ok(LinkEndpoint::BiLinkRef(s.trim().to_string()));
+        if s.contains("::") {
+            return Ok(LinkEndpoint::Structural(s.parse()?));
         }
-        Ok(LinkEndpoint::Structural(s.parse()?))
+        // No `::`: check if the last path component has a file extension.
+        let last = std::path::Path::new(s.trim())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let looks_like_file = last.contains('.') && last != "." && last != "..";
+        if looks_like_file {
+            return Ok(LinkEndpoint::Structural(StructuralRef {
+                file:  s.trim().to_string(),
+                query: None,
+                range: None,
+            }));
+        }
+        let tokens = estrato::parse_path(s.trim())
+            .map_err(|e| anyhow::anyhow!("invalid estrato path '{s}': {e}"))?;
+        Ok(LinkEndpoint::Layer(tokens))
     }
 }
 
@@ -50,21 +118,24 @@ impl FromStr for StructuralRef {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.splitn(4, "::").map(str::trim).collect();
+        let parts: Vec<&str> = s.splitn(3, "::").map(str::trim).collect();
         match parts.as_slice() {
-            [ws, file, query] => Ok(Self {
-                workspace: ws.to_string(),
+            [file] => Ok(Self {
                 file: file.to_string(),
-                query: query.to_string(),
+                query: None,
                 range: None,
             }),
-            [ws, file, query, range] => Ok(Self {
-                workspace: ws.to_string(),
+            [file, query] => Ok(Self {
                 file: file.to_string(),
-                query: query.to_string(),
+                query: Some(query.to_string()),
+                range: None,
+            }),
+            [file, query, range] => Ok(Self {
+                file: file.to_string(),
+                query: Some(query.to_string()),
                 range: Some(range.parse().context("invalid start~end range")?),
             }),
-            _ => bail!("expected `workspace :: file :: query [:: start~end]`, got: {s}"),
+            _ => bail!("expected `file [:: query [:: start~end]]`, got: {s}"),
         }
     }
 }
@@ -73,16 +144,29 @@ impl fmt::Display for LinkEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LinkEndpoint::Structural(r) => write!(f, "{r}"),
-            LinkEndpoint::BiLinkRef(id) => write!(f, "{id}"),
+            LinkEndpoint::Layer(tokens) => {
+                use estrato::PathToken;
+                for token in tokens {
+                    match token {
+                        PathToken::Down(name) => write!(f, ">{name}")?,
+                        PathToken::Up => write!(f, "<")?,
+                        PathToken::Simple(p) => write!(f, "{}", p.display())?,
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
 
 impl fmt::Display for StructuralRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} :: {} :: {}", self.workspace, self.file, self.query)?;
-        if let Some(r) = &self.range {
-            write!(f, " :: {r}")?;
+        write!(f, "{}", self.file)?;
+        if let Some(q) = &self.query {
+            write!(f, " :: {q}")?;
+            if let Some(r) = &self.range {
+                write!(f, " :: {r}")?;
+            }
         }
         Ok(())
     }
@@ -112,13 +196,13 @@ mod tests {
 
     #[test]
     fn parse_structural_without_range() {
-        let ep: LinkEndpoint = "java-demo :: persona/Persona.java :: (class_declaration name:#eq?Persona)".parse().unwrap();
+        let ep: LinkEndpoint = "Persona.java :: (class_declaration name:#eq?Persona)".parse().unwrap();
         assert!(matches!(ep, LinkEndpoint::Structural(_)));
     }
 
     #[test]
     fn parse_structural_with_range() {
-        let ep: LinkEndpoint = "docs :: architecture.md :: (paragraph) @target :: 42~87".parse().unwrap();
+        let ep: LinkEndpoint = "docs/architecture.md :: (paragraph) @target :: 42~87".parse().unwrap();
         if let LinkEndpoint::Structural(r) = ep {
             assert_eq!(r.range, Some(ByteRange { start: 42, end: 87 }));
         } else {
@@ -127,14 +211,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_bilink_ref() {
+    fn parse_layer_simple_path() {
         let ep: LinkEndpoint = "persona-voting-impl".parse().unwrap();
-        assert_eq!(ep, LinkEndpoint::BiLinkRef("persona-voting-impl".to_string()));
+        assert!(matches!(ep, LinkEndpoint::Layer(_)));
+    }
+
+    #[test]
+    fn parse_layer_estrato_down() {
+        let ep: LinkEndpoint = ">tech-decisions>impl".parse().unwrap();
+        assert!(matches!(ep, LinkEndpoint::Layer(_)));
     }
 
     #[test]
     fn roundtrip_structural() {
-        let s = "docs :: architecture.md :: (paragraph) @target :: 42~87";
+        let s = "docs/architecture.md :: (paragraph) @target :: 42~87";
+        let ep: LinkEndpoint = s.parse().unwrap();
+        assert_eq!(ep.to_string(), s);
+    }
+
+    #[test]
+    fn parse_whole_file_endpoint() {
+        let ep: LinkEndpoint = "docs/architecture.md".parse().unwrap();
+        if let LinkEndpoint::Structural(r) = ep {
+            assert_eq!(r.file, "docs/architecture.md");
+            assert!(r.query.is_none());
+            assert!(r.range.is_none());
+        } else {
+            panic!("expected Structural");
+        }
+    }
+
+    #[test]
+    fn roundtrip_whole_file() {
+        let s = "docs/architecture.md";
         let ep: LinkEndpoint = s.parse().unwrap();
         assert_eq!(ep.to_string(), s);
     }

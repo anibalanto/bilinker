@@ -6,9 +6,14 @@ edition = "2021"
 [dependencies]
 tree-sitter = "0.22"
 tree-sitter-java = "0.21"
-rusqlite = { version = "0.31", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+estrato = { path = "../../../../../../../estrato/.estrato/tech-decisions/.estrato/impl/crates/estrato" }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,6 +1,14 @@
 use anyhow::{bail, Result};
 use tree_sitter::Language;
 
+pub fn language_for_file(file: &str) -> &'static str {
+    match std::path::Path::new(file).extension().and_then(|e| e.to_str()) {
+        Some("java") => "java",
+        Some("rs")   => "rust",
+        _            => "text",
+    }
+}
+
 pub fn for_language(lang: &str) -> Result<Language> {
     match lang {
         "java" => Ok(tree_sitter_java::language()),
