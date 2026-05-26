@@ -364,9 +364,15 @@ fn watch(root: &Path) -> anyhow::Result<()> {
     use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
     use bilinker::bilink::{walkdir, BiLinkFile};
     use bilinker::link::LinkEndpoint;
+    use std::io::Write;
     use std::sync::mpsc;
 
-    eprintln!("watching {}  (Ctrl-C to stop)", root.display());
+    let log_path = root.join(".bilink").join("watch.log");
+    std::fs::create_dir_all(root.join(".bilink"))?;
+    let mut log_file = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&log_path)?;
+
+    eprintln!("watching {}  (log: {}  Ctrl-C to stop)", root.display(), log_path.display());
 
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = recommended_watcher(tx)?;
@@ -381,7 +387,6 @@ fn watch(root: &Path) -> anyhow::Result<()> {
         if !matches!(event.kind, EventKind::Modify(_)) { continue; }
 
         'paths: for path in &event.paths {
-            // Ignore writes to .bilink cache files
             if path.components().any(|c| c.as_os_str() == ".bilink") { continue; }
             if !path.is_file() { continue; }
 
@@ -390,7 +395,6 @@ fn watch(root: &Path) -> anyhow::Result<()> {
                 Err(_) => continue,
             };
 
-            // Find every chain that references this file
             let mut chains: Vec<String> = Vec::new();
             for entry in walkdir(root).unwrap_or_default() {
                 if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
@@ -411,9 +415,13 @@ fn watch(root: &Path) -> anyhow::Result<()> {
             }
 
             if !chains.is_empty() {
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 for chain in &chains {
-                    println!("ALTERED  {rel}  chain {chain}.0  {chain}.1");
+                    let line = format!("{ts} ALTERED  {rel}  chain {chain}");
+                    println!("{line}");
+                    let _ = writeln!(log_file, "{line}");
                 }
+                let _ = log_file.flush();
             }
 
             break 'paths;
