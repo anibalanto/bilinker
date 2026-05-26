@@ -11,6 +11,7 @@ path = "src/main.rs"
 bilinker = { path = "../bilinker" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+notify = "6"
 
 [dev-dependencies]
 bilinker = { path = "../bilinker" }

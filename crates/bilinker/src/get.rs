@@ -20,7 +20,7 @@ pub fn get(
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
-    let bilinker_dir = root.join(".bilinker");
+    let bilinker_dir = root.join(".bilink");
     let (_, bl) = BiLinkFile::find_by_id(&bilinker_dir, bilink_name)?;
 
     let link = match endpoint {

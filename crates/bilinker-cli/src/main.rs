@@ -39,6 +39,9 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Watch for changes in linked files and alert on drift
+    Watch,
+
     /// Apply pending auto-fixes from check
     Apply {
         #[arg(long)]
@@ -204,6 +207,11 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
 
+        Command::Watch => {
+            let root = project_root(&cwd)?;
+            watch(&root)?;
+        }
+
         Command::Apply { dry_run, yes: _ } => {
             let pending = cwd.join(".bilink").join(".pending");
             if !pending.exists() {
@@ -350,6 +358,68 @@ fn chain_overall_state_for_bl(nodes: &[bilinker::bilink::BiLinkFile]) -> &'stati
         if dirty(&bl.state0) || dirty(&bl.state1) { return "DIRTY"; }
     }
     "OK"
+}
+
+fn watch(root: &Path) -> anyhow::Result<()> {
+    use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
+    use bilinker::bilink::{walkdir, BiLinkFile};
+    use bilinker::link::LinkEndpoint;
+    use std::sync::mpsc;
+
+    eprintln!("watching {}  (Ctrl-C to stop)", root.display());
+
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = recommended_watcher(tx)?;
+    watcher.watch(root, RecursiveMode::Recursive)?;
+
+    for res in rx {
+        let event = match res {
+            Ok(e)  => e,
+            Err(e) => { eprintln!("watch error: {e}"); continue; }
+        };
+
+        if !matches!(event.kind, EventKind::Modify(_)) { continue; }
+
+        'paths: for path in &event.paths {
+            // Ignore writes to .bilink cache files
+            if path.components().any(|c| c.as_os_str() == ".bilink") { continue; }
+            if !path.is_file() { continue; }
+
+            let rel = match path.strip_prefix(root) {
+                Ok(r)  => r.to_string_lossy().to_string(),
+                Err(_) => continue,
+            };
+
+            // Find every chain that references this file
+            let mut chains: Vec<String> = Vec::new();
+            for entry in walkdir(root).unwrap_or_default() {
+                if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
+                if entry.components().any(|c| c.as_os_str() == ".pending") { continue; }
+                let Ok(bl) = BiLinkFile::load(&entry) else { continue };
+
+                let references_file = [&bl.link0, &bl.link1].iter().any(|link| {
+                    if let LinkEndpoint::Structural(sref) = link {
+                        rel.contains(&sref.file) || sref.file.contains(&rel)
+                    } else {
+                        false
+                    }
+                });
+
+                if references_file {
+                    chains.push(bl.uuid.clone());
+                }
+            }
+
+            if !chains.is_empty() {
+                for chain in &chains {
+                    println!("ALTERED  {rel}  chain {chain}.0  {chain}.1");
+                }
+            }
+
+            break 'paths;
+        }
+    }
+    Ok(())
 }
 
 fn line_col_to_byte(source: &str, line: usize, col: usize) -> usize {
