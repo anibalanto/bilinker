@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 
 use crate::bilink::{walkdir, BiLinkFile};
 use crate::chain::resolve_layer_link;
+use crate::git;
 use crate::grammar;
 use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
@@ -55,11 +56,11 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     let uuid = bl.uuid.clone();
 
-    let (state0, hash0, range0) =
+    let (state0, hash0, range0, commit0) =
         check_endpoint(root, layer_root, &bl.link0, &uuid,
                        bl.hash0.as_deref(), bl.range0.as_ref())?;
 
-    let (state1, hash1, range1) =
+    let (state1, hash1, range1, commit1) =
         check_endpoint(root, layer_root, &bl.link1, &uuid,
                        bl.hash1.as_deref(), bl.range1.as_ref())?;
 
@@ -74,6 +75,8 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
     bl.range1      = range1;
     bl.state0      = Some(state0.clone());
     bl.state1      = Some(state1.clone());
+    if commit0.is_some() { bl.commit0 = commit0; }
+    if commit1.is_some() { bl.commit1 = commit1; }
     bl.resolved_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     bl.write(bilink_path)?;
@@ -88,13 +91,14 @@ fn check_endpoint(
     uuid: &str,
     stored_hash: Option<&str>,
     stored_range: Option<&ByteRange>,
-) -> Result<(EndpointState, String, Option<ByteRange>)> {
+) -> Result<(EndpointState, String, Option<ByteRange>, Option<String>)> {
     match endpoint {
         LinkEndpoint::Structural(sref) => {
             check_structural(root, sref, stored_hash, stored_range)
         }
         LinkEndpoint::Layer(tokens) => {
-            check_layer(layer_root, tokens, uuid, stored_hash)
+            let (state, hash, range) = check_layer(layer_root, tokens, uuid, stored_hash)?;
+            Ok((state, hash, range, None))
         }
     }
 }
@@ -104,13 +108,14 @@ fn check_structural(
     sref: &StructuralRef,
     stored_hash: Option<&str>,
     stored_range: Option<&ByteRange>,
-) -> Result<(EndpointState, String, Option<ByteRange>)> {
+) -> Result<(EndpointState, String, Option<ByteRange>, Option<String>)> {
     let file_path = root.join(&sref.file);
 
     if !file_path.exists() {
-        return Ok((EndpointState::Broken, String::new(), None));
+        return Ok((EndpointState::Broken, String::new(), None, None));
     }
 
+    let commit = git::try_head_commit_for_file(root, &sref.file);
     let source = std::fs::read_to_string(&file_path)?;
 
     let Some(query_str) = &sref.query else {
@@ -123,7 +128,7 @@ fn check_structural(
         } else {
             EndpointState::Altered
         };
-        return Ok((state, new_hash, Some(range)));
+        return Ok((state, new_hash, Some(range), commit));
     };
 
     let lang = grammar::language_for_file(&sref.file);
@@ -132,7 +137,7 @@ fn check_structural(
     let node_range = query::find_target(language, &source, query_str)?;
 
     let Some((node_start, node_end)) = node_range else {
-        return Ok((EndpointState::Unanchored, String::new(), None));
+        return Ok((EndpointState::Unanchored, String::new(), None, commit));
     };
 
     let (frag_start, frag_end) = match &sref.range {
@@ -144,13 +149,13 @@ fn check_structural(
     let new_range = ByteRange { start: frag_start, end: frag_end };
 
     if stored_hash.is_none() {
-        return Ok((EndpointState::Ok, new_hash, Some(new_range)));
+        return Ok((EndpointState::Ok, new_hash, Some(new_range), commit));
     }
 
     let stored = stored_hash.unwrap();
 
     if stored == new_hash {
-        return Ok((EndpointState::Ok, new_hash, Some(new_range)));
+        return Ok((EndpointState::Ok, new_hash, Some(new_range), commit));
     }
 
     if let Some(sr) = stored_range {
@@ -158,11 +163,11 @@ fn check_structural(
         if let Some(displaced) = find_in_node(&source, node_start, node_end, stored, frag_len) {
             let displaced_fragment = &source[displaced.start..displaced.end];
             let displaced_hash = hash::sha256(displaced_fragment.as_bytes());
-            return Ok((EndpointState::Displaced, displaced_hash, Some(displaced)));
+            return Ok((EndpointState::Displaced, displaced_hash, Some(displaced), commit));
         }
     }
 
-    Ok((EndpointState::Altered, new_hash, Some(new_range)))
+    Ok((EndpointState::Altered, new_hash, Some(new_range), commit))
 }
 
 fn check_layer(
@@ -249,6 +254,7 @@ mod tests {
             hash0: None, hash1: None,
             range0: None, range1: None,
             state0: None, state1: None,
+            commit0: None, commit1: None,
             resolved_at: None,
         };
         let path = dir.join(format!("{uuid}.bilink"));
@@ -290,6 +296,7 @@ mod tests {
             range1: Some(ByteRange { start: 0, end: content.len() }),
             state0: Some(EndpointState::Ok),
             state1: Some(EndpointState::Ok),
+            commit0: None, commit1: None,
             resolved_at: Some("2026-01-01T00:00:00Z".into()),
         };
         let path = bilink_dir.join("uuid1.bilink");
@@ -313,6 +320,7 @@ mod tests {
             hash1:  Some("old-hash-that-wont-match".into()),
             range0: None, range1: None,
             state0: None, state1: None,
+            commit0: None, commit1: None,
             resolved_at: None,
         };
         let path = bilink_dir.join("uuid1.bilink");
@@ -375,6 +383,7 @@ mod tests {
             hash1: Some("wrong-hash-000".into()),
             range0: None, range1: None,
             state0: None, state1: None,
+            commit0: None, commit1: None,
             resolved_at: None,
         };
         let path = bilink_dir.join(format!("{uuid}.bilink"));

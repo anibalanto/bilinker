@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use uuid::Uuid;
 
 use crate::bilink::BiLinkFile;
-use crate::link::{LinkEndpoint, StructuralRef};
+use crate::link::LinkEndpoint;
 
 pub struct ChainNew {
     pub uuid: String,
@@ -45,6 +45,7 @@ pub fn chain_new(
             hash0:       None, hash1: None,
             range0:      None, range1: None,
             state0:      None, state1: None,
+            commit0:     None, commit1: None,
             resolved_at: None,
         };
         let path = bilink_path(root, &all_layers[0], &uuid);
@@ -76,6 +77,7 @@ pub fn chain_new(
             hash0:       None, hash1: None,
             range0:      None, range1: None,
             state0:      None, state1: None,
+            commit0:     None, commit1: None,
             resolved_at: None,
         };
         let path = bilink_path(root, layer, &uuid);

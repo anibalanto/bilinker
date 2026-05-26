@@ -2,6 +2,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Point};
 
+use crate::git;
 use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
 use crate::link::StructuralRef;
@@ -9,6 +10,7 @@ use crate::link::StructuralRef;
 pub struct CaptureResult {
     pub endpoint: StructuralRef,
     pub hash: String,
+    pub commit: String,
 }
 
 pub fn capture(
@@ -17,6 +19,7 @@ pub fn capture(
     start: (usize, usize), // (line, col) 1-based
     end: (usize, usize),
 ) -> Result<CaptureResult> {
+    let commit = git::head_commit_for_file(root, file)?;
     let file_path = root.join(file);
     let source = std::fs::read_to_string(&file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
@@ -70,6 +73,7 @@ pub fn capture(
             range,
         },
         hash,
+        commit,
     })
 }
 

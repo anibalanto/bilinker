@@ -4,6 +4,7 @@ pub mod chain;
 pub mod check;
 pub mod config;
 pub mod get;
+pub mod git;
 pub mod grammar;
 pub mod hash;
 pub mod index;

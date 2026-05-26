@@ -14,6 +14,8 @@ pub struct BiLinkFile {
     pub range1: Option<ByteRange>,
     pub state0: Option<EndpointState>,
     pub state1: Option<EndpointState>,
+    pub commit0: Option<String>,
+    pub commit1: Option<String>,
     pub resolved_at: Option<String>,
 }
 
@@ -39,6 +41,8 @@ impl BiLinkFile {
         let mut range1 = None;
         let mut state0 = None;
         let mut state1 = None;
+        let mut commit0 = None;
+        let mut commit1 = None;
         let mut resolved_at = None;
         let mut current_key: Option<&'static str> = None;
 
@@ -47,6 +51,7 @@ impl BiLinkFile {
             "hash.0", "hash.1",
             "range.0", "range.1",
             "state.0", "state.1",
+            "commit.0", "commit.1",
             "resolved_at",
         ];
 
@@ -74,6 +79,8 @@ impl BiLinkFile {
                     "range.1"    => { range1      = Some(value); "" }
                     "state.0"    => { state0      = Some(value); "" }
                     "state.1"    => { state1      = Some(value); "" }
+                    "commit.0"   => { commit0     = Some(value); "" }
+                    "commit.1"   => { commit1     = Some(value); "" }
                     "resolved_at"=> { resolved_at = Some(value); "" }
                     _            => ""
                 });
@@ -109,6 +116,8 @@ impl BiLinkFile {
                              .context("parsing state.0")?,
             state1:      state1.as_deref().map(str::parse).transpose()
                              .context("parsing state.1")?,
+            commit0,
+            commit1,
             resolved_at,
         })
     }
@@ -133,6 +142,8 @@ impl BiLinkFile {
             if let Some(r) = &self.range1 { push_field(&mut out, "range.1", &r.to_string()); }
             if let Some(s) = &self.state0 { push_field(&mut out, "state.0", &s.to_string()); }
             if let Some(s) = &self.state1 { push_field(&mut out, "state.1", &s.to_string()); }
+            if let Some(c) = &self.commit0 { push_field(&mut out, "commit.0", c); }
+            if let Some(c) = &self.commit1 { push_field(&mut out, "commit.1", c); }
             if let Some(t) = &self.resolved_at { push_field(&mut out, "resolved_at", t); }
         }
 
@@ -183,6 +194,7 @@ mod tests {
             hash0: None, hash1: None,
             range0: None, range1: None,
             state0: None, state1: None,
+            commit0: None, commit1: None,
             resolved_at: None,
         };
         original.write(&path).unwrap();
@@ -208,6 +220,8 @@ mod tests {
             range1:      Some(ByteRange { start: 0, end: 100 }),
             state0:      Some(EndpointState::Ok),
             state1:      Some(EndpointState::Altered),
+            commit0:     Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into()),
+            commit1:     None,
             resolved_at: Some("2026-05-25T00:00:00Z".into()),
         };
         original.write(&path).unwrap();
@@ -218,6 +232,8 @@ mod tests {
         assert_eq!(loaded.range0, Some(ByteRange { start: 10, end: 50 }));
         assert_eq!(loaded.state0, Some(EndpointState::Ok));
         assert_eq!(loaded.state1, Some(EndpointState::Altered));
+        assert_eq!(loaded.commit0.as_deref(), Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
+        assert!(loaded.commit1.is_none());
         assert_eq!(loaded.resolved_at.as_deref(), Some("2026-05-25T00:00:00Z"));
     }
 
@@ -242,6 +258,7 @@ mod tests {
             uuid: "my-uuid".into(),
             link0: structural("a.md"),
             link1: structural("b.md"),
+            commit0: None, commit1: None,
             hash0: None, hash1: None,
             range0: None, range1: None,
             state0: None, state1: None,

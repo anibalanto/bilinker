@@ -136,7 +136,6 @@ fn isolated_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
 
-    fs::write(root.join(".bilinker.toml"), "# bilinker project root\n").unwrap();
     fs::create_dir_all(root.join("src")).unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
     fs::write(root.join("docs/spec.md"), "# Spec\n\nSome spec content.\n").unwrap();
