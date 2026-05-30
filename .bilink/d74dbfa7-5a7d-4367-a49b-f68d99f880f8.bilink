@@ -1,4 +1,4 @@
-link.0: ../..
+link.0: <
 link.1: crates/bilinker/src/check.rs
 
 # Cache
@@ -9,4 +9,4 @@ commit.1: 836270df7b28d0b53476ae1cc45ca08d639f28bf
 range.1: 0~19986
 state.0: OK
 state.1: OK
-resolved_at: 2026-05-30T13:28:42Z
+resolved_at: 2026-05-30T14:52:58Z

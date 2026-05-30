@@ -107,11 +107,55 @@ fn bilink_path(root: &Path, layer: &Path, uuid: &str) -> PathBuf {
 
 fn layer_endpoint(from_layer: &Path, to_layer: &Path) -> Result<LinkEndpoint> {
     let rel = diff_paths(to_layer, from_layer);
-    let rel_str = rel.to_str()
-        .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {}", rel.display()))?;
-    let tokens = stratum::parse_path(rel_str)
-        .map_err(|e| anyhow::anyhow!("invalid layer path '{rel_str}': {e}"))?;
+    let tokens = filesystem_to_stratum_tokens(&rel)?;
     Ok(LinkEndpoint::Layer(tokens))
+}
+
+/// Converts a filesystem relative path (as produced by `diff_paths`) into stratum tokens.
+///
+/// - Leading `../..` pairs → `PathToken::Up` (one stratum level = 2 fs components)
+/// - Following `.stratum/<name>` pairs → `PathToken::Down`
+/// - Any remaining components → `PathToken::Simple`
+fn filesystem_to_stratum_tokens(rel: &Path) -> Result<stratum::StratumPath> {
+    use stratum::PathToken;
+
+    let components: Vec<Component> = rel.components().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while i + 1 < components.len()
+        && components[i] == Component::ParentDir
+        && components[i + 1] == Component::ParentDir
+    {
+        tokens.push(PathToken::Up);
+        i += 2;
+    }
+    if i < components.len() && components[i] == Component::ParentDir {
+        anyhow::bail!("malformed stratum path: odd number of `..` in {}", rel.display());
+    }
+
+    while i + 1 < components.len() {
+        if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1]) {
+            if *a == std::ffi::OsStr::new(".stratum") {
+                let name = b.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF8 layer name"))?;
+                tokens.push(PathToken::Down(name.to_string()));
+                i += 2;
+                continue;
+            }
+        }
+        break;
+    }
+
+    if i < components.len() {
+        let remaining: std::path::PathBuf = components[i..].iter().collect();
+        tokens.push(PathToken::Simple(remaining));
+    }
+
+    if tokens.is_empty() {
+        anyhow::bail!("empty stratum path for {}", rel.display());
+    }
+
+    Ok(tokens)
 }
 
 fn diff_paths(to: &Path, from: &Path) -> PathBuf {
@@ -166,6 +210,36 @@ mod tests {
     }
     fn is_structural(ep: &LinkEndpoint) -> bool {
         matches!(ep, LinkEndpoint::Structural(_))
+    }
+
+    // ─── filesystem_to_stratum_tokens ────────────────────────────────────────
+
+    #[test]
+    fn stratum_tokens_up_one() {
+        let tokens = filesystem_to_stratum_tokens(Path::new("../..")).unwrap();
+        let ep = LinkEndpoint::Layer(tokens);
+        assert_eq!(ep.to_string(), "<");
+    }
+
+    #[test]
+    fn stratum_tokens_up_two() {
+        let tokens = filesystem_to_stratum_tokens(Path::new("../../../..")).unwrap();
+        let ep = LinkEndpoint::Layer(tokens);
+        assert_eq!(ep.to_string(), "<<");
+    }
+
+    #[test]
+    fn stratum_tokens_down_one() {
+        let tokens = filesystem_to_stratum_tokens(Path::new(".stratum/impl")).unwrap();
+        let ep = LinkEndpoint::Layer(tokens);
+        assert_eq!(ep.to_string(), ">impl");
+    }
+
+    #[test]
+    fn stratum_tokens_down_two() {
+        let tokens = filesystem_to_stratum_tokens(Path::new(".stratum/td/.stratum/impl")).unwrap();
+        let ep = LinkEndpoint::Layer(tokens);
+        assert_eq!(ep.to_string(), ">td>impl");
     }
 
     // ─── diff_paths ──────────────────────────────────────────────────────────
@@ -290,9 +364,9 @@ mod tests {
         let result = chain_new(root, &tips, &[]).unwrap();
 
         let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
-        assert_eq!(tip0.link1.to_string(), ".stratum/impl");
+        assert_eq!(tip0.link1.to_string(), ">impl");
 
         let tip1 = BiLinkFile::load(&result.files[1]).unwrap();
-        assert_eq!(tip1.link0.to_string(), "../..");
+        assert_eq!(tip1.link0.to_string(), "<");
     }
 }

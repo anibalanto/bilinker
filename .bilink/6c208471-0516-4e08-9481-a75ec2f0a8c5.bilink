@@ -1,4 +1,4 @@
-link.0: ../..
+link.0: <
 link.1: crates/bilinker/src/get.rs
 
 # Cache
@@ -9,4 +9,4 @@ commit.1: 1547a31e0526371fffd7fbcbc222c6e5dc3f2037
 range.1: 0~3205
 state.0: OK
 state.1: OK
-resolved_at: 2026-05-30T13:29:01Z
+resolved_at: 2026-05-30T14:52:58Z

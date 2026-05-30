@@ -163,15 +163,7 @@ impl fmt::Display for LinkEndpoint {
         match self {
             LinkEndpoint::Structural(r) => write!(f, "{r}"),
             LinkEndpoint::Layer(tokens) => {
-                use stratum::PathToken;
-                for token in tokens {
-                    match token {
-                        PathToken::Down(name) => write!(f, ">{name}")?,
-                        PathToken::Up => write!(f, "<")?,
-                        PathToken::Simple(p) => write!(f, "{}", p.display())?,
-                    }
-                }
-                Ok(())
+                write!(f, "{}", stratum::format_path(tokens))
             }
             LinkEndpoint::Task(id) => write!(f, "task {id}"),
         }
