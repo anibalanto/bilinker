@@ -7,6 +7,7 @@ use stratum::StratumPath;
 pub enum EndpointState {
     Pending,
     Ok,
+    Todo,
     Moved,
     Displaced,
     Reanchored,
@@ -23,6 +24,7 @@ impl fmt::Display for EndpointState {
         match self {
             Self::Pending     => write!(f, "PENDING"),
             Self::Ok          => write!(f, "OK"),
+            Self::Todo        => write!(f, "TODO"),
             Self::Moved       => write!(f, "MOVED"),
             Self::Displaced   => write!(f, "DISPLACED"),
             Self::Reanchored  => write!(f, "REANCHORED"),
@@ -42,6 +44,7 @@ impl FromStr for EndpointState {
         match s.trim() {
             "PENDING"      => Ok(Self::Pending),
             "OK"           => Ok(Self::Ok),
+            "TODO"         => Ok(Self::Todo),
             "MOVED"        => Ok(Self::Moved),
             "DISPLACED"    => Ok(Self::Displaced),
             "REANCHORED"   => Ok(Self::Reanchored),
@@ -66,6 +69,8 @@ impl FromStr for EndpointState {
 pub enum LinkEndpoint {
     Structural(StructuralRef),
     Layer(StratumPath),
+    /// `task <id>` — references a worklist task at `<project-root>/.stratum/worklist/<id>.task`.
+    Task(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,23 +100,33 @@ impl FromStr for LinkEndpoint {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.contains("::") {
-            return Ok(LinkEndpoint::Structural(s.parse()?));
+        let trimmed = s.trim();
+
+        // `task <id>` — worklist task reference
+        if let Some(id) = trimmed.strip_prefix("task ") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(LinkEndpoint::Task(id.to_string()));
+            }
+        }
+
+        if trimmed.contains("::") {
+            return Ok(LinkEndpoint::Structural(trimmed.parse()?));
         }
         // No `::`: check if the last path component has a file extension.
-        let last = std::path::Path::new(s.trim())
+        let last = std::path::Path::new(trimmed)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
         let looks_like_file = last.contains('.') && last != "." && last != "..";
         if looks_like_file {
             return Ok(LinkEndpoint::Structural(StructuralRef {
-                file:  s.trim().to_string(),
+                file:  trimmed.to_string(),
                 query: None,
                 range: None,
             }));
         }
-        let tokens = stratum::parse_path(s.trim())
+        let tokens = stratum::parse_path(trimmed)
             .map_err(|e| anyhow::anyhow!("invalid stratum path '{s}': {e}"))?;
         Ok(LinkEndpoint::Layer(tokens))
     }
@@ -158,6 +173,7 @@ impl fmt::Display for LinkEndpoint {
                 }
                 Ok(())
             }
+            LinkEndpoint::Task(id) => write!(f, "task {id}"),
         }
     }
 }
@@ -249,5 +265,26 @@ mod tests {
         let s = "docs/architecture.md";
         let ep: LinkEndpoint = s.parse().unwrap();
         assert_eq!(ep.to_string(), s);
+    }
+
+    #[test]
+    fn parse_task_endpoint() {
+        let ep: LinkEndpoint = "task 3a".parse().unwrap();
+        assert_eq!(ep, LinkEndpoint::Task("3a".into()));
+        assert_eq!(ep.to_string(), "task 3a");
+    }
+
+    #[test]
+    fn parse_task_endpoint_longer_id() {
+        let ep: LinkEndpoint = "task 1f".parse().unwrap();
+        assert_eq!(ep, LinkEndpoint::Task("1f".into()));
+    }
+
+    #[test]
+    fn todo_state_roundtrip() {
+        let s = "TODO";
+        let state: EndpointState = s.parse().unwrap();
+        assert_eq!(state, EndpointState::Todo);
+        assert_eq!(state.to_string(), "TODO");
     }
 }

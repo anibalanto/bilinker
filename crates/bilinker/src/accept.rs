@@ -9,6 +9,7 @@ use crate::grammar;
 use crate::hash;
 use crate::link::{EndpointState, LinkEndpoint};
 use crate::query;
+use crate::task::resolve_task_path;
 
 pub struct AcceptResult {
     pub uuid: String,
@@ -90,6 +91,19 @@ fn compute_hash_and_commit(
             let h = hash_override.map(String::from).unwrap_or(frag_hash);
             let c = commit_override.map(String::from)
                 .unwrap_or_else(|| try_head_commit_for_file(layer_root, &sref.file)
+                    .unwrap_or_default());
+            Ok((h, c))
+        }
+
+        LinkEndpoint::Task(id) => {
+            let (task_path, project_root) = resolve_task_path(layer_root, id);
+            let source = std::fs::read_to_string(&task_path)
+                .with_context(|| format!("reading task {}", task_path.display()))?;
+            let frag_hash = hash::sha256(source.as_bytes());
+            let h = hash_override.map(String::from).unwrap_or(frag_hash);
+            let rel = format!(".stratum/worklist/{id}.task");
+            let c = commit_override.map(String::from)
+                .unwrap_or_else(|| try_head_commit_for_file(&project_root, &rel)
                     .unwrap_or_default());
             Ok((h, c))
         }

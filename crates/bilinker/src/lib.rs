@@ -11,3 +11,4 @@ pub mod hash;
 pub mod index;
 pub mod link;
 pub mod query;
+pub mod task;

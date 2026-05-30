@@ -34,6 +34,9 @@ pub fn get(
         LinkEndpoint::Layer(_) => bail!(
             "link.{endpoint} is a layer path — structural 'get' requires a structural endpoint"
         ),
+        LinkEndpoint::Task(id) => bail!(
+            "link.{endpoint} is a task reference ({id}) — use worklist to view it"
+        ),
     };
 
     resolve(root, sref, before, after)

@@ -1,0 +1,12 @@
+link.0: ../..
+link.1: crates/bilinker/src/accept.rs
+
+# Cache
+hash.0: 6d919259cddd1907217c472569bb2bb12565bd6d1042321eb5a149e46ba376e9
+commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
+hash.1: 7fcc5bf21eadf80e6d449a87b20522543f6167c21f3480ccfc198e529e8e7313
+commit.1: 836270df7b28d0b53476ae1cc45ca08d639f28bf
+range.1: 0~8121
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-30T13:28:42Z

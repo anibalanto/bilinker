@@ -8,6 +8,7 @@ use crate::grammar;
 use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
 use crate::query;
+use crate::task::resolve_task_path;
 
 #[derive(Debug)]
 pub struct CheckResult {
@@ -20,8 +21,8 @@ pub struct CheckResult {
 impl CheckResult {
     pub fn is_clean(&self) -> bool {
         use EndpointState::*;
-        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded)
-            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded)
+        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded | Todo)
+            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded | Todo)
     }
 }
 
@@ -88,6 +89,7 @@ fn check_endpoint(
     match endpoint {
         LinkEndpoint::Structural(sref) => check_structural(root, sref, hash, stored_range),
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
+        LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
     }
 }
 
@@ -158,9 +160,11 @@ fn check_layer(
     uuid: &str,
     stored_hash: Option<&str>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
+    let absent = if stored_hash.is_none() { EndpointState::Todo } else { EndpointState::Broken };
+
     let target_layer = match stratum::resolve(layer_root, layer_root, tokens) {
         Ok(p)  => p,
-        Err(_) => return Ok((EndpointState::Broken, None)),
+        Err(_) => return Ok((absent, None)),
     };
 
     let target_bilink = resolve_layer_link(
@@ -171,7 +175,7 @@ fn check_layer(
     );
 
     if !target_bilink.exists() {
-        return Ok((EndpointState::Broken, None));
+        return Ok((absent, None));
     }
 
     // Hash = structural endpoint's accepted hash in the adjacent bilink.
@@ -191,6 +195,24 @@ fn check_layer(
     };
 
     Ok((state, None))
+}
+
+fn check_task(
+    layer_root: &Path,
+    task_id: &str,
+    stored_hash: Option<&str>,
+) -> Result<(EndpointState, Option<ByteRange>)> {
+    let (task_path, _) = resolve_task_path(layer_root, task_id);
+    let task_dir = match task_path.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return Ok((EndpointState::Broken, None)),
+    };
+    let filename = match task_path.file_name().and_then(|n| n.to_str()) {
+        Some(f) => f.to_string(),
+        None => return Ok((EndpointState::Broken, None)),
+    };
+    let sref = StructuralRef { file: filename, query: None, range: None };
+    check_structural(&task_dir, &sref, stored_hash, None)
 }
 
 fn find_in_node(
@@ -441,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn check_layer_broken_when_adjacent_missing() {
+    fn check_layer_todo_when_adjacent_missing_and_no_hash() {
         let dir = tempdir().unwrap();
         let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
 
@@ -452,6 +474,33 @@ mod tests {
             layer_endpoint(".stratum/impl"),
         );
 
+        // No hash stored, target layer doesn't exist → TODO (intentional absence)
+        let result = check_file(dir.path(), &path).unwrap();
+        assert_eq!(result.state1, EndpointState::Todo);
+    }
+
+    #[test]
+    fn check_layer_broken_when_adjacent_missing_but_had_hash() {
+        let dir = tempdir().unwrap();
+        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
+
+        let bilink_dir = dir.path().join(".bilink");
+        std::fs::write(dir.path().join("a.md"), "content").unwrap();
+        let bl = BiLinkFile {
+            uuid:    uuid.into(),
+            link0:   whole_file_endpoint("a.md"),
+            link1:   layer_endpoint(".stratum/impl"),
+            hash0:   None, commit0: None,
+            hash1:   Some("previously-accepted-hash".into()),
+            commit1: Some("abc1234".into()),
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        let path = bilink_dir.join(format!("{uuid}.bilink"));
+        bl.write(&path).unwrap();
+
+        // Hash present but target gone → BROKEN (regression)
         let result = check_file(dir.path(), &path).unwrap();
         assert_eq!(result.state1, EndpointState::Broken);
     }
