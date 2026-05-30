@@ -12,7 +12,8 @@ pub fn language_for_file(file: &str) -> &'static str {
 pub fn for_language(lang: &str) -> Result<Language> {
     match lang {
         "java" => Ok(tree_sitter_java::language()),
-        other => bail!("unsupported language: '{other}' (supported: java)"),
+        "rust" => Ok(tree_sitter_rust::language()),
+        other  => bail!("unsupported language: '{other}' (supported: java, rust)"),
     }
 }
 
@@ -28,6 +29,14 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "constructor_declaration",
             "field_declaration",
         ],
+        "rust" => &[
+            "function_item",
+            "struct_item",
+            "enum_item",
+            "trait_item",
+            "impl_item",
+            "mod_item",
+        ],
         _ => &[],
     }
 }
@@ -40,6 +49,12 @@ pub fn name_field(lang: &str, kind: &str) -> Option<&'static str> {
         ("java", "enum_declaration")        => Some("name"),
         ("java", "method_declaration")      => Some("name"),
         ("java", "constructor_declaration") => Some("name"),
+        ("rust", "function_item") => Some("name"),
+        ("rust", "struct_item")   => Some("name"),
+        ("rust", "enum_item")     => Some("name"),
+        ("rust", "trait_item")    => Some("name"),
+        ("rust", "mod_item")      => Some("name"),
+        ("rust", "impl_item")     => Some("type"),
         _ => None,
     }
 }

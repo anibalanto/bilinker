@@ -92,12 +92,14 @@ enum Command {
 enum ChainCommand {
     /// Create a new chain or direct link
     ///
+    /// Each --tip is a stratum path with optional :LINE:COL suffix.
+    ///
     /// Examples:
-    ///   bilinker chain new --tip . spec/file.md --tip .stratum/impl src/file.rs
-    ///   bilinker chain new --tip . spec/file.md --tip .stratum/impl src/Foo.java:42:5
+    ///   bilinker chain new --tip commands/capture.md --tip '>impl/crates/bilinker/src/capture.rs:16:1'
+    ///   bilinker chain new --tip spec/Foo.java --tip '>impl/src/Foo.java:42:5'
     New {
-        /// Tip: LAYER FILE[:LINE:COL]  (specify exactly twice)
-        #[arg(long = "tip", num_args = 2, value_names = ["LAYER", "FILE"], action = ArgAction::Append)]
+        /// Tip: STRATUM_PATH[:LINE:COL]  (specify exactly twice)
+        #[arg(long = "tip", value_name = "REF", action = ArgAction::Append)]
         tip: Vec<String>,
         /// Intermediate layer (can repeat, order matters)
         #[arg(long = "mid", action = ArgAction::Append)]
@@ -131,34 +133,76 @@ fn parse_pos(s: &str) -> anyhow::Result<(usize, usize)> {
     Ok((line.parse()?, col.parse()?))
 }
 
-/// Parse a tip REF string: `path/to/file` or `path/to/file:line:col`.
-/// Returns a structural endpoint (whole-file or AST-anchored).
-fn parse_tip_ref(root: &Path, ref_str: &str) -> anyhow::Result<bilinker::link::LinkEndpoint> {
-    use bilinker::link::{LinkEndpoint, StructuralRef};
+fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let (root, _) = bilinker::config::Config::load_from(cwd)?;
+    Ok(root)
+}
 
-    // Try to split off :line:col suffix
-    let parts: Vec<&str> = ref_str.rsplitn(3, ':').collect();
-    if parts.len() == 3
+/// Parses a stratum tip: `STRATUM_PATH[:LINE:COL]`.
+///
+/// The stratum path encodes both layer navigation and the file.  The last
+/// `Simple` token is the file; preceding tokens (`Down`, `Up`) are the layer.
+/// Returns `(layer_fs_path, endpoint)` where `layer_fs_path` is relative to
+/// the project root and is used both for bilink placement and as the git root.
+fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bilinker::link::LinkEndpoint)> {
+    use bilinker::link::{LinkEndpoint, StructuralRef};
+    use stratum::PathToken;
+
+    // Extract optional :line:col suffix
+    let parts: Vec<&str> = tip_str.rsplitn(3, ':').collect();
+    let (path_str, pos) = if parts.len() == 3
         && parts[0].parse::<usize>().is_ok()
         && parts[1].parse::<usize>().is_ok()
     {
         let col:  usize = parts[0].parse()?;
         let line: usize = parts[1].parse()?;
-        let file        = parts[2];
-        let result = bilinker::capture::capture(root, file, (line, col), (line, col))?;
-        Ok(LinkEndpoint::Structural(result.endpoint))
+        (parts[2], Some((line, col)))
     } else {
-        Ok(LinkEndpoint::Structural(StructuralRef {
-            file: ref_str.to_string(),
-            query: None,
-            range: None,
-        }))
-    }
+        (tip_str, None)
+    };
+
+    let tokens = stratum::parse_path(path_str)
+        .map_err(|e| anyhow::anyhow!("invalid stratum path '{}': {}", path_str, e))?;
+
+    // Last Simple token = file path; preceding tokens = layer navigation.
+    let (layer_tokens, file_str) = match tokens.last() {
+        Some(PathToken::Simple(p)) => {
+            let layer = tokens[..tokens.len() - 1].to_vec();
+            let file  = p.strip_prefix("/").unwrap_or(p).to_string_lossy().to_string();
+            (layer, file)
+        }
+        _ => anyhow::bail!("tip must end with a file path, got: '{}'", path_str),
+    };
+
+    let layer_fs   = layer_tokens_to_fs_path(&layer_tokens)?;
+    let layer_root = root.join(&layer_fs);
+
+    let endpoint = if let Some((line, col)) = pos {
+        let result = bilinker::capture::capture(&layer_root, &file_str, (line, col), (line, col))?;
+        LinkEndpoint::Structural(result.endpoint)
+    } else {
+        LinkEndpoint::Structural(StructuralRef { file: file_str, query: None, range: None })
+    };
+
+    Ok((layer_fs, endpoint))
 }
 
-fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
-    let (root, _) = bilinker::config::Config::load_from(cwd)?;
-    Ok(root)
+/// Converts layer navigation tokens (Up / Down only) to a filesystem path
+/// relative to the project root. `[]` → `.` (current layer).
+fn layer_tokens_to_fs_path(tokens: &[stratum::PathToken]) -> anyhow::Result<PathBuf> {
+    use stratum::PathToken;
+    if tokens.is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    let mut path = PathBuf::new();
+    for token in tokens {
+        match token {
+            PathToken::Down(name) => path = path.join(".stratum").join(name),
+            PathToken::Up         => path = path.join("..").join(".."),
+            other => anyhow::bail!("unexpected token in layer navigation: {other:?}"),
+        }
+    }
+    Ok(path)
 }
 
 fn parse_accept_target(target: &str) -> anyhow::Result<(String, u8)> {
@@ -383,14 +427,13 @@ fn main() -> anyhow::Result<()> {
 
         Command::Chain { sub } => match sub {
             ChainCommand::New { tip, mid } => {
-                if tip.len() != 4 {
-                    anyhow::bail!("chain new requires exactly 2 --tip LAYER FILE pairs");
+                if tip.len() != 2 {
+                    anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                 }
                 let root = project_root(&cwd)?;
-                let tips = vec![
-                    (PathBuf::from(&tip[0]), parse_tip_ref(&root, &tip[1])?),
-                    (PathBuf::from(&tip[2]), parse_tip_ref(&root, &tip[3])?),
-                ];
+                let (layer0, ep0) = parse_stratum_tip(&root, &tip[0])?;
+                let (layer1, ep1) = parse_stratum_tip(&root, &tip[1])?;
+                let tips = vec![(layer0, ep0), (layer1, ep1)];
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
                 let result = bilinker::chain::chain_new(&cwd, &tips, &mids)?;

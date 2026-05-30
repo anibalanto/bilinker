@@ -55,7 +55,10 @@ pub fn capture(
 
     let start_byte = byte_for_point(&source, start_point);
     let end_byte   = byte_for_point(&source, end_point);
-    let range = if start_byte != target.start_byte() || end_byte != target.end_byte() {
+    // Single-point selection → capture the whole anchor; use relative offsets only for real ranges.
+    let range = if start_byte == end_byte {
+        None
+    } else if start_byte != target.start_byte() || end_byte != target.end_byte() {
         let rel_start = start_byte.saturating_sub(target.start_byte());
         let rel_end   = end_byte.saturating_sub(target.start_byte());
         Some(crate::link::ByteRange { start: rel_start, end: rel_end })
@@ -63,7 +66,11 @@ pub fn capture(
         None
     };
 
-    let fragment = &source[start_byte..end_byte.min(source.len())];
+    let (frag_start, frag_end) = match &range {
+        Some(r) => (target.start_byte() + r.start, target.start_byte() + r.end),
+        None    => (target.start_byte(), target.end_byte()),
+    };
+    let fragment = &source[frag_start..frag_end.min(source.len())];
     let hash = hash::sha256(fragment.as_bytes());
 
     Ok(CaptureResult {
@@ -104,7 +111,7 @@ fn node_contains(node: Node, target_id: usize) -> bool {
 
 fn query_for_node(node: Node, source: &str, counter: &mut usize) -> String {
     let name_pred = real_name_predicate(node, source, counter);
-    format!("({}{})", node.kind(), name_pred)
+    format!("({}{}) @target", node.kind(), name_pred)
 }
 
 fn query_from_path(path: &[Node], source: &str, counter: &mut usize) -> String {

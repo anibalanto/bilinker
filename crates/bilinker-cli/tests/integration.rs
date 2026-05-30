@@ -165,8 +165,8 @@ fn chain_new_direct_link_creates_single_file() {
 
     let (stdout, stderr, ok) = run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
     assert!(ok, "chain new failed:\n{stderr}");
     assert!(stdout.contains("Created chain:"), "missing uuid in output");
@@ -186,8 +186,8 @@ fn chain_new_two_layers_creates_two_files() {
 
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".stratum/impl", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", ">impl/src/Service.java",
     ]);
     assert!(ok, "chain new failed:\n{stderr}");
 
@@ -211,8 +211,8 @@ fn check_marks_new_chain_as_pending() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     let (stdout, _, ok) = run_in(&root, &["check", "."]);
@@ -228,8 +228,8 @@ fn check_marks_altered_after_accept_and_file_change() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     // First check writes state/range; accepted.N remains empty
@@ -268,8 +268,8 @@ fn chain_list_shows_created_chain() {
 
     let (create_out, _, _) = run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     let uuid = create_out.lines()
@@ -289,8 +289,8 @@ fn chain_status_shows_nodes() {
 
     let (create_out, _, ok) = run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".stratum/impl", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", ">impl/src/Service.java",
     ]);
     assert!(ok);
 
@@ -314,8 +314,8 @@ fn get_by_file_returns_bilink_after_check() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     run_in(&root, &["check", "."]);
@@ -333,8 +333,8 @@ fn index_build_creates_index_file() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     let (stdout, stderr, ok) = run_in(&root, &["index", "build"]);
@@ -355,8 +355,8 @@ fn index_gitignore_contains_index_entry() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
     run_in(&root, &["index", "build"]);
 
@@ -371,8 +371,8 @@ fn index_status_ok_after_build() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
     run_in(&root, &["index", "build"]);
 
@@ -387,8 +387,8 @@ fn index_status_stale_after_new_chain() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
     run_in(&root, &["index", "build"]);
 
@@ -396,8 +396,8 @@ fn index_status_stale_after_new_chain() {
     std::fs::write(root.join("docs/other.md"), "# Other\n").unwrap();
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/other.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/other.md",
+        "--tip", "src/Service.java",
     ]);
 
     let (stdout, _, ok) = run_in(&root, &["index", "status"]);
@@ -411,8 +411,8 @@ fn index_status_missing_when_never_built() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
     ]);
 
     let (stdout, _, ok) = run_in(&root, &["index", "status"]);
@@ -427,8 +427,8 @@ fn index_recursive_covers_all_layers() {
 
     run_in(&root, &[
         "chain", "new",
-        "--tip", ".", "docs/spec.md",
-        "--tip", ".stratum/impl", "src/Service.java",
+        "--tip", "docs/spec.md",
+        "--tip", ">impl/src/Service.java",
     ]);
 
     let (stdout, stderr, ok) = run_in(&root, &["index", "build", "--recursive"]);

@@ -1,0 +1,3 @@
+link.0: <
+link.1: crates/bilinker/src/check.rs :: (function_item
+  name: (identifier) @n0 (#eq? @n0 "check")) @target
