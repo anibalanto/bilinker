@@ -156,7 +156,7 @@ fn check_layer(
     layer_root: &Path,
     tokens: &stratum::StratumPath,
     uuid: &str,
-    hash: Option<&str>,
+    stored_hash: Option<&str>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     let target_layer = match stratum::resolve(layer_root, layer_root, tokens) {
         Ok(p)  => p,
@@ -174,12 +174,17 @@ fn check_layer(
         return Ok((EndpointState::Broken, None));
     }
 
-    let content  = std::fs::read(&target_bilink)?;
-    let new_hash = hash::sha256(&content);
+    // Hash = structural endpoint's accepted hash in the adjacent bilink.
+    // This avoids circular dependency: accepting a layer endpoint never modifies
+    // the adjacent bilink file, so the hash never cascades back.
+    let adj_bl = crate::bilink::BiLinkFile::load(&target_bilink)?;
+    let Some(adj_struct_hash) = adj_bl.structural_hash() else {
+        return Ok((EndpointState::Pending, None));
+    };
 
-    let state = if hash.is_none() {
+    let state = if stored_hash.is_none() {
         EndpointState::Pending
-    } else if hash == Some(new_hash.as_str()) {
+    } else if stored_hash == Some(adj_struct_hash) {
         EndpointState::Ok
     } else {
         EndpointState::ChainDirty
@@ -355,19 +360,31 @@ mod tests {
         let dir = tempdir().unwrap();
         let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
 
-        let adj_content = b"link.0: a.md\nlink.1: b.md\n";
+        // Adjacent bilink has an accepted structural endpoint (link.1 = b.md, hash.1 set)
+        let adj_struct_hash = "deadbeefdeadbeef".to_string();
         let adj_dir = dir.path().join(".stratum/impl/.bilink");
         std::fs::create_dir_all(&adj_dir).unwrap();
-        std::fs::write(adj_dir.join(format!("{uuid}.bilink")), adj_content).unwrap();
-        let adj_hash = hash::sha256(adj_content);
+        let adj_bl = BiLinkFile {
+            uuid:    uuid.into(),
+            link0:   layer_endpoint("../.."),
+            link1:   whole_file_endpoint("b.md"),
+            hash0:   None, commit0: None,
+            hash1:   Some(adj_struct_hash.clone()),
+            commit1: Some("abc1234".into()),
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
 
+        // Spec bilink stores adj structural hash as its layer endpoint hash
         let bilink_dir = dir.path().join(".bilink");
         let bl = BiLinkFile {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
             hash0:   None, commit0: None,
-            hash1:   Some(adj_hash),
+            hash1:   Some(adj_struct_hash),
             commit1: Some("abc1234".into()),
             range0: None, range1: None,
             state0: None, state1: None,
@@ -386,18 +403,30 @@ mod tests {
         let dir = tempdir().unwrap();
         let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
 
+        // Adjacent bilink has structural hash "current-hash"
         let adj_dir = dir.path().join(".stratum/impl/.bilink");
         std::fs::create_dir_all(&adj_dir).unwrap();
-        let adj_content = "link.0: a.md\nlink.1: b.md\n";
-        std::fs::write(adj_dir.join(format!("{uuid}.bilink")), adj_content).unwrap();
+        let adj_bl = BiLinkFile {
+            uuid:    uuid.into(),
+            link0:   layer_endpoint("../.."),
+            link1:   whole_file_endpoint("b.md"),
+            hash0:   None, commit0: None,
+            hash1:   Some("current-hash".into()),
+            commit1: Some("abc1234".into()),
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        };
+        adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
 
+        // Spec bilink stores a different (stale) hash
         let bilink_dir = dir.path().join(".bilink");
         let bl = BiLinkFile {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
             hash0:   None, commit0: None,
-            hash1:   Some("wrong-hash-000".into()),
+            hash1:   Some("stale-hash-000".into()),
             commit1: Some("abc1234".into()),
             range0: None, range1: None,
             state0: None, state1: None,

@@ -146,6 +146,24 @@ impl BiLinkFile {
         std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
     }
 
+    /// Hash of the structural endpoint's accepted content hash.
+    /// Used by adjacent layer endpoints instead of hashing the full bilink file.
+    pub fn structural_hash(&self) -> Option<&str> {
+        match (&self.link0, &self.link1) {
+            (LinkEndpoint::Structural(_), _) => self.hash0.as_deref(),
+            (_, LinkEndpoint::Structural(_)) => self.hash1.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn structural_commit(&self) -> Option<&str> {
+        match (&self.link0, &self.link1) {
+            (LinkEndpoint::Structural(_), _) => self.commit0.as_deref(),
+            (_, LinkEndpoint::Structural(_)) => self.commit1.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn find_by_id(bilinker_dir: &Path, id: &str) -> Result<(PathBuf, BiLinkFile)> {
         for entry in walkdir(bilinker_dir)? {
             if entry.extension().and_then(|e| e.to_str()) == Some("bilink") {

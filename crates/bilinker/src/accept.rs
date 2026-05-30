@@ -105,16 +105,21 @@ fn compute_hash_and_commit(
                 uuid,
             );
 
-            let content = std::fs::read(&adj)
+            let adj_bl = BiLinkFile::load(&adj)
                 .with_context(|| format!("reading adjacent bilink {}", adj.display()))?;
 
-            let h = hash_override.map(String::from)
-                .unwrap_or_else(|| hash::sha256(&content));
-            let c = commit_override.map(String::from)
-                .unwrap_or_else(|| {
-                    let rel = format!(".bilink/{uuid}.bilink");
-                    try_head_commit_for_file(&target_layer, &rel).unwrap_or_default()
-                });
+            // Hash = structural endpoint's accepted hash in the adjacent bilink.
+            // Avoids circular dependency: this value only changes when the adjacent
+            // structural content is accepted, never from accepting a layer endpoint.
+            let adj_hash = adj_bl.structural_hash()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "adjacent bilink {} has no accepted structural endpoint yet; accept it first",
+                    adj.display()
+                ))?;
+            let adj_commit = adj_bl.structural_commit().unwrap_or_default();
+
+            let h = hash_override.map(String::from).unwrap_or_else(|| adj_hash.to_string());
+            let c = commit_override.map(String::from).unwrap_or_else(|| adj_commit.to_string());
             Ok((h, c))
         }
     }

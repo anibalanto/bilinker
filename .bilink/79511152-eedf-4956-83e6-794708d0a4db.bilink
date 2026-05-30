@@ -2,10 +2,11 @@ link.0: ../..
 link.1: crates/bilinker/src/capture.rs
 
 # Cache
-hash.0: e26dd33b1478ddd3fcf84c3221246d505eb25a0050dab3eb84383efa8e43b8af
-commit.0: 82022b1eb8cccfb1a0097f9fb0b98c4fb2121165
+hash.0: 48b7a7dbbcef8a0e3dd9ccfc82fdf7fe6a7a14153c742773682a6f5fb0cb3aac
+commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
 hash.1: 1f1075d13cd8b6dce31b8eec56559df274b9f5f2a6230c6493f298397b8de2f2
 commit.1: b66af5b792af137cb1290fb4983c26f6a03066db
+range.1: 0~5317
 state.0: OK
 state.1: OK
-resolved_at: 2026-05-30T03:12:49Z
+resolved_at: 2026-05-30T03:47:28Z
