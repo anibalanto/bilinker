@@ -1,2 +1,11 @@
 link.0: ../..
 link.1: crates/bilinker/src/config.rs
+
+# Cache
+hash.0: c55f12000cf9ca77a32411e172c66812cd8805cce85b38e5c977af927a9c8314
+commit.0: 82022b1eb8cccfb1a0097f9fb0b98c4fb2121165
+hash.1: 8a294c00a3f0d5b071d71f7005aa7f2b58767ffe3bee78ff70b991f4e09a7370
+commit.1: b66af5b792af137cb1290fb4983c26f6a03066db
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-30T03:12:49Z

@@ -61,6 +61,31 @@ enum Command {
         #[command(subcommand)]
         sub: IndexCommand,
     },
+
+    /// Accept bilink endpoints, establishing their hash baseline
+    ///
+    /// Forms (like git add):
+    ///   accept .                 — all PENDING in current .bilink/
+    ///   accept commands/         — PENDING endpoints pointing into that directory
+    ///   accept commands/check.md — PENDING endpoints pointing to that file
+    ///   accept <uuid>            — both endpoints of that UUID
+    ///   accept <uuid>.<0|1>      — one specific endpoint
+    Accept {
+        /// path, UUID, or UUID.N
+        target: String,
+        /// Override the computed hash
+        #[arg(long)]
+        hash: Option<String>,
+        /// Override the git commit
+        #[arg(long)]
+        commit: Option<String>,
+    },
+
+    /// Show status of all bilinks in the current layer (like git status)
+    Status {
+        /// Layer directory to inspect (default: current directory)
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -134,6 +159,18 @@ fn parse_tip_ref(root: &Path, ref_str: &str) -> anyhow::Result<bilinker::link::L
 fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
     let (root, _) = bilinker::config::Config::load_from(cwd)?;
     Ok(root)
+}
+
+fn parse_accept_target(target: &str) -> anyhow::Result<(String, u8)> {
+    let dot = target.rfind('.')
+        .ok_or_else(|| anyhow::anyhow!("target must be <uuid>.<0|1>, got: {target}"))?;
+    let n: u8 = target[dot + 1..]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("endpoint index must be 0 or 1, got: '{}'", &target[dot + 1..]))?;
+    if n > 1 {
+        anyhow::bail!("endpoint index must be 0 or 1, got: {n}");
+    }
+    Ok((target[..dot].to_string(), n))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -295,6 +332,54 @@ fn main() -> anyhow::Result<()> {
                 if any_problem { std::process::exit(1); }
             }
         },
+
+        Command::Accept { target, hash, commit } => {
+            // Dispatch: uuid.N  |  uuid (both endpoints)  |  path / "."
+            let is_uuid_n = (target.ends_with(".0") || target.ends_with(".1"))
+                && target[..target.len()-2].chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+            let is_path = target == "." || target.contains('/') || target.contains('\\')
+                || std::path::Path::new(&target).exists();
+
+            if is_uuid_n {
+                // Single endpoint
+                let (uuid, n) = parse_accept_target(&target)?;
+                let bilink_path = bilinker::accept::find_bilink_path(&cwd.join(".bilink"), &uuid)?;
+                let r = bilinker::accept::accept(&bilink_path, n, hash.as_deref(), commit.as_deref())?;
+                print_accept_result(&r);
+            } else if is_path {
+                // Bulk: all PENDING under path filter
+                let filter = if target == "." { None } else { Some(target.trim_end_matches('/')) };
+                let results = bilinker::accept::accept_layer(&cwd, filter)?;
+                if results.is_empty() {
+                    eprintln!("nothing to accept");
+                } else {
+                    for r in &results {
+                        print_accept_result(r);
+                    }
+                    eprintln!("accepted {} endpoint(s)", results.len());
+                }
+            } else {
+                // UUID prefix: accept both endpoints
+                let bilink_dir = cwd.join(".bilink");
+                let bilink_path = bilinker::accept::find_bilink_path(&bilink_dir, &target)?;
+                let mut count = 0;
+                for n in [0u8, 1u8] {
+                    match bilinker::accept::accept(&bilink_path, n, hash.as_deref(), commit.as_deref()) {
+                        Ok(r) => { print_accept_result(&r); count += 1; }
+                        Err(e) => eprintln!("warn .{n}: {e}"),
+                    }
+                }
+                if count > 0 {
+                    eprintln!("note: adjacent node will detect CHAIN_DIRTY on next check");
+                }
+            }
+        }
+
+        Command::Status { path } => {
+            let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                .unwrap_or_else(|| cwd.clone());
+            print_status(&layer)?;
+        }
 
         Command::Chain { sub } => match sub {
             ChainCommand::New { tip, mid } => {
@@ -488,6 +573,93 @@ fn watch(root: &Path) -> anyhow::Result<()> {
             break 'paths;
         }
     }
+    Ok(())
+}
+
+fn print_accept_result(r: &bilinker::accept::AcceptResult) {
+    let commit = if r.commit.is_empty() { "(uncommitted)".to_string() } else { r.commit[..12.min(r.commit.len())].to_string() };
+    println!("  {}.{}  {}  {}", &r.uuid[..8.min(r.uuid.len())], r.n, &r.hash[..12.min(r.hash.len())], commit);
+}
+
+fn print_status(layer: &Path) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+    use bilinker::bilink::BiLinkFile;
+    use bilinker::link::LinkEndpoint;
+
+    let bilink_dir = layer.join(".bilink");
+    if !bilink_dir.exists() {
+        eprintln!("no .bilink/ in {}", layer.display());
+        return Ok(());
+    }
+
+    struct Row {
+        file_name: String,
+        uuid_short: String,
+        s0: String,
+        s1: String,
+    }
+
+    let mut groups: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+
+    for entry in std::fs::read_dir(&bilink_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
+        if path.file_name().and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.')).unwrap_or(false) { continue; }
+
+        let Ok(bl) = BiLinkFile::load(&path) else { continue };
+
+        // Group by the structural endpoint's parent directory
+        let (dir, file_name) = {
+            let sref = match (&bl.link0, &bl.link1) {
+                (LinkEndpoint::Structural(s), _) => Some(&s.file),
+                (_, LinkEndpoint::Structural(s)) => Some(&s.file),
+                _ => None,
+            };
+            match sref {
+                Some(f) => {
+                    let p = std::path::Path::new(f);
+                    let dir = p.parent().and_then(|d| if d.as_os_str().is_empty() { None } else { Some(d) })
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_else(|| ".".to_string());
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| f.clone());
+                    (dir, name)
+                }
+                None => ("(layer)".to_string(), bl.uuid.clone()),
+            }
+        };
+
+        let uuid_short = bl.uuid[..8.min(bl.uuid.len())].to_string();
+        let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
+        let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
+
+        groups.entry(dir).or_default().push(Row { file_name, uuid_short, s0, s1 });
+    }
+
+    if groups.is_empty() {
+        println!("(no bilinks)");
+        return Ok(());
+    }
+
+    for (dir, mut rows) in groups {
+        println!("{dir}/");
+        rows.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+
+        let max_name = rows.iter().map(|r| r.file_name.len()).max().unwrap_or(0);
+        let mut prev = String::new();
+        for row in &rows {
+            let label = if row.file_name != prev {
+                format!("{:<width$}", row.file_name, width = max_name)
+            } else {
+                format!("{:<width$}", "", width = max_name)
+            };
+            println!("  {}  {}  ({}, {})", label, row.uuid_short, row.s0, row.s1);
+            prev = row.file_name.clone();
+        }
+        println!();
+    }
+
     Ok(())
 }
 

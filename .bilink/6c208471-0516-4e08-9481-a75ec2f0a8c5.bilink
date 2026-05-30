@@ -1,2 +1,11 @@
 link.0: ../..
 link.1: crates/bilinker/src/get.rs
+
+# Cache
+hash.0: 057053d929e411d3e125fc3004bc16dfe03f48d597b890bfdae4aedc751a6818
+commit.0: 82022b1eb8cccfb1a0097f9fb0b98c4fb2121165
+hash.1: e05de0a28cf55dea8102190cc47c27fb37265397f826af4dbf80d9fae51821ee
+commit.1: 1547a31e0526371fffd7fbcbc222c6e5dc3f2037
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-30T03:12:49Z
