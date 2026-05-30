@@ -11,9 +11,10 @@ path = "src/main.rs"
 bilinker = { path = "../bilinker" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-chrono = "0.4"
 notify = "6"
 
 [dev-dependencies]
 bilinker = { path = "../bilinker" }
 tempfile = "3"
+sha2 = "0.10"
+hex = "0.4"

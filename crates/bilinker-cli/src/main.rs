@@ -55,6 +55,12 @@ enum Command {
         #[command(subcommand)]
         sub: ChainCommand,
     },
+
+    /// Build or check the .bilink/.index
+    Index {
+        #[command(subcommand)]
+        sub: IndexCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -62,8 +68,8 @@ enum ChainCommand {
     /// Create a new chain or direct link
     ///
     /// Examples:
-    ///   bilinker chain new --tip . spec/file.md --tip .estrato/impl src/file.rs
-    ///   bilinker chain new --tip . spec/file.md --tip .estrato/impl src/Foo.java:42:5
+    ///   bilinker chain new --tip . spec/file.md --tip .stratum/impl src/file.rs
+    ///   bilinker chain new --tip . spec/file.md --tip .stratum/impl src/Foo.java:42:5
     New {
         /// Tip: LAYER FILE[:LINE:COL]  (specify exactly twice)
         #[arg(long = "tip", num_args = 2, value_names = ["LAYER", "FILE"], action = ArgAction::Append)]
@@ -76,6 +82,22 @@ enum ChainCommand {
     Status { uuid: String },
     /// List all chains in the project
     List,
+}
+
+#[derive(Subcommand)]
+enum IndexCommand {
+    /// Build .bilink/.index for fast file lookups
+    Build {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        recursive: bool,
+    },
+    /// Show index status without modifying files
+    Status {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        recursive: bool,
+    },
 }
 
 fn parse_pos(s: &str) -> anyhow::Result<(usize, usize)> {
@@ -225,6 +247,55 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        Command::Index { sub } => match sub {
+            IndexCommand::Build { path, recursive } => {
+                let root = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                    .unwrap_or_else(|| cwd.clone());
+                let layers = if recursive {
+                    bilinker::index::layer_roots(&root)
+                } else {
+                    vec![root]
+                };
+                for layer in layers {
+                    match bilinker::index::build(&layer) {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            let rel = layer.strip_prefix(&cwd).unwrap_or(&layer);
+                            println!("index: {}/.bilink/.index  ({n} entries)", rel.display());
+                        }
+                        Err(e) => eprintln!("error building index for {}: {e}", layer.display()),
+                    }
+                }
+            }
+
+            IndexCommand::Status { path, recursive } => {
+                let root = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                    .unwrap_or_else(|| cwd.clone());
+                let layers = if recursive {
+                    bilinker::index::layer_roots(&root)
+                } else {
+                    vec![root]
+                };
+                let mut any_problem = false;
+                for layer in layers {
+                    let rel = layer.strip_prefix(&cwd).unwrap_or(&layer);
+                    match bilinker::index::status(&layer)? {
+                        bilinker::index::IndexStatus::Ok =>
+                            println!("{}/.bilink/.index  OK", rel.display()),
+                        bilinker::index::IndexStatus::Stale { stale_count } => {
+                            println!("{}/.bilink/.index  STALE  ({stale_count} bilink(s) newer)", rel.display());
+                            any_problem = true;
+                        }
+                        bilinker::index::IndexStatus::Missing => {
+                            println!("{}/.bilink/.index  MISSING", rel.display());
+                            any_problem = true;
+                        }
+                    }
+                }
+                if any_problem { std::process::exit(1); }
+            }
+        },
+
         Command::Chain { sub } => match sub {
             ChainCommand::New { tip, mid } => {
                 if tip.len() != 4 {
@@ -364,15 +435,9 @@ fn watch(root: &Path) -> anyhow::Result<()> {
     use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
     use bilinker::bilink::{walkdir, BiLinkFile};
     use bilinker::link::LinkEndpoint;
-    use std::io::Write;
     use std::sync::mpsc;
 
-    let log_path = root.join(".bilink").join("watch.log");
-    std::fs::create_dir_all(root.join(".bilink"))?;
-    let mut log_file = std::fs::OpenOptions::new()
-        .create(true).append(true).open(&log_path)?;
-
-    eprintln!("watching {}  (log: {}  Ctrl-C to stop)", root.display(), log_path.display());
+    eprintln!("watching {}  (Ctrl-C to stop)", root.display());
 
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = recommended_watcher(tx)?;
@@ -415,13 +480,9 @@ fn watch(root: &Path) -> anyhow::Result<()> {
             }
 
             if !chains.is_empty() {
-                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 for chain in &chains {
-                    let line = format!("{ts} ALTERED  {rel}  chain {chain}");
-                    println!("{line}");
-                    let _ = writeln!(log_file, "{line}");
+                    println!("ALTERED  {rel}  chain {chain}");
                 }
-                let _ = log_file.flush();
             }
 
             break 'paths;

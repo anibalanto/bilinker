@@ -88,10 +88,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "estrato",
  "hex",
  "serde",
  "sha2",
+ "stratum",
  "tempfile",
  "toml",
  "tree-sitter",
@@ -106,7 +106,9 @@ dependencies = [
  "anyhow",
  "bilinker",
  "clap",
+ "hex",
  "notify",
+ "sha2",
  "tempfile",
 ]
 
@@ -277,10 +279,6 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "estrato"
-version = "0.1.0"
 
 [[package]]
 name = "fastrand"
@@ -758,6 +756,10 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "stratum"
+version = "0.1.0"
 
 [[package]]
 name = "strsim"

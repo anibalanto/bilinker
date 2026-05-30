@@ -39,13 +39,13 @@ pub fn chain_new(
     // Same-layer direct link: both tips in the same directory → one file.
     if n == 2 && normalize(&all_layers[0]) == normalize(&all_layers[1]) {
         let bl = BiLinkFile {
-            uuid:        uuid.clone(),
-            link0:       tips[0].1.clone(),
-            link1:       tips[1].1.clone(),
-            hash0:       None, hash1: None,
-            range0:      None, range1: None,
-            state0:      None, state1: None,
-            commit0:     None, commit1: None,
+            uuid:      uuid.clone(),
+            link0:     tips[0].1.clone(),
+            link1:     tips[1].1.clone(),
+            hash0: None, commit0: None,
+            hash1: None, commit1: None,
+            range0:    None, range1: None,
+            state0:    None, state1: None,
             resolved_at: None,
         };
         let path = bilink_path(root, &all_layers[0], &uuid);
@@ -71,13 +71,13 @@ pub fn chain_new(
         };
 
         let bl = BiLinkFile {
-            uuid:        uuid.clone(),
+            uuid:      uuid.clone(),
             link0,
             link1,
-            hash0:       None, hash1: None,
-            range0:      None, range1: None,
-            state0:      None, state1: None,
-            commit0:     None, commit1: None,
+            hash0: None, commit0: None,
+            hash1: None, commit1: None,
+            range0:    None, range1: None,
+            state0:    None, state1: None,
             resolved_at: None,
         };
         let path = bilink_path(root, layer, &uuid);
@@ -109,7 +109,7 @@ fn layer_endpoint(from_layer: &Path, to_layer: &Path) -> Result<LinkEndpoint> {
     let rel = diff_paths(to_layer, from_layer);
     let rel_str = rel.to_str()
         .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {}", rel.display()))?;
-    let tokens = estrato::parse_path(rel_str)
+    let tokens = stratum::parse_path(rel_str)
         .map_err(|e| anyhow::anyhow!("invalid layer path '{rel_str}': {e}"))?;
     Ok(LinkEndpoint::Layer(tokens))
 }
@@ -173,15 +173,15 @@ mod tests {
     #[test]
     fn diff_paths_root_to_child() {
         assert_eq!(
-            diff_paths(Path::new(".estrato/tech-decisions"), Path::new(".")),
-            PathBuf::from(".estrato/tech-decisions")
+            diff_paths(Path::new(".stratum/tech-decisions"), Path::new(".")),
+            PathBuf::from(".stratum/tech-decisions")
         );
     }
 
     #[test]
     fn diff_paths_child_to_root() {
         assert_eq!(
-            diff_paths(Path::new("."), Path::new(".estrato/tech-decisions")),
+            diff_paths(Path::new("."), Path::new(".stratum/tech-decisions")),
             PathBuf::from("../..")
         );
     }
@@ -190,10 +190,10 @@ mod tests {
     fn diff_paths_sibling_layers() {
         assert_eq!(
             diff_paths(
-                Path::new(".estrato/tech-decisions/.estrato/impl"),
-                Path::new(".estrato/tech-decisions"),
+                Path::new(".stratum/tech-decisions/.stratum/impl"),
+                Path::new(".stratum/tech-decisions"),
             ),
-            PathBuf::from(".estrato/impl")
+            PathBuf::from(".stratum/impl")
         );
     }
 
@@ -221,7 +221,7 @@ mod tests {
         let root = dir.path();
         let tips = vec![
             (PathBuf::from("."),             whole_file("a.md")),
-            (PathBuf::from(".estrato/impl"), whole_file("b.md")),
+            (PathBuf::from(".stratum/impl"), whole_file("b.md")),
         ];
         let result = chain_new(root, &tips, &[]).unwrap();
 
@@ -242,9 +242,9 @@ mod tests {
         let root = dir.path();
         let tips = vec![
             (PathBuf::from("."),                            whole_file("a.md")),
-            (PathBuf::from(".estrato/td/.estrato/impl"),   whole_file("b.md")),
+            (PathBuf::from(".stratum/td/.stratum/impl"),   whole_file("b.md")),
         ];
-        let mids = vec![PathBuf::from(".estrato/td")];
+        let mids = vec![PathBuf::from(".stratum/td")];
 
         let result = chain_new(root, &tips, &mids).unwrap();
         assert_eq!(result.files.len(), 3);
@@ -269,7 +269,7 @@ mod tests {
         let root = dir.path();
         let tips = vec![
             (PathBuf::from("."),             whole_file("a.md")),
-            (PathBuf::from(".estrato/impl"), whole_file("b.md")),
+            (PathBuf::from(".stratum/impl"), whole_file("b.md")),
         ];
         let result = chain_new(root, &tips, &[]).unwrap();
 
@@ -285,12 +285,12 @@ mod tests {
         let root = dir.path();
         let tips = vec![
             (PathBuf::from("."),               whole_file("a.md")),
-            (PathBuf::from(".estrato/impl"),   whole_file("b.md")),
+            (PathBuf::from(".stratum/impl"),   whole_file("b.md")),
         ];
         let result = chain_new(root, &tips, &[]).unwrap();
 
         let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
-        assert_eq!(tip0.link1.to_string(), ".estrato/impl");
+        assert_eq!(tip0.link1.to_string(), ".stratum/impl");
 
         let tip1 = BiLinkFile::load(&result.files[1]).unwrap();
         assert_eq!(tip1.link0.to_string(), "../..");

@@ -52,6 +52,7 @@ fn capture_identifies_workspace_file_and_method() {
 // ─── 2. get matches sed ────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "requires fixture persona-voting-impl.bilink — create with: bilinker chain new"]
 fn get_content_matches_sed_selection() {
     let _guard = PERSONA_LOCK.lock().unwrap();
     let (get_out, stderr, ok) = run(&["get", "persona-voting-impl.0"]);
@@ -181,12 +182,12 @@ fn chain_new_direct_link_creates_single_file() {
 #[test]
 fn chain_new_two_layers_creates_two_files() {
     let (_tmp, root) = isolated_workspace();
-    std::fs::create_dir_all(root.join(".estrato/impl")).unwrap();
+    std::fs::create_dir_all(root.join(".stratum/impl")).unwrap();
 
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new",
         "--tip", ".", "docs/spec.md",
-        "--tip", ".estrato/impl", "src/Service.java",
+        "--tip", ".stratum/impl", "src/Service.java",
     ]);
     assert!(ok, "chain new failed:\n{stderr}");
 
@@ -199,13 +200,13 @@ fn chain_new_two_layers_creates_two_files() {
     };
 
     assert_eq!(count_bilinks(&root.join(".bilink")), 1, "tip at root");
-    assert_eq!(count_bilinks(&root.join(".estrato/impl/.bilink")), 1, "tip at impl");
+    assert_eq!(count_bilinks(&root.join(".stratum/impl/.bilink")), 1, "tip at impl");
 }
 
 // ─── 6. check ─────────────────────────────────────────────────────────────
 
 #[test]
-fn check_marks_whole_file_endpoint_ok() {
+fn check_marks_new_chain_as_pending() {
     let (_tmp, root) = isolated_workspace();
 
     run_in(&root, &[
@@ -214,13 +215,15 @@ fn check_marks_whole_file_endpoint_ok() {
         "--tip", ".", "src/Service.java",
     ]);
 
-    let (_, stderr, ok) = run_in(&root, &["check", "."]);
-    assert!(ok, "check failed with non-clean state:\n{stderr}");
-    assert!(stderr.contains("all clean"), "expected 'all clean' message");
+    let (stdout, _, ok) = run_in(&root, &["check", "."]);
+    // No accepted entries yet → PENDING
+    assert!(!ok, "check should exit 1 on PENDING state");
+    assert!(stdout.contains("PENDING"), "expected PENDING in output:\n{stdout}");
 }
 
 #[test]
-fn check_marks_altered_after_file_change() {
+fn check_marks_altered_after_accept_and_file_change() {
+    use sha2::{Digest, Sha256};
     let (_tmp, root) = isolated_workspace();
 
     run_in(&root, &[
@@ -229,8 +232,27 @@ fn check_marks_altered_after_file_change() {
         "--tip", ".", "src/Service.java",
     ]);
 
+    // First check writes state/range; accepted.N remains empty
     run_in(&root, &["check", "."]);
 
+    // Simulate accept: inject accepted entry with current file hash
+    let bilink_dir = root.join(".bilink");
+    let entry = std::fs::read_dir(&bilink_dir).unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().and_then(|x| x.to_str()) == Some("bilink"))
+        .expect("no bilink file");
+    let spec_bytes = std::fs::read(root.join("docs/spec.md")).unwrap();
+    let spec_hash = format!("{:x}", Sha256::digest(&spec_bytes));
+    let svc_bytes = std::fs::read(root.join("src/Service.java")).unwrap();
+    let svc_hash = format!("{:x}", Sha256::digest(&svc_bytes));
+    let current = std::fs::read_to_string(entry.path()).unwrap();
+    let patched = current.replace(
+        "\n# Cache\n",
+        &format!("\n# Cache\nhash.0: {spec_hash}\ncommit.0: deadbeef\nhash.1: {svc_hash}\ncommit.1: deadbeef\n"),
+    );
+    std::fs::write(entry.path(), patched).unwrap();
+
+    // Modify the file → hash no longer in accepted → ALTERED
     std::fs::write(root.join("docs/spec.md"), "# Modified\n\nDifferent content.\n").unwrap();
 
     let (stdout, _, ok) = run_in(&root, &["check", "."]);
@@ -263,12 +285,12 @@ fn chain_list_shows_created_chain() {
 #[test]
 fn chain_status_shows_nodes() {
     let (_tmp, root) = isolated_workspace();
-    std::fs::create_dir_all(root.join(".estrato/impl")).unwrap();
+    std::fs::create_dir_all(root.join(".stratum/impl")).unwrap();
 
     let (create_out, _, ok) = run_in(&root, &[
         "chain", "new",
         "--tip", ".", "docs/spec.md",
-        "--tip", ".estrato/impl", "src/Service.java",
+        "--tip", ".stratum/impl", "src/Service.java",
     ]);
     assert!(ok);
 
@@ -301,6 +323,121 @@ fn get_by_file_returns_bilink_after_check() {
     let (out, _, ok) = run_in(&root, &["get", "docs/spec.md"]);
     assert!(ok, "get by file failed");
     assert!(!out.is_empty(), "expected at least one bilink in output:\n{out}");
+}
+
+// ─── 9. bilinker index ────────────────────────────────────────────────────
+
+#[test]
+fn index_build_creates_index_file() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+
+    let (stdout, stderr, ok) = run_in(&root, &["index", "build"]);
+    assert!(ok, "index build failed:\n{stderr}");
+    assert!(stdout.contains("entries"), "expected entry count in output:\n{stdout}");
+
+    let index_path = root.join(".bilink/.index");
+    assert!(index_path.exists(), ".bilink/.index was not created");
+
+    let contents = std::fs::read_to_string(&index_path).unwrap();
+    assert!(contents.contains("docs/spec.md"),   "spec.md missing from index");
+    assert!(contents.contains("src/Service.java"), "Service.java missing from index");
+}
+
+#[test]
+fn index_gitignore_contains_index_entry() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+    run_in(&root, &["index", "build"]);
+
+    let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
+    assert!(gi.contains(".index"),   ".gitignore missing .index");
+    assert!(gi.contains(".pending/"), ".gitignore missing .pending/");
+}
+
+#[test]
+fn index_status_ok_after_build() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+    run_in(&root, &["index", "build"]);
+
+    let (stdout, _, ok) = run_in(&root, &["index", "status"]);
+    assert!(ok, "index status should exit 0 when OK");
+    assert!(stdout.contains("OK"), "expected OK in status output:\n{stdout}");
+}
+
+#[test]
+fn index_status_stale_after_new_chain() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+    run_in(&root, &["index", "build"]);
+
+    // Create a new chain after the index was built
+    std::fs::write(root.join("docs/other.md"), "# Other\n").unwrap();
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/other.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+
+    let (stdout, _, ok) = run_in(&root, &["index", "status"]);
+    assert!(!ok, "index status should exit 1 when stale");
+    assert!(stdout.contains("STALE"), "expected STALE in status output:\n{stdout}");
+}
+
+#[test]
+fn index_status_missing_when_never_built() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".", "src/Service.java",
+    ]);
+
+    let (stdout, _, ok) = run_in(&root, &["index", "status"]);
+    assert!(!ok, "index status should exit 1 when missing");
+    assert!(stdout.contains("MISSING"), "expected MISSING in status output:\n{stdout}");
+}
+
+#[test]
+fn index_recursive_covers_all_layers() {
+    let (_tmp, root) = isolated_workspace();
+    std::fs::create_dir_all(root.join(".stratum/impl")).unwrap();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", ".", "docs/spec.md",
+        "--tip", ".stratum/impl", "src/Service.java",
+    ]);
+
+    let (stdout, stderr, ok) = run_in(&root, &["index", "build", "--recursive"]);
+    assert!(ok, "index build --recursive failed:\n{stderr}");
+
+    // Both layers should have an index
+    assert!(root.join(".bilink/.index").exists(), "root layer index missing");
+    assert!(root.join(".stratum/impl/.bilink/.index").exists(), "impl layer index missing");
+    assert_eq!(stdout.lines().count(), 2, "expected two index lines in output:\n{stdout}");
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

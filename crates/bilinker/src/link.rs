@@ -1,10 +1,11 @@
 use std::fmt;
 use std::str::FromStr;
 use anyhow::{bail, Context};
-use estrato::EstratPath;
+use stratum::StratumPath;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EndpointState {
+    Pending,
     Ok,
     Moved,
     Displaced,
@@ -20,6 +21,7 @@ pub enum EndpointState {
 impl fmt::Display for EndpointState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Pending     => write!(f, "PENDING"),
             Self::Ok          => write!(f, "OK"),
             Self::Moved       => write!(f, "MOVED"),
             Self::Displaced   => write!(f, "DISPLACED"),
@@ -38,6 +40,7 @@ impl FromStr for EndpointState {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim() {
+            "PENDING"      => Ok(Self::Pending),
             "OK"           => Ok(Self::Ok),
             "MOVED"        => Ok(Self::Moved),
             "DISPLACED"    => Ok(Self::Displaced),
@@ -54,7 +57,7 @@ impl FromStr for EndpointState {
 }
 
 /// A parsed bilink endpoint: `file [:: query [:: start~end]]`
-/// or an estrato path pointing to a layer directory.
+/// or a stratum path pointing to a layer directory.
 ///
 /// Disambiguation: if the string contains `::` it is always Structural.
 /// If it has no `::`, it is Structural when the last path component has a
@@ -62,7 +65,7 @@ impl FromStr for EndpointState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinkEndpoint {
     Structural(StructuralRef),
-    Layer(EstratPath),
+    Layer(StratumPath),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,8 +111,8 @@ impl FromStr for LinkEndpoint {
                 range: None,
             }));
         }
-        let tokens = estrato::parse_path(s.trim())
-            .map_err(|e| anyhow::anyhow!("invalid estrato path '{s}': {e}"))?;
+        let tokens = stratum::parse_path(s.trim())
+            .map_err(|e| anyhow::anyhow!("invalid stratum path '{s}': {e}"))?;
         Ok(LinkEndpoint::Layer(tokens))
     }
 }
@@ -145,7 +148,7 @@ impl fmt::Display for LinkEndpoint {
         match self {
             LinkEndpoint::Structural(r) => write!(f, "{r}"),
             LinkEndpoint::Layer(tokens) => {
-                use estrato::PathToken;
+                use stratum::PathToken;
                 for token in tokens {
                     match token {
                         PathToken::Down(name) => write!(f, ">{name}")?,
@@ -217,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_layer_estrato_down() {
+    fn parse_layer_stratum_down() {
         let ep: LinkEndpoint = ">tech-decisions>impl".parse().unwrap();
         assert!(matches!(ep, LinkEndpoint::Layer(_)));
     }

@@ -9,13 +9,13 @@ pub struct BiLinkFile {
     pub link0: LinkEndpoint,
     pub link1: LinkEndpoint,
     pub hash0: Option<String>,
+    pub commit0: Option<String>,
     pub hash1: Option<String>,
+    pub commit1: Option<String>,
     pub range0: Option<ByteRange>,
     pub range1: Option<ByteRange>,
     pub state0: Option<EndpointState>,
     pub state1: Option<EndpointState>,
-    pub commit0: Option<String>,
-    pub commit1: Option<String>,
     pub resolved_at: Option<String>,
 }
 
@@ -32,26 +32,25 @@ impl BiLinkFile {
     }
 
     pub fn parse(text: &str, uuid: &str) -> Result<Self> {
-        let mut id_field: Option<String> = None;
         let mut link0: Option<String> = None;
         let mut link1: Option<String> = None;
         let mut hash0 = None;
+        let mut commit0 = None;
         let mut hash1 = None;
+        let mut commit1 = None;
         let mut range0 = None;
         let mut range1 = None;
         let mut state0 = None;
         let mut state1 = None;
-        let mut commit0 = None;
-        let mut commit1 = None;
         let mut resolved_at = None;
         let mut current_key: Option<&'static str> = None;
 
         const KEYS: &[&str] = &[
-            "id", "link.0", "link.1",
-            "hash.0", "hash.1",
+            "link.0", "link.1",
+            "hash.0", "commit.0",
+            "hash.1", "commit.1",
             "range.0", "range.1",
             "state.0", "state.1",
-            "commit.0", "commit.1",
             "resolved_at",
         ];
 
@@ -70,19 +69,18 @@ impl BiLinkFile {
                 let key   = line[..colon].trim();
                 let value = line[colon + 1..].trim().to_string();
                 current_key = Some(match key {
-                    "id"         => { id_field   = Some(value); "id" }
-                    "link.0"     => { link0       = Some(value); "link.0" }
-                    "link.1"     => { link1       = Some(value); "link.1" }
-                    "hash.0"     => { hash0       = Some(value); "" }
-                    "hash.1"     => { hash1       = Some(value); "" }
-                    "range.0"    => { range0      = Some(value); "" }
-                    "range.1"    => { range1      = Some(value); "" }
-                    "state.0"    => { state0      = Some(value); "" }
-                    "state.1"    => { state1      = Some(value); "" }
-                    "commit.0"   => { commit0     = Some(value); "" }
-                    "commit.1"   => { commit1     = Some(value); "" }
-                    "resolved_at"=> { resolved_at = Some(value); "" }
-                    _            => ""
+                    "link.0"      => { link0      = Some(value); "link.0" }
+                    "link.1"      => { link1      = Some(value); "link.1" }
+                    "hash.0"      => { hash0      = Some(value); "" }
+                    "commit.0"    => { commit0    = Some(value); "" }
+                    "hash.1"      => { hash1      = Some(value); "" }
+                    "commit.1"    => { commit1    = Some(value); "" }
+                    "range.0"     => { range0     = Some(value); "" }
+                    "range.1"     => { range1     = Some(value); "" }
+                    "state.0"     => { state0     = Some(value); "" }
+                    "state.1"     => { state1     = Some(value); "" }
+                    "resolved_at" => { resolved_at = Some(value); "" }
+                    _             => ""
                 });
             } else if let Some(key) = current_key {
                 let cont = line.trim();
@@ -100,14 +98,12 @@ impl BiLinkFile {
                 .with_context(|| format!("parsing {field}"))
         };
 
-        let final_uuid = id_field.unwrap_or_else(|| uuid.to_string());
-
         Ok(BiLinkFile {
-            uuid:        final_uuid,
+            uuid:        uuid.to_string(),
             link0:       parse_ep(link0, "link.0")?,
             link1:       parse_ep(link1, "link.1")?,
-            hash0,
-            hash1,
+            hash0, commit0,
+            hash1, commit1,
             range0:      range0.as_deref().map(str::parse).transpose()
                              .context("parsing range.0")?,
             range1:      range1.as_deref().map(str::parse).transpose()
@@ -116,8 +112,6 @@ impl BiLinkFile {
                              .context("parsing state.0")?,
             state1:      state1.as_deref().map(str::parse).transpose()
                              .context("parsing state.1")?,
-            commit0,
-            commit1,
             resolved_at,
         })
     }
@@ -132,18 +126,20 @@ impl BiLinkFile {
         push_field(&mut out, "link.1", &self.link1.to_string());
 
         let has_cache = self.hash0.is_some() || self.hash1.is_some()
-            || self.state0.is_some() || self.state1.is_some();
+            || self.state0.is_some() || self.state1.is_some()
+            || self.range0.is_some() || self.range1.is_some()
+            || self.resolved_at.is_some();
 
         if has_cache {
-            out.push_str("\n# --- cache generada por bilinker, no editar a mano ---\n");
-            if let Some(h) = &self.hash0  { push_field(&mut out, "hash.0",  h); }
-            if let Some(r) = &self.range0 { push_field(&mut out, "range.0", &r.to_string()); }
-            if let Some(h) = &self.hash1  { push_field(&mut out, "hash.1",  h); }
-            if let Some(r) = &self.range1 { push_field(&mut out, "range.1", &r.to_string()); }
-            if let Some(s) = &self.state0 { push_field(&mut out, "state.0", &s.to_string()); }
-            if let Some(s) = &self.state1 { push_field(&mut out, "state.1", &s.to_string()); }
-            if let Some(c) = &self.commit0 { push_field(&mut out, "commit.0", c); }
-            if let Some(c) = &self.commit1 { push_field(&mut out, "commit.1", c); }
+            out.push_str("\n# Cache\n");
+            if let Some(h) = &self.hash0     { push_field(&mut out, "hash.0",     h); }
+            if let Some(c) = &self.commit0   { push_field(&mut out, "commit.0",   c); }
+            if let Some(r) = &self.range0    { push_field(&mut out, "range.0",    &r.to_string()); }
+            if let Some(h) = &self.hash1     { push_field(&mut out, "hash.1",     h); }
+            if let Some(c) = &self.commit1   { push_field(&mut out, "commit.1",   c); }
+            if let Some(r) = &self.range1    { push_field(&mut out, "range.1",    &r.to_string()); }
+            if let Some(s) = &self.state0    { push_field(&mut out, "state.0",    &s.to_string()); }
+            if let Some(s) = &self.state1    { push_field(&mut out, "state.1",    &s.to_string()); }
             if let Some(t) = &self.resolved_at { push_field(&mut out, "resolved_at", t); }
         }
 
@@ -179,7 +175,7 @@ mod tests {
     }
 
     fn layer(path: &str) -> LinkEndpoint {
-        LinkEndpoint::Layer(estrato::parse_path(path).unwrap())
+        LinkEndpoint::Layer(stratum::parse_path(path).unwrap())
     }
 
     #[test]
@@ -188,13 +184,13 @@ mod tests {
         let path = dir.path().join("test-uuid.bilink");
 
         let original = BiLinkFile {
-            uuid:        "test-uuid".into(),
-            link0:       structural("file.md"),
-            link1:       layer(".estrato/impl"),
-            hash0: None, hash1: None,
+            uuid:      "test-uuid".into(),
+            link0:     structural("file.md"),
+            link1:     layer(".stratum/impl"),
+            hash0: None, commit0: None,
+            hash1: None, commit1: None,
             range0: None, range1: None,
             state0: None, state1: None,
-            commit0: None, commit1: None,
             resolved_at: None,
         };
         original.write(&path).unwrap();
@@ -211,42 +207,35 @@ mod tests {
         let path = dir.path().join("abc123.bilink");
 
         let original = BiLinkFile {
-            uuid:        "abc123".into(),
-            link0:       structural("a.md"),
-            link1:       structural("b.md"),
-            hash0:       Some("aabbcc".into()),
-            hash1:       Some("ddeeff".into()),
+            uuid:      "abc123".into(),
+            link0:     structural("a.md"),
+            link1:     structural("b.md"),
+            hash0:   Some("aabbcc".into()),
+            commit0: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into()),
+            hash1:   Some("ddeeff".into()),
+            commit1: Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1".into()),
             range0:      Some(ByteRange { start: 10, end: 50 }),
             range1:      Some(ByteRange { start: 0, end: 100 }),
             state0:      Some(EndpointState::Ok),
             state1:      Some(EndpointState::Altered),
-            commit0:     Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into()),
-            commit1:     None,
-            resolved_at: Some("2026-05-25T00:00:00Z".into()),
+            resolved_at: Some("2026-05-27T00:00:00Z".into()),
         };
         original.write(&path).unwrap();
 
         let loaded = BiLinkFile::load(&path).unwrap();
         assert_eq!(loaded.hash0.as_deref(), Some("aabbcc"));
+        assert_eq!(loaded.commit0.as_deref(), Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
         assert_eq!(loaded.hash1.as_deref(), Some("ddeeff"));
+        assert_eq!(loaded.commit1.as_deref(), Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"));
         assert_eq!(loaded.range0, Some(ByteRange { start: 10, end: 50 }));
         assert_eq!(loaded.state0, Some(EndpointState::Ok));
         assert_eq!(loaded.state1, Some(EndpointState::Altered));
-        assert_eq!(loaded.commit0.as_deref(), Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
-        assert!(loaded.commit1.is_none());
-        assert_eq!(loaded.resolved_at.as_deref(), Some("2026-05-25T00:00:00Z"));
+        assert_eq!(loaded.resolved_at.as_deref(), Some("2026-05-27T00:00:00Z"));
     }
 
     #[test]
-    fn parse_legacy_id_field() {
-        let text = "id: my-old-id\nlink.0: file.md\nlink.1: .estrato/impl\n";
-        let bl = BiLinkFile::parse(text, "ignored-uuid").unwrap();
-        assert_eq!(bl.uuid, "my-old-id");
-    }
-
-    #[test]
-    fn parse_uuid_from_filename_when_no_id_field() {
-        let text = "link.0: file.md\nlink.1: .estrato/impl\n";
+    fn uuid_comes_from_filename() {
+        let text = "link.0: file.md\nlink.1: .stratum/impl\n";
         let bl = BiLinkFile::parse(text, "file-stem-uuid").unwrap();
         assert_eq!(bl.uuid, "file-stem-uuid");
     }
@@ -255,11 +244,11 @@ mod tests {
     fn find_by_id_locates_file() {
         let dir = tempdir().unwrap();
         let bl = BiLinkFile {
-            uuid: "my-uuid".into(),
-            link0: structural("a.md"),
-            link1: structural("b.md"),
-            commit0: None, commit1: None,
-            hash0: None, hash1: None,
+            uuid:      "my-uuid".into(),
+            link0:     structural("a.md"),
+            link1:     structural("b.md"),
+            hash0: None, commit0: None,
+            hash1: None, commit1: None,
             range0: None, range1: None,
             state0: None, state1: None,
             resolved_at: None,
