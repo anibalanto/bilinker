@@ -1,3 +1,12 @@
 link.0: <
-link.1: crates/bilinker/src/bilink.rs :: (struct_item
-  name: (type_identifier) @n0 (#eq? @n0 "BiLinkFile")) @target
+link.1: crates/bilinker/src/bilink.rs :: (struct_item name: (type_identifier) @n0 (#eq? @n0 "BiLinkFile")) @target
+
+# Cache
+hash.0: 4b4c7fd9dd3d986afbbdac143a794d5fea70882e9e9d70bb5491cd0dd7dec2b8
+commit.0: 6062b6c3ec71c433cb645a4ede451fa2e8f4d021
+hash.1: 5a0e8697971c419b4923257dddfd21cb001322003e62d9a9a6307ad21e8f9461
+commit.1: 836270df7b28d0b53476ae1cc45ca08d639f28bf
+range.1: 147~565
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-30T16:53:18Z
