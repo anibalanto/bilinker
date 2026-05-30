@@ -1,22 +1,18 @@
 # ADR-0002: bilinker — Referencias estructurales universales y bidireccionales
 
-**Estado:** Propuesto  
-**Fecha:** 2026-05-20
+**Estado:** Propuesto **Fecha:** 2026-05-20 **Actualizado:** 2026-05-24
 
 ---
 
 ## Contexto
 
-Estrato (ex Genia) define capas de conocimiento que van desde documentación hasta
-implementación. Actualmente el campo `impl: ref:` usa referencias por número de línea
-(`"file::start~end"`), que son frágiles ante cualquier refactor.
+Stratum (ex Genia) define capas de conocimiento que van desde documentación hasta implementación. Actualmente el campo `impl: ref:` usa referencias por número de línea (`"file::start~end"`), que son frágiles ante cualquier refactor.
 
 Se necesita un sistema de referencias que:
 
 - Sea estable ante reformateos, cambios de indentación y movimientos de código.
 - Funcione para cualquier lenguaje estructurado: código (Java, Rust, Python, TypeScript,
-  Kotlin...), documentos (Markdown, YAML, TOML, JSON, SQL, GraphQL) y cualquier
-  lenguaje con gramática tree-sitter.
+  Kotlin...), documentos (Markdown, YAML, TOML, JSON, SQL, GraphQL) y cualquier lenguaje con gramática tree-sitter.
 - Permita referenciar fragmentos con granularidad arbitraria: una función completa,
   una lambda dentro de un método, un párrafo bajo un heading, un campo YAML.
 - Detecte consistencia: si el fragmento referenciado cambia, el link lo sabe.
@@ -28,30 +24,30 @@ Se necesita un sistema de referencias que:
 
 ### 1. bilinker como herramienta independiente
 
-bilinker es una librería y CLI independiente de Acreta, Estrato y expancode.
-Es infraestructura — sus consumidores son:
+bilinker es una librería y CLI independiente de Accreta, Stratum y expancode. Es infraestructura — sus consumidores son:
 
-- **Estrato** — reemplaza `impl: ref: "file::start~end"` por referencias bilinker
+- **Stratum** — reemplaza `impl: ref: "file::start~end"` por referencias bilinker
 - **expancode** — usa bilinker para expandir inline el fragmento referenciado
-- **Acreta** — usa bilinker para detectar drift entre capas (spec ↔ código ↔ tests)
+- **Accreta** — usa bilinker para detectar drift entre capas (spec ↔ código ↔ tests)
 
 ### 2. Anatomía de una referencia bilinker
 
-Una referencia bilinker tiene cuatro componentes, los últimos dos opcionales:
+Una referencia bilinker tiene hasta cuatro componentes; `query` y `start~end` son opcionales:
 
 ```
-workspace :: file :: query [:: start~end]
+workspace :: file [:: query [:: start~end]]
 ```
 
 ```
 [workspace]          →  dónde buscar y con qué gramática tree-sitter
   [file]             →  qué archivo dentro del workspace
-    [query]          →  qué nodo AST dentro del archivo (âncora estructural)
+    [query]          →  (opcional) nodo AST dentro del archivo (âncora estructural)
       [start~end]    →  (opcional) sub-fragmento en bytes relativo al nodo
 ```
 
-**`workspace`** — nombre definido en `.bilinker.toml` que provee el directorio raíz
-y el lenguaje (gramática tree-sitter) para parsear los archivos.
+Cuando `query` se omite, el endpoint apunta al **archivo completo**: `hash.N` es el SHA-256 del archivo íntegro y no se genera `range.N`. Útil para referenciar un documento o módulo entero sin anclar a un nodo específico.
+
+**`workspace`** — nombre definido en `.bilinker.toml` que provee el directorio raíz y el lenguaje (gramática tree-sitter) para parsear los archivos.
 
 ```toml
 # .bilinker.toml
@@ -72,118 +68,257 @@ path     = "kotlin-app"
 language = "kotlin"
 ```
 
-Cuando bilinker se usa dentro de un proyecto expancode, puede leer los workspaces
-de `.expancode.toml` directamente; solo necesita `language` como campo adicional.
+Cuando bilinker se usa dentro de un proyecto expancode, puede leer los workspaces de `.expancode.toml` directamente; solo necesita `language` como campo adicional.
 
-**`file`** — ruta relativa a la raíz del workspace. Es parte de la identidad:
-distingue clases homónimas en distintos paquetes y aplica igual a código y documentos.
+**`file`** — ruta relativa a la raíz del workspace. Es parte de la identidad: distingue clases homónimas en distintos paquetes y aplica igual a código y documentos.
 
-**`query`** — S-expression tree-sitter que identifica el nodo contenedor. Se construye
-subiendo en el AST desde la selección hasta el primer ancestro con nombre estable
-(función, clase, heading, campo). Ejemplos:
+**`query`** — S-expression tree-sitter que identifica el nodo contenedor. Se construye subiendo en el AST desde la selección hasta el primer ancestro con nombre estable (función, clase, heading, campo). Ejemplos:
 
 ```scheme
-; Método en Java
+; Método en Java  (cada captura tiene nombre único @n0, @n1, …)
 (class_declaration
-  name: (identifier) @_ (#eq? @_ "Persona")
+  name: (identifier) @n0 (#eq? @n0 "Persona")
   body: (class_body
     (method_declaration
-      name: (identifier) @_ (#eq? @_ "vote") @target)))
+      name: (identifier) @n1 (#eq? @n1 "vote")) @target))
 
 ; Párrafo bajo un heading en Markdown
 (section
-  (atx_heading (inline) @_ (#eq? @_ "Decisión de arquitectura"))
+  (atx_heading
+    (inline) @n0 (#eq? @n0 "Decisión de arquitectura"))
   (paragraph) @target)
 
 ; Campo en YAML
 (block_mapping_pair
-  key: (flow_node) @_ (#eq? @_ "impl")
+  key: (flow_node) @n0 (#eq? @n0 "impl")
   value: (_) @target)
 ```
 
-**`start~end`** — (opcional) offsets en bytes relativos al inicio del nodo matcheado
-por la query. Permite referenciar un sub-fragmento dentro del nodo: una oración dentro
-de un párrafo, una expresión dentro de un método.
+Los nombres de captura (`@n0`, `@n1`, …) son únicos por query para evitar el error "Impossible pattern" de tree-sitter con capturas repetidas.
+
+**`start~end`** — (opcional) offsets en bytes relativos al inicio del nodo matcheado por la query. Permite referenciar un sub-fragmento dentro del nodo: una oración dentro de un párrafo, una expresión dentro de un método.
 
 Si se omite, la referencia apunta al nodo AST completo.
 
-Si se incluye, es un hint auto-corregible: cuando el hash del fragmento se encuentra
-en un offset diferente al guardado (texto insertado antes de la selección dentro del
-mismo nodo), bilinker actualiza `start~end` en el `.bilink` silenciosamente.
+Si se incluye, es un hint auto-corregible: cuando el hash del fragmento se encuentra en un offset diferente al guardado (texto insertado antes de la selección dentro del mismo nodo), bilinker actualiza `start~end` en el `.bilink` silenciosamente.
 
-**`hash`** (en cache) — SHA-256 del texto exacto del fragmento seleccionado.
-Es la fuente de verdad: si el hash no matchea en ninguna posición dentro del nodo,
-el link está genuinamente roto.
+**`hash`** (en cache) — SHA-256 del texto exacto del fragmento seleccionado. Es la fuente de verdad: si el hash no matchea en ninguna posición dentro del nodo, el link está genuinamente roto.
 
-### 3. Formato del archivo `.bilink`
+### 3. Formato del archivo `.bilink` y modelo de cadenas
 
-Un bilink conecta exactamente dos extremos (`link.0` y `link.1`). Si se necesita
-conectar más de dos elementos, se crean múltiples bilinks — un bilink puede referenciar
-el `id` de otro bilink como extremo.
+Un bilink conecta exactamente dos extremos (`link.0` y `link.1`). Los bilinks se encadenan entre layers para conectar fragmentos estructurales a través de las capas del proyecto. El nombre del archivo es un **UUID v4** que identifica la cadena.
 
-Se almacena en archivos `.bilink` dentro de una carpeta `.bilinker/` en la raíz del
-proyecto (un archivo por bilink, con un nombre descriptivo).
+#### Dos tipos de endpoint
+
+| Tipo | Forma | Distinguido por |
+|---|---|---|
+| **Estructural** | `workspace :: file :: query [:: start~end]` | contiene `::` |
+| **Layer** | `<ruta-relativa-a-layer>` | sin `::` |
+
+Un endpoint layer resuelve al archivo `.bilink/<uuid>.bilink` de esa layer. La carpeta `.bilink/` nunca aparece en el valor de `link.N` — es implícita:
 
 ```
-# .bilinker/persona/voting-impl.bilink
+link.N: <layer-path>  →  ../<layer-path>/.bilink/<uuid>.bilink
+```
 
-id: persona-voting-impl
+#### Topología de cadena
 
-link.0: java-demo :: persona/Persona.java :: (class_declaration name: (identifier) @_ (#eq? @_ "Persona") (method_declaration name: (identifier) @_ (#eq? @_ "vote") @target))
-link.1: specs :: persona/voting.yaml :: (block_mapping_pair key: (flow_node) @_ (#eq? @_ "impl") value: (_) @target)
+Una **cadena** es una secuencia lineal de bilinks con el mismo UUID:
+
+- **tip**: un endpoint estructural + un endpoint layer (extremos de la cadena).
+- **mid**: ambos endpoints son layer (nodos intermedios).
+
+```
+[fragmento] ←→ tip ←→ mid* ←→ tip ←→ [fragmento]
+```
+
+#### Formato del archivo
+
+```
+link.0: <referencia-estructural-o-layer>
+link.1: <referencia-estructural-o-layer>
 
 # --- cache generada por bilinker, no editar a mano ---
-hash.0: e9f1a2b3c4d5e6f7
-hash.1: a1b2c3d4e5f6a7b8
-resolved_at: 2026-05-20T10:00:00Z
+hash.0: <sha256-hex-64-chars>
+range.0: <start~end-bytes-absolutos>
+hash.1: <sha256-hex-64-chars>
+range.1: <start~end-bytes-absolutos>
+state.0: <estado>
+state.1: <estado>
+resolved_at: <iso8601-utc>
 ```
 
-Para un sub-fragmento dentro de un nodo (e.g. una oración en Markdown):
+No existe campo `id` — el UUID del nombre de archivo es el identificador. `range.N` solo aparece para endpoints estructurales.
+
+**`hash.N`:**
+- Endpoint estructural: SHA-256 del texto exacto del fragmento.
+- Endpoint layer: SHA-256 del archivo `.bilink` completo de esa layer.
+
+**`range.N`:** byte range absoluto del fragmento en su archivo fuente. Calculado y actualizado por `check`. Permite que `bilinker get <file>:<line>:<col>` localice qué endpoints cubren una posición sin necesidad de re-ejecutar las queries tree-sitter.
+
+**`state.N`:** estado de consistencia del endpoint, persistido en el archivo. Al cambiar `state.N`, el archivo cambia y su hash cambia — esto propaga el cambio al nodo adyacente de la cadena en el próximo `check` (propagación reactiva).
+
+#### Ejemplo: cadena de 3 nodos (spec → tech-decisions → impl)
 
 ```
-# .bilinker/architecture/decision-ref.bilink
+# .bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (tip — spec layer)
+link.0: specs :: voting.yaml :: (block_mapping_pair
+  key: (flow_node) @n0 (#eq? @n0 "impl")
+  value: (_) @target)
+link.1: .stratum/tech-decisions
 
-id: architecture-decision-ref
-
-link.0: persona-voting-impl                                                      ← referencia a otro bilink por id
-link.1: docs :: architecture.md :: (section (atx_heading (inline) @_ (#eq? @_ "Decisión")) (paragraph) @target) :: 42~87
-
-# --- cache ---
-hash.1: c3d4e5f6a7b8c9d0
-resolved_at: 2026-05-20T10:00:00Z
+# --- cache generada por bilinker, no editar a mano ---
+hash.0: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+range.0: 312~358
+hash.1: e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-24T10:00:00Z
 ```
 
-**Identidad (inmutable, escrita por el usuario o por `bilinker capture`):**
-- `id` — nombre estable del bilink
-- `link.0` / `link.1` — cada extremo es `workspace :: file :: query [:: start~end]`
-  o el `id` de otro bilink.
-  El `start~end` es opcional: se omite cuando la referencia es el nodo AST completo,
-  se incluye cuando se quiere un sub-fragmento dentro del nodo.
+```
+# .stratum/tech-decisions/.bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (mid)
+link.0: ../..
+link.1: ../impl
 
-**Cache (generada y actualizada automáticamente por bilinker):**
-- `hash.N` — hash SHA-256 del fragmento en la última verificación exitosa.
-  Es la fuente de verdad para detectar drift de contenido.
-- `resolved_at` — timestamp de la última resolución exitosa.
+# --- cache generada por bilinker, no editar a mano ---
+hash.0: c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0
+hash.1: a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-24T10:00:00Z
+```
 
-La ruta absoluta del archivo no se cachea: bilinker la calcula en todo momento
-como `workspaces.<ws>.path + file` desde `.bilinker.toml`.
+```
+# .stratum/impl/.bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (tip — impl layer)
+link.0: ../tech-decisions
+link.1: java-demo :: src/main/java/ar/example/demo/persona/Persona.java :: (class_declaration
+  name: (identifier) @n0 (#eq? @n0 "Persona")
+  body: (class_body
+    (method_declaration
+      name: (identifier) @n1 (#eq? @n1 "vote")) @target))
 
-### 4. Semántica de consistencia
+# --- cache generada por bilinker, no editar a mano ---
+hash.0: e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8
+hash.1: 479922a1ee55cc7f9f4f323bb002018e1b4e1cda65e069e0f6f4645926ce25ee
+range.1: 245~389
+state.0: OK
+state.1: OK
+resolved_at: 2026-05-24T10:00:00Z
+```
 
-Dado un bilink, bilinker puede estar en tres estados por extremo:
+### 4. Semántica de consistencia — diez estados
 
-| Estado | Condición | Acción |
+`check` analiza cada extremo independientemente y devuelve una **tupla de estados** `(state_link0, state_link1)`. Ejemplo: `(ALTERED, OK)` o `(OK, CHAIN_DIRTY)`.
+
+Git es dependencia dura de `check` y `apply`. `capture` y `get` funcionan sin git.
+
+#### Estados para endpoints estructurales (9 estados)
+
+| Estado | Condición | Auto-fix |
 |---|---|---|
-| **OK** | query encuentra el nodo, hash matchea en offset esperado | ninguna |
-| **DESPLAZADO** | query encuentra el nodo, hash matchea en offset diferente | actualizar offset silenciosamente |
-| **ROTO** | query no encuentra el nodo, o hash no matchea en ninguna posición | alerta al usuario |
+| **OK** | hash matchea en offset guardado | — |
+| **MOVED** | archivo cambió de path (git rename `-M`), hash matchea en nuevo path | ✓ actualiza `file` en `link.N` |
+| **DISPLACED** | query matchea, hash matchea en offset diferente dentro del nodo | ✓ actualiza `start~end` |
+| **REANCHORED** | anchor renombrado/movido; se detecta su nueva posición vía git + AST | ✓ actualiza predicados de la query |
+| **EXPANDED** | fragmento creció, sin cambio estructural interno (AST interno igual) | ✓ amplía `start~end` |
+| **UNANCHORED** | query no matchea y no se detecta nueva posición del anchor | — requiere intervención |
+| **ALTERED** | fragmento encontrado, AST interno cambió estructuralmente | — requiere intervención |
+| **DELETED** | contenido eliminado de forma determinística (rastreable en git) | — requiere intervención |
+| **BROKEN** | ninguna hipótesis aplica; posición indeterminada | — requiere intervención |
 
-El estado DESPLAZADO ocurre cuando se agrega código dentro del nodo contenedor
-pero fuera del fragmento referenciado — es un cambio inocuo. bilinker lo resuelve
-automáticamente al re-escanear.
+#### Estado para endpoints layer (1 estado adicional)
 
-El estado ROTO ocurre cuando el fragmento referenciado fue modificado o el nodo
-contenedor fue eliminado/renombrado — requiere intervención humana.
+| Estado | Condición | Auto-fix |
+|---|---|---|
+| **CHAIN_DIRTY** | hash del archivo `.bilink` referenciado no coincide con `hash.N` | — inspeccionar nodo origen |
+
+#### Propagación reactiva via `state.N`
+
+`state.N` se persiste en el archivo `.bilink`. Si el estado cambia, el archivo cambia, su hash cambia, y el nodo adyacente en la cadena detecta CHAIN_DIRTY en el próximo `check`. La cadena es autosuficiente — no requiere índice externo para propagar cambios.
+
+Estados con auto-fix: MOVED, DISPLACED, REANCHORED, EXPANDED. Los fixes se acumulan en `.bilink/.pending/` y se aplican con `bilinker apply` (como commit git con mensaje descriptivo); nunca se aplican silenciosamente.
+
+#### Algoritmo de detección
+
+```
+1. ¿El archivo existe en el path conocido?
+   NO → git diff -M --name-status → ¿rename detectado con similaridad ≥ 50%?
+        SÍ → MOVED  (continuar con nuevo path)
+        NO → git log -S "<hash_fragmento>" -- <file> → ¿commit de borrado?
+             SÍ → DELETED
+             NO → BROKEN
+
+2. Ejecutar la query tree-sitter contra el archivo actual.
+   SIN MATCH → buscar el anchor por contenido en el AST actual:
+               ¿se encuentra el texto del anchor en otro nodo estable?
+               SÍ → REANCHORED  (se registra la nueva query)
+               NO → git log -S "<texto_anchor>" -- <file> → ¿commit de borrado?
+                    SÍ → DELETED
+                    NO → UNANCHORED
+
+3. ¿El hash matchea en el offset guardado?
+   SÍ → OK
+
+4. ¿El hash matchea en algún otro offset dentro del nodo?
+   SÍ → DISPLACED
+
+5. ¿El texto del fragmento guardado es subcadena del nodo actual?
+   SÍ → comparar AST del fragmento guardado vs AST del texto actual en esa posición:
+        ASTs estructuralmente iguales  → EXPANDED  (creció sin cambio interno)
+        ASTs estructuralmente distintos → ALTERED  (cambio interno)
+   NO → git log -S "<hash_fragmento>" -- <file> → ¿commit de borrado?
+        SÍ → DELETED
+        NO → BROKEN
+```
+
+#### Fuente del cambio
+
+bilinker determina el origen del cambio con git para todos los estados no-OK:
+
+| Condición git | Fuente reportada |
+|---|---|
+| `git diff -- <file>` tiene hunks en el fragmento | `[UNSTAGED]` |
+| `git diff --cached -- <file>` tiene hunks en el fragmento | `[STAGED]` |
+| `git log --since=<resolved_at> -- <file>` tiene commits | `[commit <hash> "<mensaje>"]` |
+
+`git log -S "<texto_fragmento>" -- <file>` localiza el commit exacto que eliminó o modificó el texto referenciado (usado para DELETED, ALTERED, BROKEN).
+
+#### Intersección hunk / fragmento
+
+```
+fragmento: líneas F_start–F_end  (derivadas de start~end en bytes)
+hunk:      @@ -H_start,H_count +...
+
+H_start + H_count < F_start  → BEFORE  (causa potencial de DISPLACED)
+H_start > F_end               → AFTER   (irrelevante, fragmento no afectado)
+se superpone                  → WITHIN  (causa de EXPANDED, ALTERED o REANCHORED)
+```
+
+#### Salida de `bilinker check`
+
+`check` muestra la tupla `(state0, state1)` por bilink. Sale con código 0 si todos los estados son `{OK, MOVED, DISPLACED, REANCHORED, EXPANDED}`. Sale con código 1 si algún extremo está en `{UNANCHORED, ALTERED, DELETED, BROKEN, CHAIN_DIRTY}`.
+
+```
+$ bilinker check .bilink/
+
+7f3d8e9a  (OK, CHAIN_DIRTY)
+  link.1  → .stratum/tech-decisions  archivo cambió
+  → inspeccionar: bilinker chain status 7f3d8e9a-...
+
+3a4b5c6d  (DISPLACED, ALTERED)
+  link.0  specs::voting.yaml#impl  offset 5~42 → 8~45  [UNSTAGED]
+  → fix disponible: bilinker apply
+  link.1  java-demo::Persona#vote  AST interno cambió
+    - Comparator.comparingInt(String::length)
+    + (a, b) -> a.length() - b.length()
+    source: commit c7d3e9f "Inline comparator" (2026-05-19)
+
+f1e2d3c4  (EXPANDED, OK)
+  link.0  specs::reporter.yaml#generate  fragmento creció — AST sin cambios
+    + log.info("called");  [commit a3f2b1c "Add audit log"]
+  → fix disponible: bilinker apply
+```
 
 ### 5. Subcomando `bilinker capture`
 
@@ -205,63 +340,98 @@ Flujo interno:
 ```bash
 # Selección que coincide exactamente con un nodo AST → sin start~end
 $ bilinker capture java-demo src/persona/Persona.java 10:1 18:1
-link.N: java-demo :: persona/Persona.java :: (class_declaration name:#eq?Persona (method_declaration name:#eq?vote @target))
+link.N: java-demo :: persona/Persona.java :: (class_declaration
+  name: (identifier) @n0 (#eq? @n0 "Persona")
+  body: (class_body
+    (method_declaration
+      name: (identifier) @n1 (#eq? @n1 "vote")) @target))
 
 # Selección parcial dentro de un nodo → con start~end
 $ bilinker capture docs architecture.md 34:10 34:52
-link.N: docs :: architecture.md :: (section (atx_heading (inline) @_ (#eq? @_ "Decisión")) (paragraph) @target) :: 42~87
+link.N: docs :: architecture.md :: (section
+  (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+  (paragraph) @target) :: 42~87
 ```
 
-Cuando la selección cae exactamente en los límites de un nodo AST, `start~end` se omite.
-Cuando la selección es un sub-fragmento del nodo, `start~end` se incluye automáticamente.
+Cuando la selección cae exactamente en los límites de un nodo AST, `start~end` se omite. Cuando la selección es un sub-fragmento del nodo, `start~end` se incluye automáticamente.
 
 ### 6. Subcomando `bilinker check`
 
-Verifica todos los links de un archivo `.bilink` o de un directorio `.bilinker/`:
+Verifica todos los bilinks de un archivo `.bilink` o de un directorio `.bilink/`. Acepta un archivo individual, una carpeta `.bilink/`, o una layer (recursivo):
 
 ```bash
-bilinker check .bilinker/persona/voting-impl.bilink
-
-OK        link.0 → java-demo :: Persona#vote (lambda)
-DESPLAZADO link.1 → specs :: voting.yaml impl  (offset actualizado)
-ROTO      link.0 → java-demo :: Reporter#generate_report  (hash no encontrado)
+bilinker check .bilink/
+bilinker check .bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink
 ```
 
-Sale con código 1 si hay links ROTOS. Los DESPLAZADOS se auto-corrigen en el archivo
-`.bilink`.
+Ver sección 4 para la semántica completa de estados, algoritmo de detección y formato de salida.
 
-### 7. Subcomando `bilinker refs`
+### 6b. Subcomando `bilinker apply`
 
-Bidireccionalidad: dado un archivo y posición, muestra qué bilinks lo referencian.
+Aplica los auto-fixes generados por `check` que están en `.bilink/.pending/`. Cada fix se convierte en un commit git con mensaje descriptivo:
 
 ```bash
-bilinker refs java-app/src/main/java/ar/example/demo/persona/Persona.java:12
+bilinker apply
 
-.bilinker/persona/voting-impl.bilink  (link.0)
-.bilinker/architecture.bilink         (link.0)
+Pending fixes (2):
+  MOVED      7f3d8e9a…  link.1  specs/domain/voting.yaml
+  DISPLACED  3a4b5c6d…  link.0  offset 5~42 → 8~45
+
+Apply? [y/N] y
+
+Applied 2 fixes.
+Committed: a4b5c6d "bilinker: auto-fix MOVED + DISPLACED (2026-05-24)"
 ```
 
-bilinker mantiene un índice local (SQLite) que registra qué nodos son referenciados
-por qué bilinks, actualizado incrementalmente vía `notify` (filesystem watcher) +
-tree-sitter `Tree::edit()` para re-parseo eficiente.
+Los fixes nunca se aplican automáticamente — siempre requieren `bilinker apply` explícito para que el humano revise antes de confirmar.
 
-### 8. Carpeta `.bilinker/` organizada por capa de Estrato
+### 7. Subcomando `bilinker get`
 
-```
-.bilinker/
-  persona/
-    voting-impl.bilink      # spec ↔ código
-    voting-test.bilink      # spec ↔ test
-  architecture/
-    layers.bilink           # ADR ↔ código
+Navegación bidireccional en tres formas:
+
+**Forma 1: posición → endpoints** — dado un archivo y posición, lista los bilinks cuyo `range.N` la cubre (sin re-ejecutar tree-sitter):
+
+```bash
+$ bilinker get src/main/java/ar/example/demo/persona/Persona.java:11:5
+7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.1   specs :: voting.yaml#impl
 ```
 
-Los bilinks viven junto a los specs y docs — no dentro de los archivos referenciados.
+**Forma 2: endpoint → contenido** — dado un `<UUID>.<N>`, retorna el texto del fragmento en el extremo opuesto:
+
+```bash
+$ bilinker get 7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.1
+impl: Persona#vote
+description: El método vote registra el voto del ciudadano.
+```
+
+**Forma 3: archivo → todos los endpoints** — dado solo un archivo, lista todos los bilinks que lo referencian (por posición o como archivo completo):
+
+```bash
+$ bilinker get src/main/java/ar/example/demo/persona/Persona.java
+7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.1   specs :: voting.yaml#impl          lines 11–18
+3a4b5c6d-2e3f-4a5b-9c6d-7e8f9a0b1c2d.1   specs :: persona/voting.yaml#impl  lines 11–18
+```
+
+`get` no requiere git ni escribe ningún archivo.
+
+### 8. Carpeta `.bilink/` por layer
+
+Cada layer tiene su propia carpeta `.bilink/` con archivos nombrados por UUID:
+
+```
+.bilink/
+  7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (tip — spec layer)
+.stratum/tech-decisions/
+  .bilink/
+    7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (mid)
+.stratum/impl/
+  .bilink/
+    7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.bilink   (tip — impl layer)
+```
 
 ### 9. Lenguajes soportados
 
-Cualquier lenguaje con gramática tree-sitter. Los nodos considerados "âncoras
-estables" por defecto:
+Cualquier lenguaje con gramática tree-sitter. Los nodos considerados "âncoras estables" por defecto:
 
 | Tipo de doc | Âncoras estables | Frágil (no recomendado) |
 |---|---|---|
@@ -281,26 +451,27 @@ estables" por defecto:
 - El `workspace :: file :: query` en `link.N` es inequívoco: distingue clases del
   mismo nombre en distintos paquetes y aplica igual a código y documentos.
 - Formato uniforme para todos los lenguajes — sin casos especiales por lenguaje.
-- El offset es auto-reparable; solo el hash roto requiere intervención humana.
-- Bidireccional por diseño: impacto analysis nativo.
-- Independiente de Acreta/Estrato — se puede usar en cualquier proyecto.
+- 4 de 10 estados son auto-reparables (MOVED, DISPLACED, REANCHORED, EXPANDED);
+  los 6 restantes requieren intervención humana.
+- Los auto-fixes van a staging (`.bilink/.pending/`) — el humano siempre aprueba
+  antes de que se apliquen como commit git.
+- La tupla de estados `(state0, state1)` por bilink hace explícito qué extremo
+  cambió y cuál no, facilitando el análisis de impacto.
+- Bidireccional por diseño: `bilinker get <file>:<line>:<col>` retorna todos los endpoints que cubren esa posición.
+- Independiente de Accreta/Stratum — se puede usar en cualquier proyecto.
 
 **Negativas:**
+- `check` y `apply` requieren git; `capture` y `get` funcionan sin él.
 - Requiere que tree-sitter tenga gramática para el lenguaje del archivo referenciado.
 - Las âncoras estables dependen del lenguaje — bilinker necesita conocer qué nodos
   son "estables" para cada gramática.
-- El índice SQLite es local; en entornos distribuidos (Acreta P2P) necesita
-  sincronización (fuera del scope de este ADR).
+- `range.N` debe mantenerse actualizado — si un `.bilink` nunca pasa por `check`, `get <file>:<line>:<col>` puede no encontrar ese endpoint.
 
 ---
 
 ## Relación con ADR-0001
 
-ADR-0001 define el campo `link:` en expancode usando LSP para resolver símbolos.
-bilinker es complementario: donde LSP resuelve símbolos en tiempo real contra un
-language server, bilinker registra referencias estructurales persistentes con
-consistencia verificable. A largo plazo, `expancode symbol` podría generar
-referencias bilinker en lugar de referencias LSP puras.
+ADR-0001 define el campo `link:` en expancode usando LSP para resolver símbolos. bilinker es complementario: donde LSP resuelve símbolos en tiempo real contra un language server, bilinker registra referencias estructurales persistentes con consistencia verificable. A largo plazo, `expancode symbol` podría generar referencias bilinker en lugar de referencias LSP puras.
 
 ---
 
@@ -315,3 +486,7 @@ referencias bilinker en lugar de referencias LSP puras.
   (una lambda, un párrafo, una selección parcial dentro de una función).
 - **`path.N` en la cache** — redundante si el path ya está en `link.N` como parte
   de la identidad. La ruta absoluta se calcula siempre como `workspace.path + link.N.file`.
+- **Mono-links (un solo endpoint)** — rompen la cadena de hashes bidireccional. Un bilink
+  que referencia a otro bilink mediante `link.N: path/to/other.bilink` permite trackear el hash del archivo referenciado, pero un mono-link no tiene `link.N` para que el nodo adyacente cierre el ciclo reactivo. Descartado en favor del modelo de cadenas con UUID.
+- **Índice SQLite centralizado** — a la escala de bilinker (decenas a cientos de bilinks
+  por proyecto) el escaneo de archivos es suficiente. `range.N` en la cache hace trivial la búsqueda posición → endpoints sin base de datos. SQLite añadiría complejidad de sincronización en entornos distribuidos sin beneficio real.
