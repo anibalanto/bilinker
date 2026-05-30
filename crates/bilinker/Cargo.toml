@@ -12,7 +12,7 @@ hex = "0.4"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-stratum = { path = "../../../../../../../acreta/subsystems/stratum/.stratum/impl/crates/stratum" }
+stratum = { path = "../../../../../../../accreta/subsystems/stratum/.stratum/impl/crates/stratum" }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 
