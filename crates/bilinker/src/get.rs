@@ -5,6 +5,7 @@ use crate::bilink::BiLinkFile;
 use crate::grammar;
 use crate::link::{LinkEndpoint, StructuralRef};
 use crate::query;
+use stratum::StratumPath;
 
 pub struct GetResult {
     pub content: String,
@@ -29,17 +30,38 @@ pub fn get(
         _ => bail!("endpoint must be 0 or 1"),
     };
 
-    let sref = match link {
-        LinkEndpoint::Structural(r) => r,
-        LinkEndpoint::Layer(_) => bail!(
-            "link.{endpoint} is a layer path — structural 'get' requires a structural endpoint"
-        ),
+    match link {
+        LinkEndpoint::Structural(sref) => resolve(root, sref, before, after),
+        LinkEndpoint::Layer(layer_path) => {
+            traverse_layer(root, layer_path.clone(), &bl.uuid, before, after)
+        }
         LinkEndpoint::Task(id) => bail!(
             "link.{endpoint} is a task reference ({id}) — use worklist to view it"
         ),
+    }
+}
+
+fn traverse_layer(
+    root: &Path,
+    layer_path: StratumPath,
+    uuid: &str,
+    before: Option<(usize, usize)>,
+    after: Option<(usize, usize)>,
+) -> Result<GetResult> {
+    let adjacent_root = stratum::resolve(root, root, &layer_path)
+        .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
+
+    let adjacent_bilink_dir = adjacent_root.join(".bilink");
+    let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)
+        .with_context(|| format!("bilink {uuid} not found in {}", adjacent_bilink_dir.display()))?;
+
+    let sref = match (&adjacent_bl.link0, &adjacent_bl.link1) {
+        (LinkEndpoint::Structural(r), _) => r,
+        (_, LinkEndpoint::Structural(r)) => r,
+        _ => bail!("adjacent bilink {uuid} has no structural endpoint"),
     };
 
-    resolve(root, sref, before, after)
+    resolve(&adjacent_root, sref, before, after)
 }
 
 fn resolve(
