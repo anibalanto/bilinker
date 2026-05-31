@@ -12,7 +12,7 @@ hex = "0.4"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-stratum = { path = "../../../../../../../accreta/subsystems/stratum/.stratum/impl/crates/stratum" }
+stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 
