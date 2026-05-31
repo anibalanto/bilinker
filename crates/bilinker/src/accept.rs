@@ -169,9 +169,14 @@ pub fn accept_layer(
 
         for n in [0u8, 1u8] {
             let endpoint = if n == 0 { &bl.link0 } else { &bl.link1 };
-            let hash = if n == 0 { &bl.hash0 } else { &bl.hash1 };
+            let hash  = if n == 0 { &bl.hash0  } else { &bl.hash1  };
+            let state = if n == 0 { &bl.state0 } else { &bl.state1 };
 
-            if hash.is_some() { continue; }
+            let needs_accept = hash.is_none() || matches!(
+                state,
+                Some(EndpointState::Altered) | Some(EndpointState::ChainDirty)
+            );
+            if !needs_accept { continue; }
 
             let matches = if all {
                 true
