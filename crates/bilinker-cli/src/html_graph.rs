@@ -46,7 +46,7 @@ pub struct HtmlNode {
     pub id:         String,
     pub label:      String,
     pub layer:      String,
-    pub url:        String,
+    pub abs_path:   String,   // absolute filesystem path, no file:// prefix
     pub content:    String,
     pub start_line: usize,
     pub lang:       &'static str,
@@ -100,10 +100,10 @@ impl HtmlGraph {
             let depth = *self.layers.get(&n.layer).unwrap_or(&0);
             let idx   = { let c = depth_counters.entry(depth).or_insert(0); let v = *c; *c += 1; v };
             format!(
-                r#"{{"id":"{}","label":"{}","layer_id":"{}","layer":"{}","url":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{}}}"#,
+                r#"{{"id":"{}","label":"{}","layer_id":"{}","layer":"{}","abs_path":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{}}}"#,
                 esc_json(&n.id), esc_json(&n.label),
                 esc_json(&layer_id(&n.layer)), esc_json(&n.layer),
-                esc_json(&n.url), esc_json(&n.content),
+                esc_json(&n.abs_path), esc_json(&n.content),
                 n.start_line, n.lang, depth, idx
             )
         }).collect::<Vec<_>>().join(",");
@@ -173,18 +173,21 @@ fn add_structural(
     layer_root: &Path,
     lbl: &str,
     hg: &mut HtmlGraph,
-    url_scheme: &str,
+    _url_scheme: &str,
 ) -> Option<String> {
     let (sref, range) = match (&bl.link0, &bl.link1) {
         (LinkEndpoint::Structural(s), _) => (s, bl.range0.as_ref()),
         (_, LinkEndpoint::Structural(s)) => (s, bl.range1.as_ref()),
         _ => return None,
     };
-    let url                   = crate::node_url(layer_root, &sref.file, range, url_scheme);
     let (content, start_line) = file_content(layer_root, &sref.file, range);
-    let lang                  = lang_from_file(&sref.file);
+    let lang     = lang_from_file(&sref.file);
+    let abs_path = layer_root.join(&sref.file)
+                       .canonicalize()
+                       .unwrap_or_else(|_| layer_root.join(&sref.file))
+                       .to_string_lossy()
+                       .into_owned();
 
-    // Include start_line in ID so different fragments of the same file are distinct nodes
     let id    = format!("{}@{lbl}#L{start_line}", sref.file);
     let label = if start_line > 1 {
         format!("{}#L{start_line}", sref.file)
@@ -194,7 +197,7 @@ fn add_structural(
 
     hg.add_node(HtmlNode {
         id: id.clone(), label, layer: lbl.to_string(),
-        url, content, start_line, lang,
+        abs_path, content, start_line, lang,
     });
     Some(id)
 }
@@ -281,7 +284,7 @@ G.nodes.forEach(n => {
   yIdx[k] = yIdx[k] || 0;
   elements.push({
     data: { id: n.id, label: n.label, parent: n.layer_id, type: 'file',
-            url: n.url, content: n.content, layer: n.layer,
+            abs_path: n.abs_path, content: n.content, layer: n.layer,
             start_line: n.start_line, lang: n.lang },
     position: { x: n.xi * COL, y: yIdx[k]++ * ROW }
   });
@@ -325,7 +328,8 @@ cy.fit(undefined, 40);
 
 cy.on('tap', 'node[type="file"]', evt => {
   const n   = evt.target.data();
-  const url = n.url ? `<a class="open-link" href="${n.url}" target="_blank">Open file</a>` : '';
+  const rel = n.abs_path ? relUrl(n.abs_path, n.start_line) : '';
+  const url = rel ? `<a class="open-link" href="${rel}" target="_blank">Open file</a>` : '';
   const txt = n.content || '(no content)';
 
   let contentHtml;
@@ -353,6 +357,17 @@ cy.on('tap', 'node[type="file"]', evt => {
 
 function esc(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function relUrl(absPath, startLine) {
+  const htmlDir = window.location.pathname.replace(/\/[^\/]*$/, '');
+  const h = htmlDir.split('/').filter(Boolean);
+  const f = absPath.split('/').filter(Boolean);
+  let i = 0;
+  while (i < h.length && i < f.length && h[i] === f[i]) i++;
+  const rel = '../'.repeat(h.length - i) + f.slice(i).join('/');
+  const frag = startLine > 1 ? '#L' + startLine : '';
+  return rel + frag;
 }
 </script>
 </body>
