@@ -2,11 +2,10 @@ link.0: <
 link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "find_by_file")) @target
 
 # Cache
-hash.0: 3e838e70f79bf9696b0fbdb51cd02d5c278ef7d7f9a9ec9413d763e3e0095508
+hash.0: f0438bac549a4555b5bfca861e1ad0252080b5075778c25192a25e249ff32658
 commit.0: 729ebf67c92c75ac2140590bd9d162ca298978cb
 hash.1: 6e918432e453b99f662eda6be0a119d83de42de57ec8ca5298af0e1d87ebed64
 commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
-range.1: 19176~19985
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T22:15:49Z
+resolved_at: 2026-06-01T22:52:17Z

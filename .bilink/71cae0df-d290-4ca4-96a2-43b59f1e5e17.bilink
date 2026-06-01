@@ -2,11 +2,10 @@ link.0: <
 link.1: crates/bilinker-cli/src/main.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "print_status")) @target
 
 # Cache
-hash.0: 8112a0d049febe184eb7a6dadaef411611848ad18ecdabdc254ce795e1578090
+hash.0: 771b3670d22b7d686220827acc2a2b5d261d6d66a8a272388f7c8c264716a234
 commit.0: f1fec6efb67cb58a4e9df419927bbce13ff81b52
 hash.1: dc16f7755b03c362d8e819a361f642c02c2e06d4f75c04ea1a8ce29413122f5b
-commit.1: 4c68eeaeb24b107febbb80bcbe17c96483d75213
-range.1: 25933~28769
+commit.1: 88bc7e9ef2920fd5d1b6cc6174aef5137e06cbfb
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T22:15:49Z
+resolved_at: 2026-06-01T22:52:17Z

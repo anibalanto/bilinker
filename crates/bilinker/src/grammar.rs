@@ -45,8 +45,7 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "block_mapping_pair",
         ],
         "markdown" => &[
-            "atx_heading",
-            "setext_heading",
+            "section",
         ],
         _ => &[],
     }

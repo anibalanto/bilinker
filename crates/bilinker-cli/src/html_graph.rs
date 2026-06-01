@@ -59,6 +59,8 @@ pub struct HtmlEdge {
     pub target: String,
     pub label:  String,
     pub states: String,
+    pub link0:  String,
+    pub link1:  String,
 }
 
 #[derive(Default)]
@@ -169,9 +171,10 @@ impl HtmlGraph {
 
         let edges_json = self.edges.iter().map(|e| {
             format!(
-                r#"{{"id":"{}","source":"{}","target":"{}","label":"{}","states":"{}"}}"#,
+                r#"{{"id":"{}","source":"{}","target":"{}","label":"{}","states":"{}","link0":"{}","link1":"{}"}}"#,
                 esc_json(&e.id), esc_json(&e.source), esc_json(&e.target),
-                esc_json(&e.label), esc_json(&e.states)
+                esc_json(&e.label), esc_json(&e.states),
+                esc_json(&e.link0), esc_json(&e.link1)
             )
         }).collect::<Vec<_>>().join(",");
 
@@ -210,15 +213,18 @@ pub fn collect(
             let adj_id  = add_structural(&adj_bl, &adj_layer, &adj_lbl, hg, url_scheme);
 
             if let (Some(ref lid), Some(ref aid)) = (&local_id, &adj_id) {
-                // structural endpoint state from each side
                 let src_state = worst_state_str(&[&bl.state0, &bl.state1]);
                 let tgt_state = worst_state_str(&[&adj_bl.state0, &adj_bl.state1]);
+                let link0 = structural_endpoint_str(&bl);
+                let link1 = structural_endpoint_str(&adj_bl);
                 hg.add_edge(HtmlEdge {
                     id:     format!("e_{uuid_short}_{}", &lid[..8.min(lid.len())]),
                     source: lid.clone(),
                     target: aid.clone(),
                     label:  uuid_short.to_string(),
                     states: format!("{src_state}↔{tgt_state}"),
+                    link0,
+                    link1,
                 });
             }
 
@@ -228,6 +234,14 @@ pub fn collect(
         }
     }
     Ok(())
+}
+
+fn structural_endpoint_str(bl: &BiLinkFile) -> String {
+    match (&bl.link0, &bl.link1) {
+        (LinkEndpoint::Structural(_), _) => bl.link0.to_string(),
+        (_, LinkEndpoint::Structural(_)) => bl.link1.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn worst_state_str(states: &[&Option<bilinker::link::EndpointState>]) -> String {
@@ -287,16 +301,21 @@ fn add_structural(
     Some(id)
 }
 
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    i
+}
+
 fn file_content(layer_root: &Path, file: &str, range: Option<&ByteRange>) -> (String, usize) {
     let Ok(content) = std::fs::read_to_string(layer_root.join(file)) else {
         return (String::new(), 1);
     };
     if let Some(r) = range {
-        let start  = r.start.min(content.len());
-        let end    = r.end.min(content.len());
+        let start  = floor_char_boundary(&content, r.start.min(content.len()));
+        let end    = floor_char_boundary(&content, r.end.min(content.len()));
         let before = &content[..start];
         let start_line = before.chars().filter(|&c| c == '\n').count() + 1;
-        let frag   = content.get(start..end).unwrap_or("");
+        let frag   = &content[start..end];
         let text   = frag.lines().take(100).collect::<Vec<_>>().join("\n");
         (text, start_line)
     } else {
@@ -325,13 +344,13 @@ body { font-family: 'Courier New', monospace; display: flex; height: 100vh; over
 .open-link:hover { background: #388bfd; }
 
 /* code view */
-.code-wrap { border: 1px solid #30363d; border-radius: 6px; display: flex; max-height: 460px; overflow: hidden; }
+.code-wrap { border: 1px solid #30363d; border-radius: 6px; display: flex; max-height: 220px; overflow: hidden; }
 .line-nums  { padding: 1em 0.6em; background: #161b22; border-right: 1px solid #30363d; text-align: right; color: #6e7681; font-size: 11px; line-height: 1.6; user-select: none; white-space: pre; flex-shrink: 0; overflow: hidden; }
 .code-wrap pre  { margin: 0; overflow: auto; font-size: 11px; line-height: 1.6; flex: 1; min-width: 0; }
 .code-wrap code { display: block; white-space: pre; }
 
 /* markdown view */
-.md-wrap { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; overflow-y: auto; max-height: 460px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.7; color: #c9d1d9; }
+.md-wrap { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; overflow-y: auto; max-height: 220px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.7; color: #c9d1d9; }
 .md-wrap h1,.md-wrap h2,.md-wrap h3,.md-wrap h4 { color: #58a6ff; margin: 16px 0 6px; }
 .md-wrap h1 { font-size: 18px; border-bottom: 1px solid #30363d; padding-bottom: 6px; }
 .md-wrap h2 { font-size: 15px; }
@@ -346,11 +365,17 @@ body { font-family: 'Courier New', monospace; display: flex; height: 100vh; over
 .md-wrap a  { color: #58a6ff; }
 .md-wrap blockquote { border-left: 3px solid #30363d; padding-left: 12px; color: #8b949e; margin: 8px 0; }
 .md-wrap hr { border: none; border-top: 1px solid #30363d; margin: 12px 0; }
+
+/* bilink divider */
+.bilink-sep { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.bilink-sep-line { flex: 1; border-top: 1px solid #30363d; }
+.bilink-sep-label { font-size: 11px; color: #58a6ff; font-family: 'Courier New', monospace; white-space: nowrap; }
+.frag-label { font-size: 11px; color: #8b949e; margin-bottom: 4px; }
 </style>
 </head>
 <body>
 <div id="cy"></div>
-<div id="panel"><div class="hint">← Click a node to view details</div></div>
+<div id="panel"><div class="hint">← Click a node or edge to view details</div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
@@ -404,7 +429,9 @@ G.nodes.forEach(n => {
 
 G.edges.forEach(e =>
   elements.push({ data: { id: e.id, source: e.source, target: e.target,
-                          label: e.label + '\n' + e.states } })
+                          label: e.label + '\n' + e.states,
+                          uuid: e.label, states: e.states,
+                          link0: e.link0, link1: e.link1 } })
 );
 
 const cy = cytoscape({
@@ -443,33 +470,48 @@ const cy = cytoscape({
 
 cy.fit(undefined, 40);
 
-cy.on('tap', 'node[type="file"]', evt => {
-  const n   = evt.target.data();
+function renderNode(n) {
+  if (!n) return '<div class="hint">(no content)</div>';
   const rel = n.abs_path ? relUrl(n.abs_path, n.start_line) : '';
   const url = rel ? `<a class="open-link" href="${rel}" target="_blank">Open file</a>` : '';
   const txt = n.content || '(no content)';
-
   let contentHtml;
   if (n.lang === 'markdown') {
     contentHtml = `<div class="md-wrap">${marked.parse(txt)}</div>`;
   } else {
-    const lang    = n.lang || 'plaintext';
-    const hl      = hljs.highlight(txt, { language: lang, ignoreIllegals: true });
-    const count   = txt.split('\n').length;
-    const start   = n.start_line || 1;
-    const nums    = Array.from({ length: count }, (_, i) => start + i).join('\n');
-    contentHtml   = `
-      <div class="code-wrap">
-        <div class="line-nums">${nums}</div>
-        <pre><code class="hljs language-${lang}">${hl.value}</code></pre>
-      </div>`;
+    const lang  = n.lang || 'plaintext';
+    const hl    = hljs.highlight(txt, { language: lang, ignoreIllegals: true });
+    const count = txt.split('\n').length;
+    const start = n.start_line || 1;
+    const nums  = Array.from({ length: count }, (_, i) => start + i).join('\n');
+    contentHtml = `<div class="code-wrap"><div class="line-nums">${nums}</div><pre><code class="hljs language-${lang}">${hl.value}</code></pre></div>`;
   }
+  return `<div class="ntitle">${esc(n.label)}</div><div class="nlayer">${esc(n.layer)}</div>${url}${contentHtml}`;
+}
 
+cy.on('tap', 'node[type="file"]', evt => {
+  const n = evt.target.data();
+  document.getElementById('panel').innerHTML = renderNode(n);
+});
+
+cy.on('tap', 'edge', evt => {
+  const e      = evt.target.data();
+  const src    = cy.getElementById(e.source).data();
+  const tgt    = cy.getElementById(e.target).data();
+  const uuid   = e.uuid   || e.label || '';
+  const states = e.states || '';
+  const link0  = e.link0  || '';
+  const link1  = e.link1  || '';
   document.getElementById('panel').innerHTML = `
-    <div class="ntitle">${esc(n.label)}</div>
-    <div class="nlayer">${esc(n.layer)}</div>
-    ${url}
-    ${contentHtml}`;
+    <div class="frag-label">link.0 — <code style="color:#a5d6ff;font-size:10px;word-break:break-all">${esc(link0)}</code></div>
+    ${renderNode(src)}
+    <div class="bilink-sep">
+      <div class="bilink-sep-line"></div>
+      <div class="bilink-sep-label">${esc(uuid)} · ${esc(states)}</div>
+      <div class="bilink-sep-line"></div>
+    </div>
+    <div class="frag-label">link.1 — <code style="color:#a5d6ff;font-size:10px;word-break:break-all">${esc(link1)}</code></div>
+    ${renderNode(tgt)}`;
 });
 
 function esc(s) {

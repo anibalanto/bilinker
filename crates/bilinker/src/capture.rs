@@ -133,6 +133,12 @@ fn query_from_path(path: &[Node], source: &str, counter: &mut usize) -> String {
 }
 
 fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String {
+    // Special case: markdown section — use heading text as predicate
+    if node.kind() == "section" {
+        if let Some(pred) = markdown_section_predicate(node, source, counter) {
+            return pred;
+        }
+    }
     let Some(name_child) = node.child_by_field_name("name") else {
         return String::new();
     };
@@ -141,6 +147,30 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String 
     let cap = format!("@n{counter}");
     *counter += 1;
     format!("\n  name: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
+}
+
+/// For a markdown `section` node, find the heading text to use as predicate.
+/// Produces: `(section (atx_heading (inline) @n0 (#eq? @n0 "Heading text"))) @target`
+fn markdown_section_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    for i in 0..node.child_count() {
+        let child = node.child(i)?;
+        if child.kind().contains("heading") {
+            // Find inline content inside the heading
+            for j in 0..child.child_count() {
+                let inline = child.child(j)?;
+                if inline.kind() == "inline" || inline.kind().contains("inline") {
+                    let text = source[inline.byte_range()].trim().replace('"', "\\\"");
+                    let cap = format!("@n{counter}");
+                    *counter += 1;
+                    return Some(format!(
+                        "\n  ({} (inline) {cap} (#eq? {cap} \"{text}\"))",
+                        child.kind()
+                    ));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn field_name_for_child<'a>(parent: Node<'a>, child_id: usize) -> Option<&'a str> {
