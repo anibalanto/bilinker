@@ -187,6 +187,43 @@ bilinker apply -y        # sin confirmación
 bilinker apply --dry-run # solo mostrar
 ```
 
+### `bilinker graph` — recorrer el grafo de bilinks
+
+Traversal BFS desde un archivo, posición o UUID, cruzando capas. Responde: *¿con qué está linkedeado esto?*
+
+```bash
+# Árbol desde la spec layer
+bilinker graph commands/pull.md
+```
+
+```
+commands/pull.md
+│
+├── c0feab23  [OK ↔ OK]
+│   │  link.0  commands/pull.md
+│   │  link.1  >impl
+│   │
+│   └── c0feab23  [OK ↔ OK]  (.stratum/impl)
+│       │  link.0  <
+│       │  link.1  crates/estrato-cli/src/main.rs :: (function_item ...)
+│       │
+...
+```
+
+```bash
+# Desde la impl, ver todos los links del archivo
+bilinker graph "crates/estrato-cli/src/main.rs" --depth 1
+
+# Formato flat para scripting
+bilinker graph commands/pull.md --format flat
+
+# Graphviz para visualización
+bilinker graph commands/pull.md --format dot | dot -Tsvg > graph.svg
+
+# Limitar profundidad
+bilinker graph commands/pull.md --depth 2
+```
+
 ### `bilinker watch` — monitorear cambios en tiempo real
 
 ```bash
