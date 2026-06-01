@@ -367,15 +367,38 @@ G.file_groups.forEach(fg =>
   elements.push({ data: { id: fg.id, label: fg.label, parent: fg.layer_id, type: 'file-group' } })
 );
 
+// Group layers by depth and assign vertical bands
+const layerOrder = {};
+const depthGroups = {};
+G.layers.forEach(l => {
+  if (!depthGroups[l.depth]) depthGroups[l.depth] = [];
+  depthGroups[l.depth].push(l.id);
+});
+
+// Count nodes per layer to compute band heights
+const nodesPerLayer = {};
+G.nodes.forEach(n => { nodesPerLayer[n.layer_id] = (nodesPerLayer[n.layer_id] || 0) + 1; });
+
+// Assign a y-band start offset to each layer within its depth column
+const layerYStart = {};
+Object.keys(depthGroups).sort().forEach(depth => {
+  let offset = 0;
+  depthGroups[depth].forEach(lid => {
+    layerYStart[lid] = offset;
+    offset += ((nodesPerLayer[lid] || 1) + 2) * ROW; // +2 rows gap between layers
+  });
+});
+
 const yIdx = {};
 G.nodes.forEach(n => {
-  const k = n.xi;
+  const k = n.layer_id;
   yIdx[k] = yIdx[k] || 0;
+  const y = (layerYStart[n.layer_id] || 0) + yIdx[k]++ * ROW;
   elements.push({
     data: { id: n.id, label: n.label, parent: n.file_group_id, type: 'file',
             abs_path: n.abs_path, content: n.content, layer: n.layer,
             start_line: n.start_line, lang: n.lang },
-    position: { x: n.xi * COL, y: yIdx[k]++ * ROW }
+    position: { x: n.xi * COL, y: y }
   });
 });
 
