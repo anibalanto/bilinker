@@ -194,35 +194,53 @@ Traversal BFS desde un archivo, posición o UUID, cruzando capas. Responde: *¿c
 ```bash
 # Árbol desde la spec layer
 bilinker graph commands/pull.md
+
+# Todos los bilinks de la capa actual
+bilinker graph "."
+
+# Sistema completo (todas las capas)
+bilinker graph "." --recursive
 ```
 
-```
-commands/pull.md
-│
-├── c0feab23  [OK ↔ OK]
-│   │  link.0  commands/pull.md
-│   │  link.1  >impl
-│   │
-│   └── c0feab23  [OK ↔ OK]  (.stratum/impl)
-│       │  link.0  <
-│       │  link.1  crates/estrato-cli/src/main.rs :: (function_item ...)
-│       │
-...
-```
+**Formatos de salida:**
 
 ```bash
-# Desde la impl, ver todos los links del archivo
-bilinker graph "crates/estrato-cli/src/main.rs" --depth 1
+# Árbol (default)
+bilinker graph commands/pull.md
 
-# Formato flat para scripting
-bilinker graph commands/pull.md --format flat
+# Flat para scripting
+bilinker graph "." --format flat
 
-# Graphviz para visualización
-bilinker graph commands/pull.md --format dot | dot -Tsvg > graph.svg
+# Graphviz SVG
+bilinker graph "." --format dot | dot -Tsvg > graph.svg
 
-# Limitar profundidad
-bilinker graph commands/pull.md --depth 2
+# Con detalle de fragmentos (dot)
+bilinker graph "." --format dot --show-query --show-range --show-data | dot -Tsvg > graph.svg
+
+# Visor HTML interactivo (recomendado)
+bilinker graph "." --recursive --format html > graph.html
+xdg-open graph.html
 ```
+
+El **visor HTML** es autocontenido e incluye:
+- Grafo interactivo con Cytoscape.js, clusters por capa, columnas por profundidad stratum
+- Click en un nodo → panel con contenido renderizado:
+  - `.md` → Markdown formateado (títulos, tablas, código)
+  - código → syntax highlighting, números de línea, scroll horizontal
+  - link `file://` para abrir en el programa del sistema
+- Fragmentos distintos del mismo archivo como nodos separados (`file.rs#L42`)
+
+**Opciones:**
+
+| Flag | Descripción |
+|------|-------------|
+| `--recursive` | Incluir todas las capas bajo la raíz |
+| `--depth <n>` | Limitar profundidad de traversal |
+| `--bilink-detail` | Mostrar nodos bilink intermedios en dot |
+| `--url-scheme line\|file\|none` | Esquema de URLs en nodos (default: `line`) |
+| `--show-query` | Query AST en labels (dot) |
+| `--show-range` | Rango de bytes en labels (dot) |
+| `--show-data` | Primera/última línea del fragmento (dot) |
 
 ### `bilinker watch` — monitorear cambios en tiempo real
 

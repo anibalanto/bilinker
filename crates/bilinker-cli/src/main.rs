@@ -1,3 +1,6 @@
+mod html_graph;
+
+
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -770,6 +773,15 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: O
                 graph_flat(root, &bl, layer_root, &mut visited, 0, max_depth)?;
             }
         }
+        "html" => {
+            let mut hg = html_graph::HtmlGraph::new();
+            for (bilink_path, layer_root) in &starts {
+                let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
+                visited.insert(visit_key(&bl.uuid, layer_root));
+                html_graph::collect(root, &bl, layer_root, &mut visited, &mut hg, url_scheme, 0, max_depth)?;
+            }
+            print!("{}", hg.emit());
+        }
         "dot" => {
             let mut dot = DotGraph::new();
             for (bilink_path, layer_root) in &starts {
@@ -1081,7 +1093,13 @@ fn add_structural_node(
         (_, LinkEndpoint::Structural(s)) => (s, bl.range1.as_ref()),
         _ => return None,
     };
-    let file_id  = format!("{}@{lbl}", sref.file);
+    // Compute start line to differentiate fragments of the same file
+    let start_line = range.and_then(|r| {
+        std::fs::read_to_string(layer_root.join(&sref.file)).ok().map(|c| {
+            c[..r.start.min(c.len())].chars().filter(|&ch| ch == '\n').count() + 1
+        })
+    }).unwrap_or(1);
+    let file_id  = format!("{}@{lbl}#L{start_line}", sref.file);
     let node_lbl = structural_node_label(layer_root, sref, range, detail);
     let url      = node_url(layer_root, &sref.file, range, url_scheme);
     let url_attr = if url.is_empty() { String::new() } else { format!(" URL=\"{url}\" target=\"_blank\"") };

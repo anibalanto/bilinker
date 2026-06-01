@@ -2,11 +2,11 @@ link.0: <
 link.1: crates/bilinker/src/accept.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "accept")) @target
 
 # Cache
-hash.0: 6d919259cddd1907217c472569bb2bb12565bd6d1042321eb5a149e46ba376e9
+hash.0: 0906e6119528f5c5497b17c89c06a3e2e81e383583b9ae264a599c7b5de826b2
 commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
 hash.1: 7b25ddedd0fd04aac8296101169a5286a0ba1775da9b4da202f2ffa7b2cceab2
 commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
 range.1: 609~1632
 state.0: OK
 state.1: OK
-resolved_at: 2026-05-31T03:43:47Z
+resolved_at: 2026-06-01T13:04:57Z
