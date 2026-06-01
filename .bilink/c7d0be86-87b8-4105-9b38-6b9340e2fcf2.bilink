@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_structural_broken_when_file_missing")) @target
+
+# Cache
+hash.0: f22ce2b12f607895ea30f62b2e7764c41ff5398c5e5e859856661592d3df3121
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: e54978fb0fa8805db0f9509e8a730752684670a6c0d63aeba2f7f24492e0edb1
+commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T23:31:14Z

@@ -39,7 +39,6 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "enum_item",
             "trait_item",
             "impl_item",
-            "mod_item",
         ],
         "yaml" => &[
             "block_sequence_item",

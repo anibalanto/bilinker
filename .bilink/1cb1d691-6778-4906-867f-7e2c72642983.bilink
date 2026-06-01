@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_ok_when_hash_matches")) @target
+
+# Cache
+hash.0: 4459f45f2b45398dd4b7dfc4959bc82862bde8446ab90e30c825b6407e4b3a68
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: b2707414a6019e8bf7e4ea1c21913f43e7e23b764c45b4a70b9d24ff7a972a87
+commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T23:31:14Z

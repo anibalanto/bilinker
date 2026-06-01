@@ -358,8 +358,8 @@ body { font-family: 'Courier New', monospace; display: flex; height: 100vh; over
 
 /* code view */
 .code-wrap { border: 1px solid #30363d; border-radius: 6px; display: flex; max-height: 220px; overflow: hidden; }
-.line-nums  { padding: 1em 0.6em; background: #161b22; border-right: 1px solid #30363d; text-align: right; color: #6e7681; font-size: 11px; line-height: 1.6; user-select: none; white-space: pre; flex-shrink: 0; overflow: hidden; }
-.code-wrap pre  { margin: 0; overflow: auto; font-size: 11px; line-height: 1.6; flex: 1; min-width: 0; }
+.line-nums  { padding: 0.5em 0.6em; background: #161b22; border-right: 1px solid #30363d; text-align: right; color: #6e7681; font-size: 11px; line-height: 1.6; user-select: none; white-space: pre; flex-shrink: 0; overflow: hidden; }
+.code-wrap pre  { margin: 0; padding: 0.5em 0; overflow: auto; font-size: 11px; line-height: 1.6; flex: 1; min-width: 0; }
 .code-wrap code { display: block; white-space: pre; }
 
 /* markdown view */

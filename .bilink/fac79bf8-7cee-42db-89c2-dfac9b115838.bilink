@@ -4,9 +4,9 @@ link.1: crates/bilinker/src/check.rs
 # Cache
 hash.0: 38ed166e60d0eeb4585148b66cd8cfb748d54bd2dd67e31b82b4f70b151e9895
 commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
-hash.1: 7bf2906909d19cca507c76b01c66ebb5c296a4b8cf1de5250bb36cc93fa41aeb
-commit.1: 836270df7b28d0b53476ae1cc45ca08d639f28bf
-range.1: 0~19986
+hash.1: 5ff040155a7c8b0618dd445514cb80666e800cef055e3a652e46aa6c6fd05e2a
+commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+range.1: 0~20238
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T23:01:22Z
+resolved_at: 2026-06-01T23:27:40Z

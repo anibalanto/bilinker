@@ -4,9 +4,9 @@ link.1: crates/bilinker-cli/src/html_graph.rs :: (source_file) @target
 # Cache
 hash.0: 5548e1b81311e9d3c68f257d0b9889ef3088b87e1e2f92caf8a2cfd6aad748a2
 commit.0: f1fec6efb67cb58a4e9df419927bbce13ff81b52
-hash.1: 4309b4f87e122aceb3a0bbdd0aa31299a801abc79c89f956db584a25f2e200b1
-commit.1: 267770df34a015c1299160899a4ae2cdd4f8be4e
-range.1: 0~23529
+hash.1: fd3b30051949942d3491539d8248532fec8642be26459b4d020efd720c908eeb
+commit.1: 8d2904b942e6576d64394fb32e471569e175bfe2
+range.1: 0~24178
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T23:01:31Z
+resolved_at: 2026-06-01T23:27:40Z

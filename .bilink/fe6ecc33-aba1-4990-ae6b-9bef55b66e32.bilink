@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_layer_chain_dirty_when_hash_differs")) @target
+
+# Cache
+hash.0: 10d1c0f6e79d3f7fa5fed1f33bf19b747d356cbd0fed28eba5aaf18387c4ee4f
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: 70ce565a93c99753b3e4ac170e2a867ca446462fa812be9ec1b79c49b3defc34
+commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T23:31:14Z

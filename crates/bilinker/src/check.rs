@@ -226,14 +226,20 @@ fn find_in_node(
         return None;
     }
     let node = &source[node_start..node_end];
-    for start in 0..=(node.len() - frag_len) {
-        let end = start + frag_len;
-        if hash::sha256(node[start..end].as_bytes()) == target_hash {
-            return Some(ByteRange {
-                start: node_start + start,
-                end: node_start + end,
-            });
+    let mut start = 0;
+    while start + frag_len <= node.len() {
+        if source.is_char_boundary(node_start + start) {
+            let end = start + frag_len;
+            if end <= node.len() && source.is_char_boundary(node_start + end) {
+                if hash::sha256(node[start..end].as_bytes()) == target_hash {
+                    return Some(ByteRange {
+                        start: node_start + start,
+                        end: node_start + end,
+                    });
+                }
+            }
         }
+        start += 1;
     }
     None
 }
