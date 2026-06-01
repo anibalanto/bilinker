@@ -42,6 +42,7 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "mod_item",
         ],
         "yaml" => &[
+            "block_sequence_item",
             "block_mapping_pair",
         ],
         "markdown" => &[

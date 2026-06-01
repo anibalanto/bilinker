@@ -279,7 +279,7 @@ fn add_structural(
         (_, LinkEndpoint::Structural(s)) => (s, bl.range1.as_ref()),
         _ => return None,
     };
-    let (content, start_line) = file_content(layer_root, &sref.file, range);
+    let (content, start_line) = file_content(layer_root, sref, range);
     let lang     = lang_from_file(&sref.file);
     let abs_path = layer_root.join(&sref.file)
                        .canonicalize()
@@ -306,17 +306,30 @@ fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-fn file_content(layer_root: &Path, file: &str, range: Option<&ByteRange>) -> (String, usize) {
-    let Ok(content) = std::fs::read_to_string(layer_root.join(file)) else {
+fn file_content(layer_root: &Path, sref: &bilinker::link::StructuralRef, range: Option<&ByteRange>) -> (String, usize) {
+    let Ok(content) = std::fs::read_to_string(layer_root.join(&sref.file)) else {
         return (String::new(), 1);
     };
-    if let Some(r) = range {
-        let start  = floor_char_boundary(&content, r.start.min(content.len()));
-        let end    = floor_char_boundary(&content, r.end.min(content.len()));
-        let before = &content[..start];
+
+    // Prefer stored range; fall back to running the query; last resort: whole file
+    let resolved_range: Option<(usize, usize)> = if let Some(r) = range {
+        let start = floor_char_boundary(&content, r.start.min(content.len()));
+        let end   = floor_char_boundary(&content, r.end.min(content.len()));
+        Some((start, end))
+    } else if let Some(q) = &sref.query {
+        let lang = bilinker::grammar::language_for_file(&sref.file);
+        bilinker::grammar::for_language(lang).ok()
+            .and_then(|language| bilinker::query::find_target(language, &content, q).ok().flatten())
+            .map(|(s, e)| (floor_char_boundary(&content, s), floor_char_boundary(&content, e)))
+    } else {
+        None
+    };
+
+    if let Some((start, end)) = resolved_range {
+        let before     = &content[..start];
         let start_line = before.chars().filter(|&c| c == '\n').count() + 1;
-        let frag   = &content[start..end];
-        let text   = frag.lines().take(100).collect::<Vec<_>>().join("\n");
+        let frag       = &content[start..end];
+        let text       = frag.lines().take(100).collect::<Vec<_>>().join("\n");
         (text, start_line)
     } else {
         let text = content.lines().take(100).collect::<Vec<_>>().join("\n");
@@ -379,7 +392,21 @@ body { font-family: 'Courier New', monospace; display: flex; height: 100vh; over
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
+mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+// Override marked renderer to render mermaid blocks as diagrams
+const renderer = new marked.Renderer();
+const origCode = renderer.code.bind(renderer);
+renderer.code = function(code, lang) {
+  if (lang === 'mermaid') {
+    return `<div class="mermaid">${code}</div>`;
+  }
+  return origCode(code, lang);
+};
+marked.use({ renderer });
+
 const G   = GRAPH_DATA_PLACEHOLDER;
 const COL = 540, ROW = 90;
 const elements = [];
@@ -478,6 +505,7 @@ function renderNode(n) {
   let contentHtml;
   if (n.lang === 'markdown') {
     contentHtml = `<div class="md-wrap">${marked.parse(txt)}</div>`;
+    setTimeout(() => mermaid.run({ querySelector: '#panel .mermaid' }), 50);
   } else {
     const lang  = n.lang || 'plaintext';
     const hl    = hljs.highlight(txt, { language: lang, ignoreIllegals: true });
@@ -512,6 +540,7 @@ cy.on('tap', 'edge', evt => {
     </div>
     <div class="frag-label">link.1 — <code style="color:#a5d6ff;font-size:10px;word-break:break-all">${esc(link1)}</code></div>
     ${renderNode(tgt)}`;
+  setTimeout(() => mermaid.run({ querySelector: '#panel .mermaid' }), 50);
 });
 
 function esc(s) {

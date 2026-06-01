@@ -2,11 +2,10 @@ link.0: <
 link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_marks_altered_after_accept_and_file_change")) @target
 
 # Cache
-hash.0: 8111ca5b9e6dbe8041238fd2b577e578f275087fa8cf15a313f9940ee3dfbaeb
+hash.0: 4459f45f2b45398dd4b7dfc4959bc82862bde8446ab90e30c825b6407e4b3a68
 commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
 hash.1: e6e040dbef67a4e109834d34d7b311e7b73e2c891313190e8b96988603c9c72f
 commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
-range.1: 7908~9525
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T22:15:49Z
+resolved_at: 2026-06-01T23:19:00Z

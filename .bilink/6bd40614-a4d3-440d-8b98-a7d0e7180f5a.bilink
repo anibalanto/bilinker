@@ -4,5 +4,7 @@ link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#
 # Cache
 hash.1: 662386b393160003e7d8d55747cb5b3593baee8fd397b11349071a97de7fc73c
 commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+range.1: 740~1352
+state.0: TODO
 state.1: OK
-resolved_at: 2026-06-01T22:52:17Z
+resolved_at: 2026-06-01T23:01:22Z

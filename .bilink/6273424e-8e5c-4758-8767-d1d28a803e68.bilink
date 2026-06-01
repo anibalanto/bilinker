@@ -2,11 +2,10 @@ link.0: <
 link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "chain_new_two_layers_creates_two_files")) @target
 
 # Cache
-hash.0: a77c494fd620353641e9104382a15caa4084a636e38ecd8205e531f2f269c983
+hash.0: cda4d64c0b19acd476967843ab977880bb46e743caf6581a067351e576f11496
 commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
 hash.1: e023aca63e1bf40252a0dbea5c981a6110fb183a647f3c2d1ecc71e63ba1e2a2
 commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
-range.1: 6433~7229
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T22:15:49Z
+resolved_at: 2026-06-01T23:19:00Z

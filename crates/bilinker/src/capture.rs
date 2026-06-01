@@ -44,6 +44,19 @@ pub fn capture(
     let anchor = target.parent()
         .and_then(|p| walk_up_to_anchor(p, anchors));
 
+    // For YAML block_sequence_item: use it directly as @target (contains the whole item)
+    let (target, anchor) = if target.kind() == "block_sequence_item" {
+        (target, None)
+    } else if let Some(a) = anchor {
+        if a.kind() == "block_sequence_item" {
+            (a, None)
+        } else {
+            (target, Some(a))
+        }
+    } else {
+        (target, anchor)
+    };
+
     let query = match anchor {
         None => query_for_node(target, &source, &mut 0),
         Some(a) if a.id() == target.id() => query_for_node(target, &source, &mut 0),
@@ -139,6 +152,18 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String 
             return pred;
         }
     }
+    // Special case: YAML block_sequence_item — use id: or first key as predicate
+    if node.kind() == "block_sequence_item" {
+        if let Some(pred) = yaml_sequence_item_predicate(node, source, counter) {
+            return pred;
+        }
+    }
+    // Special case: YAML block_mapping_pair — use key as predicate
+    if node.kind() == "block_mapping_pair" {
+        if let Some(pred) = yaml_mapping_pair_predicate(node, source, counter) {
+            return pred;
+        }
+    }
     let Some(name_child) = node.child_by_field_name("name") else {
         return String::new();
     };
@@ -147,6 +172,49 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String 
     let cap = format!("@n{counter}");
     *counter += 1;
     format!("\n  name: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
+}
+
+/// For a YAML `block_sequence_item`, find the `id:` pair inside and use its value as predicate.
+fn yaml_sequence_item_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    // Walk children to find block_node → block_mapping → block_mapping_pair(key=id)
+    let id_value = find_yaml_id_in_sequence_item(node, source)?;
+    let cap = format!("@n{counter}");
+    *counter += 1;
+    Some(format!(
+        " (block_node (block_mapping (block_mapping_pair\n  key: (flow_node) @_ (#eq? @_ \"id\")\n  value: (flow_node) {cap} (#eq? {cap} \"{id_value}\"))))"
+    ))
+}
+
+fn find_yaml_id_in_sequence_item<'a>(node: Node<'a>, source: &str) -> Option<String> {
+    if node.kind() == "block_mapping_pair" {
+        let key = node.child_by_field_name("key")?;
+        if source[key.byte_range()].trim() == "id" {
+            let val = node.child_by_field_name("value")?;
+            let v = source[val.byte_range()].trim()
+                .trim_matches('"').trim_matches('\'').replace('"', "\\\"");
+            if !v.is_empty() { return Some(v); }
+        }
+        return None;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(id) = find_yaml_id_in_sequence_item(child, source) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// For a YAML `block_mapping_pair`, use the key text as predicate.
+fn yaml_mapping_pair_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    let key_node = node.child_by_field_name("key")?;
+    let key_text = source[key_node.byte_range()].trim().replace('"', "\\\"");
+    if key_text.is_empty() { return None; }
+    let key_type = key_node.kind();
+    let cap = format!("@n{counter}");
+    *counter += 1;
+    Some(format!("\n  key: ({key_type}) {cap} (#eq? {cap} \"{key_text}\")"))
 }
 
 /// For a markdown `section` node, find the heading text to use as predicate.
