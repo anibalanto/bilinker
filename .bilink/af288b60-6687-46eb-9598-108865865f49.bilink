@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_structural")) @target
+
+# Cache
+hash.0: 55bd455c2560f05eb0fb074920908dcecc63b6701cda4215a5e473ed58205aac
+commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
+hash.1: 9657bd5c191fe40b0d94f9fde3764e3e02bd87a3d6b76b05c507dfdc9577878d
+commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T21:14:03Z
