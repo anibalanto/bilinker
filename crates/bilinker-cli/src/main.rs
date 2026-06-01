@@ -90,6 +90,12 @@ enum Command {
         path: Option<PathBuf>,
     },
 
+    /// Remove a bilink file from the current layer
+    Remove {
+        /// UUID or 8-char prefix of the bilink to remove
+        uuid: String,
+    },
+
     /// Traverse the bilink graph from a file, position, or UUID
     Graph {
         /// File, file:line:col, or UUID
@@ -451,6 +457,15 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("note: adjacent node will detect CHAIN_DIRTY on next check");
                 }
             }
+        }
+
+        Command::Remove { uuid } => {
+            let bilink_dir = cwd.join(".bilink");
+            let path = bilinker::accept::find_bilink_path(&bilink_dir, &uuid)?;
+            std::fs::remove_file(&path)?;
+            let rel = path.strip_prefix(&cwd).unwrap_or(&path);
+            eprintln!("removed: {}", rel.display());
+            eprintln!("note: nodos adyacentes detectarán BROKEN en el próximo check");
         }
 
         Command::Graph { selector, depth, format, recursive, bilink_detail, url_scheme, show_query, show_range, show_data } => {

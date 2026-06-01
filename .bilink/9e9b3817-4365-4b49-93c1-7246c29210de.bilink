@@ -4,8 +4,9 @@ link.1: crates/bilinker-cli/src/main.rs :: (function_item name: (identifier) @n0
 # Cache
 hash.0: 44342e818e212136f0c68b6e4b7ad89c8271671644be56597afe4bdb7933d94c
 commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
-hash.1: 5360db506780b67949ae29ef357e5269bb134d530dabcb49b90c3265958c852c
+hash.1: 590621e5e58a2d4b398451262ced03dab18507febb491578717e063fa44b7aba
 commit.1: 4c68eeaeb24b107febbb80bcbe17c96483d75213
+range.1: 8690~20219
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T21:14:03Z
+resolved_at: 2026-06-01T22:16:00Z
