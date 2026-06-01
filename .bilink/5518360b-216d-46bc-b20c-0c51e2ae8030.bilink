@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "capture_identifies_workspace_file_and_method")) @target
+
+# Cache
+hash.0: 2ae5ffa64aaf0589c9ad315b512dbf8ea9ccbb49f08a676e56d7ae831265c89a
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: c3e708f37462930523a1cbd401a88812527837ce84994cfceec169a1c8b4e101
+commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T20:58:19Z

@@ -3,9 +3,10 @@ use tree_sitter::Language;
 
 pub fn language_for_file(file: &str) -> &'static str {
     match std::path::Path::new(file).extension().and_then(|e| e.to_str()) {
-        Some("java") => "java",
-        Some("rs")   => "rust",
-        _            => "text",
+        Some("java")         => "java",
+        Some("rs")           => "rust",
+        Some("yaml" | "yml") => "yaml",
+        _                    => "text",
     }
 }
 
@@ -13,7 +14,8 @@ pub fn for_language(lang: &str) -> Result<Language> {
     match lang {
         "java" => Ok(tree_sitter_java::language()),
         "rust" => Ok(tree_sitter_rust::language()),
-        other  => bail!("unsupported language: '{other}' (supported: java, rust)"),
+        "yaml" => Ok(tree_sitter_yaml::language()),
+        other  => bail!("unsupported language: '{other}' (supported: java, rust, yaml)"),
     }
 }
 
@@ -36,6 +38,9 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "trait_item",
             "impl_item",
             "mod_item",
+        ],
+        "yaml" => &[
+            "block_mapping_pair",
         ],
         _ => &[],
     }

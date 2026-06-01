@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_marks_new_chain_as_pending")) @target
+
+# Cache
+hash.0: 8111ca5b9e6dbe8041238fd2b577e578f275087fa8cf15a313f9940ee3dfbaeb
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: 5ed793e7c8039ab53f55c85420777116528cddacc0be70acb1fbe056e26caca1
+commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T20:58:19Z

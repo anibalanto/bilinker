@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "chain_status_shows_nodes")) @target
+
+# Cache
+hash.0: a77c494fd620353641e9104382a15caa4084a636e38ecd8205e531f2f269c983
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: c73ebb4445ee3954c17b3178feab0849a436032068c41fcfb197699b6982f21b
+commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T20:58:19Z

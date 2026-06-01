@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "get_by_file_returns_bilink_after_check")) @target
+
+# Cache
+hash.0: 2905369b62500334bf2a6a4014a170fe6b8940e9d2520e7cb3de421eff506524
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: 77ece3094a0230edbb4424e3b3fae10a62df3fc380e22056b067ea9f4af6ceff
+commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T20:58:19Z

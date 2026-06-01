@@ -1,0 +1,11 @@
+link.0: <
+link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "index_build_creates_index_file")) @target
+
+# Cache
+hash.0: fbfdcb5c7d2afd9d86a1bca23c86ed083ccf53799c492afc83b5552bbdaee07a
+commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
+hash.1: 5a1478c89e9608d9df0ead2bbfae52eea8f4f8db567d8f3fa49fed7f8217e8aa
+commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T20:58:19Z
