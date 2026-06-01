@@ -1,0 +1,12 @@
+link.0: <
+link.1: crates/bilinker/src/grammar.rs :: (use_declaration) @target
+
+# Cache
+hash.0: 4feebdea035ffeac2701b6a2bd383ee0df83532a493f59464a42f8cc4e10edb9
+commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
+hash.1: f4b22273cd450544fcdb5d26b9466d65448b90adf3c8994ad4e6c1f8f8993c90
+commit.1: db22d717dad771c137cdb0e805bbebfdb8b3e0e9
+range.1: 0~27
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-01T23:45:34Z

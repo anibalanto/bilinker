@@ -2,11 +2,11 @@ link.0: <
 link.1: crates/bilinker/src/capture.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "capture")) @target
 
 # Cache
-hash.0: 48b7a7dbbcef8a0e3dd9ccfc82fdf7fe6a7a14153c742773682a6f5fb0cb3aac
+hash.0: 0a53caee2b08342eb6f042369ddd8c0f1518eba5dd7cb86407104add19b8b612
 commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
 hash.1: a29b1c83e760576a5a011ed6220e3d3af466f076984b9ce0e366acd052870846
 commit.1: 8d2904b942e6576d64394fb32e471569e175bfe2
 range.1: 317~3294
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-01T23:27:40Z
+resolved_at: 2026-06-01T23:45:34Z
