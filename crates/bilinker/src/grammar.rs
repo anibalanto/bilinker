@@ -6,16 +6,18 @@ pub fn language_for_file(file: &str) -> &'static str {
         Some("java")         => "java",
         Some("rs")           => "rust",
         Some("yaml" | "yml") => "yaml",
+        Some("md")           => "markdown",
         _                    => "text",
     }
 }
 
 pub fn for_language(lang: &str) -> Result<Language> {
     match lang {
-        "java" => Ok(tree_sitter_java::language()),
-        "rust" => Ok(tree_sitter_rust::language()),
-        "yaml" => Ok(tree_sitter_yaml::language()),
-        other  => bail!("unsupported language: '{other}' (supported: java, rust, yaml)"),
+        "java"     => Ok(tree_sitter_java::LANGUAGE.into()),
+        "rust"     => Ok(tree_sitter_rust::LANGUAGE.into()),
+        "yaml"     => Ok(tree_sitter_yaml::LANGUAGE.into()),
+        "markdown" => Ok(tree_sitter_md::LANGUAGE.into()),
+        other      => bail!("unsupported language: '{other}' (supported: java, rust, yaml, markdown)"),
     }
 }
 
@@ -41,6 +43,10 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
         ],
         "yaml" => &[
             "block_mapping_pair",
+        ],
+        "markdown" => &[
+            "atx_heading",
+            "setext_heading",
         ],
         _ => &[],
     }

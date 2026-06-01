@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 /// Run a tree-sitter query against `source` and return the byte range of the `@target` capture.
@@ -15,8 +16,9 @@ pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
+    let mut matches = cursor.matches(&query, root, source.as_bytes());
 
-    for m in cursor.matches(&query, root, source.as_bytes()) {
+    while let Some(m) = matches.next() {
         for cap in m.captures {
             if cap.index == target_idx {
                 return Ok(Some((cap.node.start_byte(), cap.node.end_byte())));
