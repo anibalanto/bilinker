@@ -529,8 +529,8 @@ fn print_chain_status(root: &Path, uuid: &str) -> anyhow::Result<()> {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "?".into());
-        let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "?".into());
+        let s0 = bilinker::state_str(&bl.state0);
+        let s1 = bilinker::state_str(&bl.state1);
 
         println!("  {}/  ({s0}, {s1})", layer);
         println!("    link.0  {}", bl.link0);
@@ -714,8 +714,8 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
         };
 
         let uuid_short = bl.uuid[..8.min(bl.uuid.len())].to_string();
-        let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
-        let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
+        let s0 = bilinker::state_str(&bl.state0);
+        let s1 = bilinker::state_str(&bl.state1);
 
         groups.entry(dir).or_default().push(Row { file_name, uuid_short, s0, s1 });
     }
@@ -893,8 +893,8 @@ fn graph_tree(
     let child_prefix = format!("{prefix}{ext}");
 
     let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-    let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+    let s0 = bilinker::state_str(&bl.state0);
+    let s1 = bilinker::state_str(&bl.state1);
     let layer_label = if depth > 0 {
         let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
         format!("  ({})", rel.display())
@@ -943,8 +943,8 @@ fn graph_flat(
     use bilinker::bilink::BiLinkFile;
 
     let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-    let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+    let s0 = bilinker::state_str(&bl.state0);
+    let s1 = bilinker::state_str(&bl.state1);
     let layer_label = {
         let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
         if rel.as_os_str().is_empty() { ".".to_string() } else { rel.display().to_string() }
@@ -1122,8 +1122,8 @@ fn collect_dot_simple(
     use bilinker::bilink::BiLinkFile;
 
     let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-    let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+    let s0 = bilinker::state_str(&bl.state0);
+    let s1 = bilinker::state_str(&bl.state1);
     let lbl = layer_label(root, layer_root);
 
     let local_id = add_structural_node(bl, layer_root, &lbl, dot, detail, url_scheme);
@@ -1212,8 +1212,8 @@ fn collect_dot(
     use bilinker::link::LinkEndpoint;
 
     let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-    let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+    let s0 = bilinker::state_str(&bl.state0);
+    let s1 = bilinker::state_str(&bl.state1);
     let lbl = layer_label(root, layer_root);
 
     let bilink_id  = format!("{uuid_short}@{lbl}");

@@ -44,9 +44,10 @@ fn lang_from_file(file: &str) -> &'static str {
 
 pub struct HtmlNode {
     pub id:         String,
+    pub file:       String,   // relative file path within layer
     pub label:      String,
     pub layer:      String,
-    pub abs_path:   String,   // absolute filesystem path, no file:// prefix
+    pub abs_path:   String,
     pub content:    String,
     pub start_line: usize,
     pub lang:       &'static str,
@@ -95,16 +96,74 @@ impl HtmlGraph {
                 esc_json(&layer_id(lbl)), esc_json(lbl), depth)
         }).collect::<Vec<_>>().join(",");
 
-        let mut depth_counters: HashMap<usize, usize> = HashMap::new();
-        let nodes_json = self.nodes.iter().map(|n| {
+        // Build file-group nodes: one per (file, layer) pair
+        let fg_id = |file: &str, layer: &str| -> String {
+            format!("fg_{}_{}", file.replace(['/', '.', '-'], "_"), layer.replace(['/', '.', '-'], "_"))
+        };
+        // Build file-groups in directory order using a sorted snapshot of nodes
+        let mut nodes_for_fg: Vec<&HtmlNode> = self.nodes.iter().collect();
+        nodes_for_fg.sort_by(|a, b| {
+            let da = *self.layers.get(&a.layer).unwrap_or(&0);
+            let db = *self.layers.get(&b.layer).unwrap_or(&0);
+            da.cmp(&db)
+              .then(a.layer.cmp(&b.layer))
+              .then(a.file.cmp(&b.file))
+        });
+        let mut seen_fg: HashSet<String> = HashSet::new();
+        let mut fg_parts: Vec<String> = vec![];
+        for n in &nodes_for_fg {
+            let gid = fg_id(&n.file, &n.layer);
+            if seen_fg.insert(gid.clone()) {
+                let fname = std::path::Path::new(&n.file)
+                    .file_name().and_then(|s| s.to_str()).unwrap_or(&n.file);
+                fg_parts.push(format!(
+                    r#"{{"id":"{}","label":"{}","layer_id":"{}","layer":"{}","type":"file-group"}}"#,
+                    esc_json(&gid), esc_json(fname),
+                    esc_json(&layer_id(&n.layer)), esc_json(&n.layer)
+                ));
+            }
+        }
+        let file_groups_json = fg_parts.join(",");
+
+        // Sort nodes: group by (depth, layer, dir, filename, start_line)
+        // so nodes are ordered by folder within each column
+        let file_dir  = |f: &str| std::path::Path::new(f).parent()
+            .and_then(|p| p.to_str()).unwrap_or("").to_string();
+        let file_name = |f: &str| std::path::Path::new(f).file_name()
+            .and_then(|s| s.to_str()).unwrap_or(f).to_string();
+
+        let mut ordered: Vec<&HtmlNode> = self.nodes.iter().collect();
+        ordered.sort_by(|a, b| {
+            let da = *self.layers.get(&a.layer).unwrap_or(&0);
+            let db = *self.layers.get(&b.layer).unwrap_or(&0);
+            da.cmp(&db)
+              .then(a.layer.cmp(&b.layer))
+              .then(file_dir(&a.file).cmp(&file_dir(&b.file)))
+              .then(file_name(&a.file).cmp(&file_name(&b.file)))
+              .then(a.start_line.cmp(&b.start_line))
+        });
+
+        // Assign y positions: add a gap of +1 row between different file-groups in the same column
+        let mut depth_y: HashMap<usize, usize> = HashMap::new();
+        let mut prev_fg: HashMap<usize, String> = HashMap::new();
+        let nodes_json = ordered.iter().map(|n| {
             let depth = *self.layers.get(&n.layer).unwrap_or(&0);
-            let idx   = { let c = depth_counters.entry(depth).or_insert(0); let v = *c; *c += 1; v };
+            let gid   = fg_id(&n.file, &n.layer);
+            let y = {
+                let row = depth_y.entry(depth).or_insert(0);
+                let prev = prev_fg.entry(depth).or_default();
+                if !prev.is_empty() && *prev != gid { *row += 1; } // gap between file-groups
+                *prev = gid.clone();
+                let v = *row;
+                *row += 1;
+                v
+            };
             format!(
-                r#"{{"id":"{}","label":"{}","layer_id":"{}","layer":"{}","abs_path":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{}}}"#,
+                r#"{{"id":"{}","label":"{}","file_group_id":"{}","layer_id":"{}","layer":"{}","abs_path":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{}}}"#,
                 esc_json(&n.id), esc_json(&n.label),
-                esc_json(&layer_id(&n.layer)), esc_json(&n.layer),
+                esc_json(&gid), esc_json(&layer_id(&n.layer)), esc_json(&n.layer),
                 esc_json(&n.abs_path), esc_json(&n.content),
-                n.start_line, n.lang, depth, idx
+                n.start_line, n.lang, depth, y
             )
         }).collect::<Vec<_>>().join(",");
 
@@ -116,7 +175,7 @@ impl HtmlGraph {
             )
         }).collect::<Vec<_>>().join(",");
 
-        let data = format!(r#"{{"layers":[{layers_json}],"nodes":[{nodes_json}],"edges":[{edges_json}]}}"#);
+        let data = format!(r#"{{"layers":[{layers_json}],"file_groups":[{file_groups_json}],"nodes":[{nodes_json}],"edges":[{edges_json}]}}"#);
         TEMPLATE.replace("GRAPH_DATA_PLACEHOLDER", &data)
     }
 }
@@ -134,8 +193,8 @@ pub fn collect(
     max_depth: Option<usize>,
 ) -> anyhow::Result<()> {
     let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bl.state0.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-    let s1 = bl.state1.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+    let s0 = bilinker::state_str(&bl.state0);
+    let s1 = bilinker::state_str(&bl.state1);
     let lbl = crate::layer_label(root, layer_root);
 
     let local_id = add_structural(bl, layer_root, &lbl, hg, url_scheme);
@@ -151,12 +210,15 @@ pub fn collect(
             let adj_id  = add_structural(&adj_bl, &adj_layer, &adj_lbl, hg, url_scheme);
 
             if let (Some(ref lid), Some(ref aid)) = (&local_id, &adj_id) {
+                // structural endpoint state from each side
+                let src_state = worst_state_str(&[&bl.state0, &bl.state1]);
+                let tgt_state = worst_state_str(&[&adj_bl.state0, &adj_bl.state1]);
                 hg.add_edge(HtmlEdge {
                     id:     format!("e_{uuid_short}_{}", &lid[..8.min(lid.len())]),
                     source: lid.clone(),
                     target: aid.clone(),
                     label:  uuid_short.to_string(),
-                    states: format!("{s0}↔{s1}"),
+                    states: format!("{src_state}↔{tgt_state}"),
                 });
             }
 
@@ -166,6 +228,29 @@ pub fn collect(
         }
     }
     Ok(())
+}
+
+fn worst_state_str(states: &[&Option<bilinker::link::EndpointState>]) -> String {
+    use bilinker::link::EndpointState::*;
+    let priority = |s: &Option<bilinker::link::EndpointState>| match s {
+        None                   => 1,
+        Some(Ok)               => 2,
+        Some(Displaced)        => 3,
+        Some(Moved)            => 3,
+        Some(Reanchored)       => 3,
+        Some(Expanded)         => 3,
+        Some(ChainDirty)       => 4,
+        Some(Pending)          => 5,
+        Some(Todo)             => 5,
+        Some(Altered)          => 6,
+        Some(Unanchored)       => 7,
+        Some(Deleted)          => 8,
+        Some(Broken)           => 9,
+    };
+    states.iter()
+        .max_by_key(|s| priority(s))
+        .map(|s| bilinker::state_str(s))
+        .unwrap_or_else(|| "NONE".to_string())
 }
 
 fn add_structural(
@@ -196,7 +281,7 @@ fn add_structural(
     };
 
     hg.add_node(HtmlNode {
-        id: id.clone(), label, layer: lbl.to_string(),
+        id: id.clone(), file: sref.file.clone(), label, layer: lbl.to_string(),
         abs_path, content, start_line, lang,
     });
     Some(id)
@@ -278,12 +363,16 @@ G.layers.forEach(l =>
   elements.push({ data: { id: l.id, label: l.label, type: 'layer' } })
 );
 
+G.file_groups.forEach(fg =>
+  elements.push({ data: { id: fg.id, label: fg.label, parent: fg.layer_id, type: 'file-group' } })
+);
+
 const yIdx = {};
 G.nodes.forEach(n => {
   const k = n.xi;
   yIdx[k] = yIdx[k] || 0;
   elements.push({
-    data: { id: n.id, label: n.label, parent: n.layer_id, type: 'file',
+    data: { id: n.id, label: n.label, parent: n.file_group_id, type: 'file',
             abs_path: n.abs_path, content: n.content, layer: n.layer,
             start_line: n.start_line, lang: n.lang },
     position: { x: n.xi * COL, y: yIdx[k]++ * ROW }
@@ -304,6 +393,11 @@ const cy = cytoscape({
         'border-color': '#30363d', 'border-style': 'dashed', 'border-width': 2,
         'label': 'data(label)', 'text-valign': 'top', 'text-halign': 'center',
         'color': '#6e7681', 'font-family': 'Courier New', 'font-size': 12, 'padding': 28 }},
+    { selector: 'node[type="file-group"]', style: {
+        'background-color': 'rgba(31,111,235,0.07)', 'background-opacity': 1,
+        'border-color': '#1f6feb', 'border-style': 'solid', 'border-width': 1,
+        'label': 'data(label)', 'text-valign': 'top', 'text-halign': 'center',
+        'color': '#58a6ff', 'font-family': 'Courier New', 'font-size': 10, 'padding': 14 }},
     { selector: 'node[type="file"]', style: {
         'shape': 'round-rectangle', 'background-color': '#161b22',
         'border-color': '#1f6feb', 'border-width': 1.5,

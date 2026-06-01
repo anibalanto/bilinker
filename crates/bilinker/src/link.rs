@@ -59,6 +59,11 @@ impl FromStr for EndpointState {
     }
 }
 
+/// Returns the state as a string, or "NONE" if no state has been recorded yet.
+pub fn state_str(state: &Option<EndpointState>) -> String {
+    state.as_ref().map_or_else(|| "NONE".to_string(), |s| s.to_string())
+}
+
 /// A parsed bilink endpoint: `file [:: query [:: start~end]]`
 /// or a stratum path pointing to a layer directory.
 ///

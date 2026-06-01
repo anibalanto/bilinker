@@ -10,5 +10,6 @@ pub mod grammar;
 pub mod hash;
 pub mod index;
 pub mod link;
+pub use link::state_str;
 pub mod query;
 pub mod task;
