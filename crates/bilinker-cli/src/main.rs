@@ -887,9 +887,13 @@ fn layer_children(bl: &bilinker::bilink::BiLinkFile, layer_root: &Path) -> Vec<(
     for endpoint in [&bl.link0, &bl.link1] {
         if let LinkEndpoint::Layer(tokens) = endpoint {
             if let Ok(adj) = stratum::resolve(layer_root, layer_root, tokens) {
-                let adj_bilink = adj.join(".bilink").join(format!("{}.bilink", bl.uuid));
+                // Walk up to the true root of the adjacent layer (.git or .bilink)
+                let true_adj = bilinker::config::Config::load_from(&adj)
+                    .map(|(r, _)| r)
+                    .unwrap_or(adj);
+                let adj_bilink = true_adj.join(".bilink").join(format!("{}.bilink", bl.uuid));
                 if adj_bilink.exists() {
-                    children.push((adj_bilink, adj));
+                    children.push((adj_bilink, true_adj));
                 }
             }
         }

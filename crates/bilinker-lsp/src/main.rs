@@ -54,7 +54,11 @@ impl LanguageServer for Backend {
         let Some(root) = self.project_root(uri) else { return Ok(None) };
         let file_path  = uri.to_file_path().unwrap_or_default();
 
+        self.client.log_message(MessageType::INFO,
+            format!("hover: root={} file={}", root.display(), file_path.display())).await;
         let results = find_by_file(&root, &file_path).unwrap_or_default();
+        self.client.log_message(MessageType::INFO,
+            format!("hover: {} bilinks found", results.len())).await;
         if results.is_empty() { return Ok(None); }
 
         // Filter bilinks whose range covers the cursor position
