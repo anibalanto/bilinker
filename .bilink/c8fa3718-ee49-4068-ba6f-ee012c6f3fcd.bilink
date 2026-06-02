@@ -1,0 +1,12 @@
+link.0: <
+link.1: crates/bilinker-lsp/src/main.rs :: (impl_item) @target
+
+# Cache
+hash.0: 30a5bb196cc15f2c08a221c90f43502edf3507c8f72847cd612295b0c5b60784
+commit.0: 723c25b05fa52f7848f5d0dfd86dfd1ea1c8066a
+hash.1: 87a5df684b02db6869eda76806262f4043d967c7d8d45e5521546599201fc167
+commit.1: e77dc8598f26006fe97cd53a89f4374fb0426af2
+range.1: 331~532
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-02T01:44:05Z

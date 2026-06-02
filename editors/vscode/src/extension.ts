@@ -76,28 +76,38 @@ function openGraph(filePath: string, recursive: boolean) {
         return;
     }
 
-    const tmpFile = path.join(os.tmpdir(), 'bilinker-graph.html');
-    const cwd     = fs.statSync(filePath).isDirectory() ? filePath : path.dirname(filePath);
-    const selector = '.';
+    const isDir    = fs.statSync(filePath).isDirectory();
+    const cwd      = isDir ? filePath : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.dirname(filePath));
+    const selector = isDir ? '.' : path.relative(cwd, filePath);
     const args = [bilinker, 'graph', selector, '--format', 'html'];
     if (recursive) args.push('--recursive');
 
     vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Generating bilink graph…' },
-        () => new Promise<void>((resolve, reject) => {
-            const child = spawn(args[0], args.slice(1), { cwd });
+        () => new Promise<string>((resolve, reject) => {
+            const child = spawn(args[0], args.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
             const chunks: Buffer[] = [];
+            const errChunks: Buffer[] = [];
             child.stdout.on('data', (d: Buffer) => chunks.push(d));
-            child.stderr.on('data', (d: Buffer) => console.error(d.toString()));
+            child.stderr.on('data', (d: Buffer) => errChunks.push(d));
+            child.on('error', (err: Error) => reject(err));
             child.on('close', (code: number) => {
-                if (code !== 0) { reject(new Error(`bilinker exited ${code}`)); return; }
-                fs.writeFileSync(tmpFile, Buffer.concat(chunks));
-                resolve();
+                if (code !== 0) {
+                    const stderr = Buffer.concat(errChunks).toString().trim();
+                    reject(new Error(`bilinker exited ${code}${stderr ? ': ' + stderr : ''}`));
+                    return;
+                }
+                resolve(Buffer.concat(chunks).toString('utf8'));
             });
         })
-    ).then(() => {
-        // Open in external browser
-        vscode.env.openExternal(vscode.Uri.file(tmpFile));
+    ).then((html: string) => {
+        const panel = vscode.window.createWebviewPanel(
+            'bilinkerGraph',
+            recursive ? 'Bilinker: System Graph' : `Bilinker: ${path.basename(cwd)}`,
+            vscode.ViewColumn.Beside,
+            { enableScripts: true }
+        );
+        panel.webview.html = html;
     }, (err: Error) => {
         vscode.window.showErrorMessage(`bilinker graph failed: ${err.message}`);
     });

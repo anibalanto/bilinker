@@ -29,10 +29,6 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions { resolve_provider: Some(false) }),
-                execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["bilinker.openGraph".into()],
-                    ..Default::default()
-                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -140,18 +136,6 @@ impl LanguageServer for Backend {
         Ok(Some(lenses))
     }
 
-    async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<serde_json::Value>> {
-        if params.command == "bilinker.openGraph" {
-            if let Some(uri_val) = params.arguments.first() {
-                if let Some(uri_str) = uri_val.as_str() {
-                    self.client
-                        .log_message(MessageType::INFO, format!("bilinker graph: {uri_str}"))
-                        .await;
-                }
-            }
-        }
-        Ok(None)
-    }
 }
 
 fn byte_to_line(source: &str, byte: usize) -> usize {
