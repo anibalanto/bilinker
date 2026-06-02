@@ -48,8 +48,14 @@ fn traverse_layer(
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
-    let adjacent_root = stratum::resolve(root, root, &layer_path)
-        .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
+    let adjacent_root = {
+        let p = stratum::resolve(root, root, &layer_path)
+            .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
+        // Walk up to the true root of the adjacent layer (.git or .bilink)
+        let (true_root, _) = crate::config::Config::load_from(&p)
+            .with_context(|| format!("finding root of adjacent layer {}", p.display()))?;
+        true_root
+    };
 
     let adjacent_bilink_dir = adjacent_root.join(".bilink");
     let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)

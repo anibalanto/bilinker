@@ -75,11 +75,18 @@ impl LanguageServer for Backend {
 
             // Try to get the content of the other side
             let other_side = if *n == 0 { 1u8 } else { 0u8 };
-            let content = get(&root, uuid, other_side, None, None)
-                .map(|r| format!("`{}` lines {}–{}\n```{}\n{}\n```",
+            let content = match get(&root, uuid, other_side, None, None) {
+                Ok(r) => format!("`{}` lines {}–{}\n```{}\n{}\n```",
                     r.file, r.start_line, r.end_line,
-                    lang_from_file(&r.file), r.content))
-                .unwrap_or_else(|_| format!("bytes {}–{}", range.start, range.end));
+                    lang_from_file(&r.file), r.content),
+                Err(e) => {
+                    self.client.log_message(
+                        MessageType::ERROR,
+                        format!("get {uuid}.{other_side}: {e:#}"),
+                    ).await;
+                    format!("bytes {}–{}", range.start, range.end)
+                }
+            };
 
             lines.push(format!("**{}** (`.{}`)\n{}", uuid_short, n, content));
         }

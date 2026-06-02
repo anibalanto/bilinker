@@ -275,7 +275,13 @@ fn main() -> anyhow::Result<()> {
         Command::Get { target, before, after } => {
             let uuid_form = {
                 let t = target.trim();
-                (t.ends_with(".0") || t.ends_with(".1")) && t.contains('-')
+                if let Some(dot) = t.rfind('.') {
+                    (t.ends_with(".0") || t.ends_with(".1"))
+                        && t[..dot].chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+                        && !t[..dot].is_empty()
+                } else {
+                    false
+                }
             };
             let pos_form = {
                 let parts: Vec<&str> = target.rsplitn(3, ':').collect();
