@@ -1,0 +1,11 @@
+link.0: <
+link.1: editors/vscode/src/extension.ts :: (function_declaration name: (identifier) @n0 (#eq? @n0 "activate")) @target
+
+# Cache
+hash.0: 2edbb1acab4d702b09f2fddc4ef460bfde371e27db72e8d86959228bf7b1f093
+commit.0: 723c25b05fa52f7848f5d0dfd86dfd1ea1c8066a
+hash.1: 0b04fd28f06e5b5ae0d8eb6fab532f177d54158e5785755d0bc58abe6c328462
+commit.1: 3fe902cc5150922e72d1898389fb912b14b4abb8
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-02T01:56:47Z

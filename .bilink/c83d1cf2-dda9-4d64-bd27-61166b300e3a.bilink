@@ -1,0 +1,11 @@
+link.0: <
+link.1: editors/vscode/src/extension.ts :: (function_declaration name: (identifier) @n0 (#eq? @n0 "findBinary")) @target
+
+# Cache
+hash.0: f22008b23b693458f2af7bbacce0d569596d86c97651b78c714f17fea8e04ead
+commit.0: 723c25b05fa52f7848f5d0dfd86dfd1ea1c8066a
+hash.1: 0c4abbed1a9196c058c2a907a9db8185f9231e2eecf4b7d85344cbd495d445a8
+commit.1: 3fe902cc5150922e72d1898389fb912b14b4abb8
+state.0: OK
+state.1: OK
+resolved_at: 2026-06-02T01:56:47Z

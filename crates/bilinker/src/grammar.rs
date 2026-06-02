@@ -7,6 +7,8 @@ pub fn language_for_file(file: &str) -> &'static str {
         Some("rs")           => "rust",
         Some("yaml" | "yml") => "yaml",
         Some("md")           => "markdown",
+        Some("ts" | "js")    => "typescript",
+        Some("tsx" | "jsx")  => "tsx",
         _                    => "text",
     }
 }
@@ -16,8 +18,10 @@ pub fn for_language(lang: &str) -> Result<Language> {
         "java"     => Ok(tree_sitter_java::LANGUAGE.into()),
         "rust"     => Ok(tree_sitter_rust::LANGUAGE.into()),
         "yaml"     => Ok(tree_sitter_yaml::LANGUAGE.into()),
-        "markdown" => Ok(tree_sitter_md::LANGUAGE.into()),
-        other      => bail!("unsupported language: '{other}' (supported: java, rust, yaml, markdown)"),
+        "markdown"   => Ok(tree_sitter_md::LANGUAGE.into()),
+        "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        "tsx"        => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
+        other        => bail!("unsupported language: '{other}' (supported: java, rust, yaml, markdown, typescript, tsx)"),
     }
 }
 
@@ -47,6 +51,17 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
         "markdown" => &[
             "section",
         ],
+        "typescript" | "tsx" => &[
+            "class_declaration",
+            "abstract_class_declaration",
+            "function_declaration",
+            "generator_function_declaration",
+            "enum_declaration",
+            "interface_declaration",
+            "type_alias_declaration",
+            "method_definition",
+            "method_signature",
+        ],
         _ => &[],
     }
 }
@@ -65,15 +80,29 @@ pub fn name_field(lang: &str, kind: &str) -> Option<&'static str> {
         ("rust", "trait_item")    => Some("name"),
         ("rust", "mod_item")      => Some("name"),
         ("rust", "impl_item")     => Some("type"),
+        ("typescript" | "tsx", "class_declaration")          => Some("name"),
+        ("typescript" | "tsx", "abstract_class_declaration") => Some("name"),
+        ("typescript" | "tsx", "function_declaration")       => Some("name"),
+        ("typescript" | "tsx", "generator_function_declaration") => Some("name"),
+        ("typescript" | "tsx", "enum_declaration")           => Some("name"),
+        ("typescript" | "tsx", "interface_declaration")      => Some("name"),
+        ("typescript" | "tsx", "type_alias_declaration")     => Some("name"),
+        ("typescript" | "tsx", "method_definition")          => Some("name"),
+        ("typescript" | "tsx", "method_signature")           => Some("name"),
         _ => None,
     }
 }
 
 /// Returns the tree-sitter node kind used for the name of a given declaration kind.
 /// In Java, class/interface names use `type_identifier`; methods use `identifier`.
-pub fn name_node_type(lang: &str, _kind: &str) -> &'static str {
-    match lang {
-        "java" => "identifier",
-        _      => "identifier",
+pub fn name_node_type(lang: &str, kind: &str) -> &'static str {
+    match (lang, kind) {
+        ("typescript" | "tsx", "class_declaration")
+        | ("typescript" | "tsx", "abstract_class_declaration")
+        | ("typescript" | "tsx", "interface_declaration")
+        | ("typescript" | "tsx", "type_alias_declaration") => "type_identifier",
+        ("typescript" | "tsx", "method_definition")
+        | ("typescript" | "tsx", "method_signature")       => "property_identifier",
+        _ => "identifier",
     }
 }
