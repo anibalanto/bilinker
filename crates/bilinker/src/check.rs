@@ -78,13 +78,19 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     bl.write(bilink_path)?;
 
-    // Check subgraph if declared
-    if let Some(subgraph_symbol) = &bl.subgraph.clone() {
-        let bilink_dir = layer_root.join(".bilink");
-        let scip_path  = bilink_dir.join("index/index.scip");
-        if scip_path.exists() {
-            if let Ok(index) = ScipIndex::load(&scip_path, layer_root) {
-                let _ = check_subgraph(&index, layer_root, &bilink_dir, subgraph_symbol, false);
+    // Check subgraph.N if declared (only for structural endpoints)
+    let bilink_dir = layer_root.join(".bilink");
+    let scip_path  = bilink_dir.join("index/index.scip");
+    let subgraphs: [(Option<&String>, &LinkEndpoint); 2] = [
+        (bl.subgraph0.as_ref(), &bl.link0),
+        (bl.subgraph1.as_ref(), &bl.link1),
+    ];
+    for (symbol_opt, endpoint) in subgraphs {
+        if let (Some(symbol), LinkEndpoint::Structural(_)) = (symbol_opt, endpoint) {
+            if scip_path.exists() {
+                if let Ok(index) = ScipIndex::load(&scip_path, layer_root) {
+                    let _ = check_subgraph(&index, layer_root, &bilink_dir, symbol, false);
+                }
             }
         }
     }
@@ -366,7 +372,7 @@ mod tests {
         let bl = BiLinkFile {
             uuid: uuid.into(),
             link0, link1,
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,
@@ -406,7 +412,7 @@ mod tests {
             uuid:    "uuid1".into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   whole_file_endpoint("a.md"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   Some(stored_hash.clone()),
             commit0: Some("abc1234".into()),
             hash1:   Some(stored_hash),
@@ -434,7 +440,7 @@ mod tests {
             uuid:    "uuid1".into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   whole_file_endpoint("a.md"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   Some("old-hash-that-wont-match".into()),
             commit0: Some("abc1234".into()),
             hash1:   Some("old-hash-that-wont-match".into()),
@@ -497,7 +503,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   layer_endpoint("../.."),
             link1:   whole_file_endpoint("b.md"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   None, commit0: None,
             hash1:   Some(adj_struct_hash.clone()),
             commit1: Some("abc1234".into()),
@@ -513,7 +519,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   None, commit0: None,
             hash1:   Some(adj_struct_hash),
             commit1: Some("abc1234".into()),
@@ -541,7 +547,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   layer_endpoint("../.."),
             link1:   whole_file_endpoint("b.md"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   None, commit0: None,
             hash1:   Some("current-hash".into()),
             commit1: Some("abc1234".into()),
@@ -557,7 +563,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   None, commit0: None,
             hash1:   Some("stale-hash-000".into()),
             commit1: Some("abc1234".into()),
@@ -601,7 +607,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0:   None, commit0: None,
             hash1:   Some("previously-accepted-hash".into()),
             commit1: Some("abc1234".into()),

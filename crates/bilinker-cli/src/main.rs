@@ -1,7 +1,7 @@
 mod html_graph;
 
-
 use clap::{ArgAction, Parser, Subcommand};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -35,6 +35,12 @@ enum Command {
         before: Option<String>,
         #[arg(short = 'A', value_name = "rows:cols")]
         after: Option<String>,
+        /// Incluir el código de los callees recursivamente (requiere index.scip)
+        #[arg(long)]
+        recursive: bool,
+        /// Profundidad máxima de recursión (default: ilimitada)
+        #[arg(long)]
+        depth: Option<usize>,
     },
 
     /// Verify bilinks in a .bilink file or directory
@@ -275,7 +281,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("hash: {}", result.hash);
         }
 
-        Command::Get { target, before, after } => {
+        Command::Get { target, before, after, recursive, depth } => {
             let uuid_form = {
                 let t = target.trim();
                 if let Some(dot) = t.rfind('.') {
@@ -303,6 +309,24 @@ fn main() -> anyhow::Result<()> {
                 let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
                 eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
                 println!("{}", result.content);
+
+                if recursive {
+                    let bilink_dir = root.join(".bilink");
+                    let scip_path  = bilink_dir.join("index/index.scip");
+                    if scip_path.exists() {
+                        let bl = bilinker::bilink::BiLinkFile::find_by_id(&bilink_dir, name)
+                            .map(|(_, b)| b).ok();
+                        let subgraph_sym = bl.as_ref().and_then(|b| {
+                            if endpoint == 0 { b.subgraph0.as_deref() }
+                            else             { b.subgraph1.as_deref() }
+                        });
+                        if let Some(root_sym) = subgraph_sym {
+                            if let Ok(index) = bilinker::scip_index::ScipIndex::load(&scip_path, &root) {
+                                print_callees_recursive(&index, &root, root_sym, depth.unwrap_or(usize::MAX), 1, &mut std::collections::HashSet::new())?;
+                            }
+                        }
+                    }
+                }
             } else if pos_form {
                 let mut parts = target.rsplitn(3, ':');
                 let col:  usize = parts.next().unwrap().parse()?;
@@ -1296,4 +1320,41 @@ fn line_col_to_byte(source: &str, line: usize, col: usize) -> usize {
         byte = i;
     }
     byte
+}
+
+fn print_callees_recursive(
+    index: &bilinker::scip_index::ScipIndex,
+    layer_root: &Path,
+    symbol: &str,
+    max_depth: usize,
+    current_depth: usize,
+    visited: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    if current_depth > max_depth { return Ok(()); }
+    if !visited.insert(symbol.to_string()) { return Ok(()); }
+
+    for (callee, _name_file, _name_range) in index.direct_callees(symbol) {
+        let indent = "  ".repeat(current_depth);
+
+        // Use body_range for full function source
+        let Some((file, range)) = index.body_range(&callee) else { continue };
+        let source_path = layer_root.join(file);
+        let Ok(content) = std::fs::read(&source_path) else { continue };
+        let fragment = &content[range.start.min(content.len())..range.end.min(content.len())];
+        let Ok(text) = std::str::from_utf8(fragment) else { continue };
+
+        let start_line = content[..range.start.min(content.len())]
+            .iter().filter(|&&b| b == b'\n').count() + 1;
+        let end_line = content[..range.end.min(content.len())]
+            .iter().filter(|&&b| b == b'\n').count() + 1;
+
+        eprintln!("{indent}# {file}  lines {start_line}–{end_line}  [depth {current_depth}]");
+        for line in text.lines() {
+            println!("{indent}{line}");
+        }
+        println!();
+
+        print_callees_recursive(index, layer_root, &callee, max_depth, current_depth + 1, visited)?;
+    }
+    Ok(())
 }

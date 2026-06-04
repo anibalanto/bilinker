@@ -39,15 +39,14 @@ pub fn chain_new(
 
     // Same-layer direct link: both tips in the same directory → one file.
     if n == 2 && normalize(&all_layers[0]) == normalize(&all_layers[1]) {
-        let subgraph = if no_subgraph { None } else {
-            detect_scip_symbol(root, &all_layers[0], &tips[0].1)
-                .or_else(|| detect_scip_symbol(root, &all_layers[1], &tips[1].1))
-        };
+        let sg0 = if no_subgraph { None } else { detect_scip_symbol(root, &all_layers[0], &tips[0].1) };
+        let sg1 = if no_subgraph { None } else { detect_scip_symbol(root, &all_layers[1], &tips[1].1) };
         let bl = BiLinkFile {
             uuid:      uuid.clone(),
             link0:     tips[0].1.clone(),
             link1:     tips[1].1.clone(),
-            subgraph,
+            subgraph0: sg0,
+            subgraph1: sg1,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0:    None, range1: None,
@@ -64,25 +63,28 @@ pub fn chain_new(
     for i in 0..n {
         let layer = &all_layers[i];
 
-        let (link0, link1, subgraph) = if i == 0 {
+        let (link0, link1, sg0, sg1) = if i == 0 {
             let to_next = layer_endpoint(layer, &all_layers[i + 1])?;
             let sg = if no_subgraph { None } else { detect_scip_symbol(root, layer, &tips[0].1) };
-            (tips[0].1.clone(), to_next, sg)
+            // tip0: link0=structural, link1=layer → subgraph.0
+            (tips[0].1.clone(), to_next, sg, None)
         } else if i == n - 1 {
             let to_prev = layer_endpoint(layer, &all_layers[i - 1])?;
             let sg = if no_subgraph { None } else { detect_scip_symbol(root, layer, &tips[1].1) };
-            (to_prev, tips[1].1.clone(), sg)
+            // tip1: link0=layer, link1=structural → subgraph.1
+            (to_prev, tips[1].1.clone(), None, sg)
         } else {
             let to_prev = layer_endpoint(layer, &all_layers[i - 1])?;
             let to_next = layer_endpoint(layer, &all_layers[i + 1])?;
-            (to_prev, to_next, None)
+            (to_prev, to_next, None, None)
         };
 
         let bl = BiLinkFile {
             uuid:      uuid.clone(),
             link0,
             link1,
-            subgraph,
+            subgraph0: sg0,
+            subgraph1: sg1,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0:    None, range1: None,
