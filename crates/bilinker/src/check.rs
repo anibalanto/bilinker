@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
@@ -8,6 +9,8 @@ use crate::grammar;
 use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
 use crate::query;
+use crate::scip_index::{check_or_create_sciplink, ScipIndex};
+use crate::sciplink::{sciplink_path, ScipLinkState};
 use crate::task::resolve_task_path;
 
 #[derive(Debug)]
@@ -75,7 +78,102 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     bl.write(bilink_path)?;
 
+    // Check subgraph if declared
+    if let Some(subgraph_symbol) = &bl.subgraph.clone() {
+        let bilink_dir = layer_root.join(".bilink");
+        let scip_path  = bilink_dir.join("index/index.scip");
+        if scip_path.exists() {
+            if let Ok(index) = ScipIndex::load(&scip_path, layer_root) {
+                let _ = check_subgraph(&index, layer_root, &bilink_dir, subgraph_symbol, false);
+            }
+        }
+    }
+
     Ok(CheckResult { uuid, state0, state1, updated })
+}
+
+pub fn check_subgraph(
+    index: &ScipIndex,
+    layer_root: &Path,
+    bilink_dir: &Path,
+    root_symbol: &str,
+    prune: bool,
+) -> Result<Vec<(String, ScipLinkState)>> {
+    let mut results = Vec::new();
+    let mut visited = HashSet::new();
+    check_subgraph_recursive(index, layer_root, bilink_dir, root_symbol, &mut visited, &mut results, prune)?;
+    Ok(results)
+}
+
+fn check_subgraph_recursive(
+    index: &ScipIndex,
+    layer_root: &Path,
+    bilink_dir: &Path,
+    symbol: &str,
+    visited: &mut HashSet<String>,
+    results: &mut Vec<(String, ScipLinkState)>,
+    prune: bool,
+) -> Result<()> {
+    if !visited.insert(symbol.to_string()) { return Ok(()); }
+
+    // Check or create the sciplink for this symbol
+    if let Some((file, range)) = index.definition(symbol) {
+        let path = sciplink_path(bilink_dir, symbol);
+
+        // RENAMED: sciplink exists but symbol moved
+        if path.exists() {
+            if let Ok(sl) = crate::sciplink::ScipLink::load(&path) {
+                if sl.symbol != symbol {
+                    // update symbol in place
+                    let updated = crate::sciplink::ScipLink {
+                        symbol: symbol.to_string(),
+                        file: file.to_string(),
+                        range: range.clone(),
+                        ..sl
+                    }.with_state(ScipLinkState::Renamed);
+                    updated.write(&path)?;
+                    results.push((symbol.to_string(), ScipLinkState::Renamed));
+                    return Ok(());
+                }
+            }
+        }
+
+        let sl = check_or_create_sciplink(&path, symbol, file, range, layer_root)?;
+        let state = sl.state.clone().unwrap_or(ScipLinkState::Ok);
+        results.push((symbol.to_string(), state));
+    } else {
+        // Symbol not in index — DELETED or RENAMED
+        let path = sciplink_path(bilink_dir, symbol);
+        if path.exists() {
+            if let Ok(sl) = crate::sciplink::ScipLink::load(&path) {
+                // Try to find by location
+                if let Some(new_sym) = index.find_by_location(&sl.file, &sl.range) {
+                    let updated = crate::sciplink::ScipLink {
+                        symbol: new_sym.clone(),
+                        ..sl
+                    }.with_state(ScipLinkState::Renamed);
+                    updated.write(&path)?;
+                    results.push((symbol.to_string(), ScipLinkState::Renamed));
+                } else {
+                    let deleted = sl.with_state(ScipLinkState::Deleted);
+                    if prune {
+                        std::fs::remove_file(&path)?;
+                    } else {
+                        deleted.write(&path)?;
+                    }
+                    results.push((symbol.to_string(), ScipLinkState::Deleted));
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Recurse into direct callees
+    for (callee, callee_file, callee_range) in index.direct_callees(symbol) {
+        check_subgraph_recursive(index, layer_root, bilink_dir, &callee, visited, results, prune)?;
+    }
+
+    Ok(())
 }
 
 fn check_endpoint(
@@ -268,6 +366,7 @@ mod tests {
         let bl = BiLinkFile {
             uuid: uuid.into(),
             link0, link1,
+            subgraph: None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,
@@ -307,6 +406,7 @@ mod tests {
             uuid:    "uuid1".into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   whole_file_endpoint("a.md"),
+            subgraph: None,
             hash0:   Some(stored_hash.clone()),
             commit0: Some("abc1234".into()),
             hash1:   Some(stored_hash),
@@ -334,6 +434,7 @@ mod tests {
             uuid:    "uuid1".into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   whole_file_endpoint("a.md"),
+            subgraph: None,
             hash0:   Some("old-hash-that-wont-match".into()),
             commit0: Some("abc1234".into()),
             hash1:   Some("old-hash-that-wont-match".into()),
@@ -396,6 +497,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   layer_endpoint("../.."),
             link1:   whole_file_endpoint("b.md"),
+            subgraph: None,
             hash0:   None, commit0: None,
             hash1:   Some(adj_struct_hash.clone()),
             commit1: Some("abc1234".into()),
@@ -411,6 +513,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
+            subgraph: None,
             hash0:   None, commit0: None,
             hash1:   Some(adj_struct_hash),
             commit1: Some("abc1234".into()),
@@ -438,6 +541,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   layer_endpoint("../.."),
             link1:   whole_file_endpoint("b.md"),
+            subgraph: None,
             hash0:   None, commit0: None,
             hash1:   Some("current-hash".into()),
             commit1: Some("abc1234".into()),
@@ -453,6 +557,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
+            subgraph: None,
             hash0:   None, commit0: None,
             hash1:   Some("stale-hash-000".into()),
             commit1: Some("abc1234".into()),
@@ -496,6 +601,7 @@ mod tests {
             uuid:    uuid.into(),
             link0:   whole_file_endpoint("a.md"),
             link1:   layer_endpoint(".stratum/impl"),
+            subgraph: None,
             hash0:   None, commit0: None,
             hash1:   Some("previously-accepted-hash".into()),
             commit1: Some("abc1234".into()),

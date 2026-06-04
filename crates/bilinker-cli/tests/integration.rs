@@ -341,8 +341,8 @@ fn index_build_creates_index_file() {
     assert!(ok, "index build failed:\n{stderr}");
     assert!(stdout.contains("entries"), "expected entry count in output:\n{stdout}");
 
-    let index_path = root.join(".bilink/.index");
-    assert!(index_path.exists(), ".bilink/.index was not created");
+    let index_path = root.join(".bilink/index/index");
+    assert!(index_path.exists(), ".bilink/index/index was not created");
 
     let contents = std::fs::read_to_string(&index_path).unwrap();
     assert!(contents.contains("docs/spec.md"),   "spec.md missing from index");
@@ -361,7 +361,7 @@ fn index_gitignore_contains_index_entry() {
     run_in(&root, &["index", "build"]);
 
     let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-    assert!(gi.contains(".index"),   ".gitignore missing .index");
+    assert!(gi.contains("index/"), ".gitignore missing index/");
     assert!(gi.contains(".pending/"), ".gitignore missing .pending/");
 }
 
@@ -435,8 +435,8 @@ fn index_recursive_covers_all_layers() {
     assert!(ok, "index build --recursive failed:\n{stderr}");
 
     // Both layers should have an index
-    assert!(root.join(".bilink/.index").exists(), "root layer index missing");
-    assert!(root.join(".stratum/impl/.bilink/.index").exists(), "impl layer index missing");
+    assert!(root.join(".bilink/index/index").exists(), "root layer index missing");
+    assert!(root.join(".stratum/impl/.bilink/index/index").exists(), "impl layer index missing");
     assert_eq!(stdout.lines().count(), 2, "expected two index lines in output:\n{stdout}");
 }
 

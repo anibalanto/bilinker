@@ -8,6 +8,7 @@ pub struct BiLinkFile {
     pub uuid: String,
     pub link0: LinkEndpoint,
     pub link1: LinkEndpoint,
+    pub subgraph: Option<String>,
     pub hash0: Option<String>,
     pub commit0: Option<String>,
     pub hash1: Option<String>,
@@ -34,6 +35,7 @@ impl BiLinkFile {
     pub fn parse(text: &str, uuid: &str) -> Result<Self> {
         let mut link0: Option<String> = None;
         let mut link1: Option<String> = None;
+        let mut subgraph = None;
         let mut hash0 = None;
         let mut commit0 = None;
         let mut hash1 = None;
@@ -47,6 +49,7 @@ impl BiLinkFile {
 
         const KEYS: &[&str] = &[
             "link.0", "link.1",
+            "subgraph",
             "hash.0", "commit.0",
             "hash.1", "commit.1",
             "range.0", "range.1",
@@ -71,6 +74,7 @@ impl BiLinkFile {
                 current_key = Some(match key {
                     "link.0"      => { link0      = Some(value); "link.0" }
                     "link.1"      => { link1      = Some(value); "link.1" }
+                    "subgraph"    => { subgraph   = Some(value); "" }
                     "hash.0"      => { hash0      = Some(value); "" }
                     "commit.0"    => { commit0    = Some(value); "" }
                     "hash.1"      => { hash1      = Some(value); "" }
@@ -102,6 +106,7 @@ impl BiLinkFile {
             uuid:        uuid.to_string(),
             link0:       parse_ep(link0, "link.0")?,
             link1:       parse_ep(link1, "link.1")?,
+            subgraph,
             hash0, commit0,
             hash1, commit1,
             range0:      range0.as_deref().map(str::parse).transpose()
@@ -124,6 +129,9 @@ impl BiLinkFile {
 
         push_field(&mut out, "link.0", &self.link0.to_string());
         push_field(&mut out, "link.1", &self.link1.to_string());
+        if let Some(sg) = &self.subgraph {
+            push_field(&mut out, "subgraph", sg);
+        }
 
         let has_cache = self.hash0.is_some() || self.hash1.is_some()
             || self.state0.is_some() || self.state1.is_some()
@@ -168,7 +176,7 @@ impl BiLinkFile {
         for entry in walkdir(bilinker_dir)? {
             if entry.extension().and_then(|e| e.to_str()) == Some("bilink") {
                 if let Ok(bl) = BiLinkFile::load(&entry) {
-                    if bl.uuid == id {
+                    if bl.uuid == id || bl.uuid.starts_with(id) {
                         return Ok((entry, bl));
                     }
                 }
@@ -205,6 +213,7 @@ mod tests {
             uuid:      "test-uuid".into(),
             link0:     structural("file.md"),
             link1:     layer(".stratum/impl"),
+            subgraph:  None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,
@@ -228,6 +237,7 @@ mod tests {
             uuid:      "abc123".into(),
             link0:     structural("a.md"),
             link1:     structural("b.md"),
+            subgraph: None,
             hash0:   Some("aabbcc".into()),
             commit0: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into()),
             hash1:   Some("ddeeff".into()),
@@ -265,6 +275,7 @@ mod tests {
             uuid:      "my-uuid".into(),
             link0:     structural("a.md"),
             link1:     structural("b.md"),
+            subgraph:  None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,

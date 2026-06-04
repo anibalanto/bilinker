@@ -19,6 +19,7 @@ stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 tree-sitter-typescript = "0.23.2"
+prost = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

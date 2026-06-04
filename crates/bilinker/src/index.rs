@@ -36,7 +36,9 @@ pub fn build(layer_root: &Path) -> Result<usize> {
         }
     }
 
-    std::fs::write(bilink_dir.join(".index"), &out)?;
+    let index_dir = bilink_dir.join("index");
+    std::fs::create_dir_all(&index_dir)?;
+    std::fs::write(index_dir.join("index"), &out)?;
     ensure_gitignore(&bilink_dir)?;
 
     Ok(count)
@@ -45,7 +47,7 @@ pub fn build(layer_root: &Path) -> Result<usize> {
 /// Returns the status of `.bilink/.index` for the given layer root.
 pub fn status(layer_root: &Path) -> Result<IndexStatus> {
     let bilink_dir = layer_root.join(".bilink");
-    let index_path = bilink_dir.join(".index");
+    let index_path = bilink_dir.join("index/index");
 
     if !index_path.exists() {
         return Ok(IndexStatus::Missing);
@@ -69,7 +71,7 @@ pub fn status(layer_root: &Path) -> Result<IndexStatus> {
 /// Uses `.bilink/.index` if valid; falls back to O(N) scan silently.
 pub fn lookup(layer_root: &Path, file: &str) -> Result<Vec<(String, u8)>> {
     let bilink_dir = layer_root.join(".bilink");
-    let index_path = bilink_dir.join(".index");
+    let index_path = bilink_dir.join("index/index");
 
     if index_path.exists() && index_is_valid(&bilink_dir, &index_path) {
         lookup_from_index(&index_path, file)
@@ -162,7 +164,7 @@ fn ensure_gitignore(bilink_dir: &Path) -> Result<()> {
     };
 
     let mut out = existing.clone();
-    for entry in [".index", ".pending/"] {
+    for entry in ["index/", ".pending/"] {
         if !existing.lines().any(|l| l.trim() == entry) {
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
@@ -190,6 +192,7 @@ mod tests {
             uuid: uuid.into(),
             link0: LinkEndpoint::Structural(StructuralRef { file: file0.into(), query: None, range: None }),
             link1: LinkEndpoint::Structural(StructuralRef { file: file1.into(), query: None, range: None }),
+            subgraph: None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,
@@ -209,12 +212,12 @@ mod tests {
         let count = build(root).unwrap();
         assert_eq!(count, 2);
 
-        let index = std::fs::read_to_string(root.join(".bilink/.index")).unwrap();
+        let index = std::fs::read_to_string(root.join(".bilink/index/index")).unwrap();
         assert!(index.contains("a.md\tuuid1.0"));
         assert!(index.contains("b.md\tuuid1.1"));
 
         let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-        assert!(gi.contains(".index"));
+        assert!(gi.contains("index/"));
         assert!(gi.contains(".pending/"));
     }
 
@@ -267,6 +270,6 @@ mod tests {
         build(root).unwrap();
 
         let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-        assert_eq!(gi.matches(".index").count(), 1);
+        assert_eq!(gi.matches("index/").count(), 1);
     }
 }

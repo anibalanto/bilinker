@@ -12,4 +12,6 @@ pub mod index;
 pub mod link;
 pub use link::state_str;
 pub mod query;
+pub mod scip_index;
+pub mod sciplink;
 pub mod task;

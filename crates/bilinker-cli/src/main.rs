@@ -143,6 +143,9 @@ enum ChainCommand {
         /// Intermediate layer (can repeat, order matters)
         #[arg(long = "mid", action = ArgAction::Append)]
         mid: Vec<String>,
+        /// Disable automatic SCIP subgraph tracking for this chain
+        #[arg(long)]
+        no_subgraph: bool,
     },
     /// Show complete state of a chain
     Status { uuid: String },
@@ -487,7 +490,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid } => {
+            ChainCommand::New { tip, mid, no_subgraph } => {
                 if tip.len() != 2 {
                     anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                 }
@@ -497,7 +500,7 @@ fn main() -> anyhow::Result<()> {
                 let tips = vec![(layer0, ep0), (layer1, ep1)];
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
-                let result = bilinker::chain::chain_new(&cwd, &tips, &mids)?;
+                let result = bilinker::chain::chain_new(&cwd, &tips, &mids, no_subgraph)?;
 
                 println!("Created chain: {}", result.uuid);
                 println!();
