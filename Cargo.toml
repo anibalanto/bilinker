@@ -3,5 +3,6 @@ members = [
     "crates/bilinker",
     "crates/bilinker-cli",
     "crates/bilinker-lsp",
+    "crates/bilinker-daemon",
 ]
 resolver = "2"

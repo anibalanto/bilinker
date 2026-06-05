@@ -100,6 +100,72 @@ pub fn chain_new(
 }
 
 /// Resolves the `.bilink/<uuid>.bilink` path for a layer endpoint at `target_layer`.
+/// Retrofits existing bilinks in `layer_root` with `subgraph.N` where the
+/// structural endpoint matches a callable symbol in the SCIP index.
+/// Returns the number of bilinks updated.
+pub fn scip_retrofit(layer_root: &Path) -> anyhow::Result<usize> {
+    use crate::bilink::walkdir;
+    let bilink_dir = layer_root.join(".bilink");
+    if !bilink_dir.exists() { return Ok(0); }
+
+    let scip_path = bilink_dir.join("index/index.scip");
+    if !scip_path.exists() {
+        anyhow::bail!("no index.scip found at {} — run `rust-analyzer scip .` first", scip_path.display());
+    }
+
+    let index = crate::scip_index::ScipIndex::load(&scip_path, layer_root)?;
+    let mut count = 0;
+
+    for path in walkdir(&bilink_dir)? {
+        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
+        if path.ancestors().any(|a| a.ends_with(".pending")) { continue; }
+
+        let mut bl = crate::bilink::BiLinkFile::load(&path)?;
+        let mut changed = false;
+
+        if bl.subgraph0.is_none() {
+            if let Some(sym) = detect_scip_symbol_from_bilink(&index, &bl.link0) {
+                eprintln!("  {} → subgraph.0: {}", bl.uuid[..8].to_string(), &sym[sym.rfind('/').unwrap_or(0)..]);
+                bl.subgraph0 = Some(sym);
+                changed = true;
+            }
+        }
+        if bl.subgraph1.is_none() {
+            if let Some(sym) = detect_scip_symbol_from_bilink(&index, &bl.link1) {
+                eprintln!("  {} → subgraph.1: {}", bl.uuid[..8].to_string(), &sym[sym.rfind('/').unwrap_or(0)..]);
+                bl.subgraph1 = Some(sym);
+                changed = true;
+            }
+        }
+
+        if changed {
+            bl.write(&path)?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn detect_scip_symbol_from_bilink(
+    index: &crate::scip_index::ScipIndex,
+    endpoint: &crate::link::LinkEndpoint,
+) -> Option<String> {
+    use crate::link::LinkEndpoint;
+    let LinkEndpoint::Structural(sref) = endpoint else { return None };
+
+    let range = if let Some(r) = &sref.range {
+        r.clone()
+    } else if let Some(query_str) = &sref.query {
+        // We don't have layer_root here — use a stub path; ScipIndex has the full paths
+        // Try to find by file name match in definitions
+        return index.find_callable_in_file(&sref.file);
+    } else {
+        return None;
+    };
+
+    index.find_callable_at(&sref.file, &range)
+}
+
 pub fn resolve_layer_link(
     bilink_file: &Path,
     layer_root: &Path,
@@ -190,21 +256,31 @@ fn diff_paths(to: &Path, from: &Path) -> PathBuf {
     result
 }
 
-/// Tries to find the SCIP symbol for a structural endpoint by looking up
-/// the function/method at the endpoint's range in the cached SCIP index.
+/// Finds the SCIP symbol for a structural endpoint by looking up
+/// the callable symbol whose body contains the endpoint's range.
 fn detect_scip_symbol(root: &Path, layer: &Path, endpoint: &LinkEndpoint) -> Option<String> {
-    use crate::link::LinkEndpoint;
     let LinkEndpoint::Structural(sref) = endpoint else { return None };
     let layer_root = root.join(layer);
     let scip_path  = layer_root.join(".bilink/index/index.scip");
     if !scip_path.exists() { return None; }
 
     let index = crate::scip_index::ScipIndex::load(&scip_path, &layer_root).ok()?;
-    // Find a symbol whose definition covers the endpoint's file
-    // For now: return any callable symbol defined in this file
-    // (A more precise lookup would use the range from the endpoint)
-    let _ = sref;
-    None  // Placeholder — full implementation uses range lookup in index
+
+    // Need a byte range to look up the symbol.
+    // Use stored range if available, otherwise run the tree-sitter query.
+    let range = if let Some(r) = &sref.range {
+        r.clone()
+    } else if let Some(query_str) = &sref.query {
+        let source = std::fs::read_to_string(layer_root.join(&sref.file)).ok()?;
+        let lang = crate::grammar::language_for_file(&sref.file);
+        let language = crate::grammar::for_language(lang).ok()?;
+        let (start, end) = crate::query::find_target(language, &source, query_str).ok()??;
+        crate::link::ByteRange { start, end }
+    } else {
+        return None;
+    };
+
+    index.find_callable_at(&sref.file, &range)
 }
 
 fn normalize(p: &Path) -> PathBuf {

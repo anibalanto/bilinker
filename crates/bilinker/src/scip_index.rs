@@ -125,6 +125,31 @@ impl ScipIndex {
         self.definitions.get(symbol).map(|(f, _, body_r)| (f.as_str(), body_r))
     }
 
+    /// Finds the innermost callable symbol whose body_range contains `range` in `file`.
+    /// Used to auto-detect which symbol an endpoint belongs to.
+    pub fn find_callable_at(&self, file: &str, range: &ByteRange) -> Option<String> {
+        let mut best: Option<(String, usize)> = None; // (symbol, body_range size)
+        for (sym, (f, _name_r, body_r)) in &self.definitions {
+            if f != file { continue; }
+            if !is_callable(self.kinds.get(sym).copied().unwrap_or(0), sym) { continue; }
+            // body_range must contain the endpoint range
+            if body_r.start > range.start || body_r.end < range.end { continue; }
+            let size = body_r.end - body_r.start;
+            // Prefer the smallest body that still contains the range (innermost function)
+            if best.as_ref().map_or(true, |(_, s)| size < *s) {
+                best = Some((sym.clone(), size));
+            }
+        }
+        best.map(|(sym, _)| sym)
+    }
+
+    /// Returns the first callable symbol defined in `file` (used as fallback when no range is available).
+    pub fn find_callable_in_file(&self, file: &str) -> Option<String> {
+        self.definitions.iter()
+            .find(|(sym, (f, _, _))| f == file && is_callable(self.kinds.get(*sym).copied().unwrap_or(0), sym))
+            .map(|(sym, _)| sym.clone())
+    }
+
     pub fn occurrences_in(&self, file: &str, body: &ByteRange) -> Vec<(String, i32, ByteRange)> {
         self.doc_occurrences.get(file).map(|occs| {
             occs.iter()

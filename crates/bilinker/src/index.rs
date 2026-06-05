@@ -192,7 +192,7 @@ mod tests {
             uuid: uuid.into(),
             link0: LinkEndpoint::Structural(StructuralRef { file: file0.into(), query: None, range: None }),
             link1: LinkEndpoint::Structural(StructuralRef { file: file1.into(), query: None, range: None }),
-            subgraph: None,
+            subgraph0: None, subgraph1: None,
             hash0: None, commit0: None,
             hash1: None, commit1: None,
             range0: None, range1: None,

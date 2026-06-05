@@ -65,6 +65,12 @@ enum Command {
         sub: ChainCommand,
     },
 
+    /// SCIP integration commands
+    Scip {
+        #[command(subcommand)]
+        sub: ScipCommand,
+    },
+
     /// Build or check the .bilink/.index
     Index {
         #[command(subcommand)]
@@ -102,6 +108,12 @@ enum Command {
         uuid: String,
     },
 
+    /// Manage the bilinker LSP daemon
+    Daemon {
+        #[command(subcommand)]
+        sub: DaemonCommand,
+    },
+
     /// Traverse the bilink graph from a file, position, or UUID
     Graph {
         /// File, file:line:col, or UUID
@@ -134,6 +146,19 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum DaemonCommand {
+    /// Start the daemon in background
+    Start {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Show daemon and LSP server status
+    Status,
+}
+
+#[derive(Subcommand)]
 enum ChainCommand {
     /// Create a new chain or direct link
     ///
@@ -157,6 +182,15 @@ enum ChainCommand {
     Status { uuid: String },
     /// List all chains in the project
     List,
+}
+
+#[derive(Subcommand)]
+enum ScipCommand {
+    /// Add subgraph.N to existing bilinks whose structural endpoint matches a callable in the SCIP index
+    Retrofit {
+        /// Layer directory to process (default: current directory)
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -401,6 +435,19 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        Command::Scip { sub } => match sub {
+            ScipCommand::Retrofit { path } => {
+                let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                    .unwrap_or_else(|| cwd.clone());
+                eprintln!("Scanning bilinks in {}…", layer.display());
+                match bilinker::chain::scip_retrofit(&layer) {
+                    Ok(0) => eprintln!("No bilinks updated (all already have subgraph.N or no callable match found)."),
+                    Ok(n) => eprintln!("Updated {n} bilink(s) with subgraph.N."),
+                    Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                }
+            }
+        }
+
         Command::Index { sub } => match sub {
             IndexCommand::Build { path, recursive } => {
                 let root = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
@@ -499,6 +546,16 @@ fn main() -> anyhow::Result<()> {
             let rel = path.strip_prefix(&cwd).unwrap_or(&path);
             eprintln!("removed: {}", rel.display());
             eprintln!("note: nodos adyacentes detectarán BROKEN en el próximo check");
+        }
+
+        Command::Daemon { sub } => match sub {
+            DaemonCommand::Start { workspace } => {
+                let ws = workspace.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                    .unwrap_or_else(|| cwd.clone());
+                daemon_start(&ws)?;
+            }
+            DaemonCommand::Stop => daemon_stop()?,
+            DaemonCommand::Status => daemon_status()?,
         }
 
         Command::Graph { selector, depth, format, recursive, bilink_detail, url_scheme, show_query, show_range, show_data } => {
@@ -1304,6 +1361,121 @@ fn collect_dot(
             let adj_bilink_id = format!("{uuid_short}@{adj_lbl}");
             collect_dot(root, &adj_bl, &adj_layer, visited, dot, detail, url_scheme, depth + 1, max_depth)?;
             dot.add_edge(&bilink_id, &adj_bilink_id, "chain", Some("dashed"));
+        }
+    }
+    Ok(())
+}
+
+// ─── daemon ───────────────────────────────────────────────────────────────────
+
+fn daemon_socket_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".bilinker").join("daemon.sock")
+}
+
+fn daemon_pid_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".bilinker").join("daemon.pid")
+}
+
+fn read_daemon_pid() -> u32 {
+    std::fs::read_to_string(daemon_pid_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn daemon_rpc(method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(daemon_socket_path())?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+
+    let req = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let line = serde_json::to_string(&req)? + "\n";
+    stream.write_all(line.as_bytes())?;
+
+    let mut resp_line = String::new();
+    BufReader::new(stream).read_line(&mut resp_line)?;
+
+    let resp: serde_json::Value = serde_json::from_str(resp_line.trim())?;
+    if let Some(err) = resp.get("error") {
+        anyhow::bail!("{}", err["message"].as_str().unwrap_or("unknown error"));
+    }
+    Ok(resp["result"].clone())
+}
+
+fn daemon_is_alive() -> bool {
+    daemon_rpc("ping", serde_json::json!({}))
+        .map(|v| v == "pong")
+        .unwrap_or(false)
+}
+
+fn daemon_start(workspace: &Path) -> anyhow::Result<()> {
+    if daemon_is_alive() {
+        let pid = read_daemon_pid();
+        println!("daemon already running  pid={pid}  socket={}", daemon_socket_path().display());
+        std::process::exit(1);
+    }
+
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("bilinker-daemon")))
+        .unwrap_or_else(|| PathBuf::from("bilinker-daemon"));
+
+    std::process::Command::new(&exe)
+        .arg("--workspace").arg(workspace)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn {}: {e}", exe.display()))?;
+
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if daemon_is_alive() {
+            let pid = read_daemon_pid();
+            println!("daemon started  pid={pid}  socket={}", daemon_socket_path().display());
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("daemon failed to start within 5s")
+}
+
+fn daemon_stop() -> anyhow::Result<()> {
+    if !daemon_is_alive() {
+        eprintln!("daemon not running");
+        std::process::exit(1);
+    }
+    let _ = daemon_rpc("shutdown", serde_json::json!({}));
+    println!("daemon stopped");
+    Ok(())
+}
+
+fn daemon_status() -> anyhow::Result<()> {
+    if !daemon_is_alive() {
+        println!("daemon  NOT RUNNING  socket={}", daemon_socket_path().display());
+        return Ok(());
+    }
+
+    let status = daemon_rpc("status", serde_json::json!({}))?;
+    let pid = read_daemon_pid();
+    println!("daemon  pid={pid}  socket={}", daemon_socket_path().display());
+    println!();
+    println!("language servers:");
+    if let Some(arr) = status.as_array() {
+        for srv in arr {
+            println!(
+                "  {:<28} {}  queries={}",
+                srv["name"].as_str().unwrap_or("?"),
+                srv["state"].as_str().unwrap_or("?"),
+                srv["queries"].as_u64().unwrap_or(0),
+            );
+        }
+        if arr.is_empty() {
+            println!("  (none started yet)");
         }
     }
     Ok(())
