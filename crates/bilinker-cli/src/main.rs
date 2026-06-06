@@ -41,6 +41,9 @@ enum Command {
         /// Profundidad máxima de recursión (default: ilimitada)
         #[arg(long)]
         depth: Option<usize>,
+        /// Mostrar diff entre el fragmento aceptado y el actual
+        #[arg(long)]
+        diff: bool,
     },
 
     /// Verify bilinks in a .bilink file or directory
@@ -315,7 +318,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("hash: {}", result.hash);
         }
 
-        Command::Get { target, before, after, recursive, depth } => {
+        Command::Get { target, before, after, recursive, depth, diff } => {
             let uuid_form = {
                 let t = target.trim();
                 if let Some(dot) = t.rfind('.') {
@@ -338,11 +341,21 @@ fn main() -> anyhow::Result<()> {
                 let name     = &target[..dot];
                 let endpoint: u8 = target[dot + 1..].parse()?;
                 let root     = project_root(&cwd)?;
+
+                if diff {
+                    let result = bilinker::get::get_diff(&root, name, endpoint)?;
+                    eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
+                    match result.diff {
+                        Some(d) => print!("{d}"),
+                        None    => eprintln!("[sin cambios]"),
+                    }
+                } else {
                 let before   = before.as_deref().map(parse_pos).transpose()?;
                 let after    = after.as_deref().map(parse_pos).transpose()?;
                 let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
                 eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
                 println!("{}", result.content);
+                }
 
                 if recursive {
                     let bilink_dir = root.join(".bilink");
