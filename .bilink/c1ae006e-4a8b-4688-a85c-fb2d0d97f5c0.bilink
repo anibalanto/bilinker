@@ -3,11 +3,11 @@ link.1: crates/bilinker/src/grammar.rs :: (use_declaration) @target
 subgraph.1: rust-analyzer cargo bilinker 0.1.0 grammar/for_language().
 
 # Cache
-hash.0: 4feebdea035ffeac2701b6a2bd383ee0df83532a493f59464a42f8cc4e10edb9
-commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
+hash.0: 205fd0b84e962c978fc9e968c50554d78e40a920cc1dcfdacafe2a5b732325e4
+commit.0: a65c294ac641aadf2dfc65a929fb11e1db3d68a0
 hash.1: f4b22273cd450544fcdb5d26b9466d65448b90adf3c8994ad4e6c1f8f8993c90
 commit.1: db22d717dad771c137cdb0e805bbebfdb8b3e0e9
 range.1: 0~27
-state.0: BROKEN
+state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T00:43:29Z
+resolved_at: 2026-06-06T03:13:05Z

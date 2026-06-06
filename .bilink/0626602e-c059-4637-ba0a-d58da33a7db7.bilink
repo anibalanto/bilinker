@@ -7,6 +7,6 @@ commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
 hash.1: b63863a794283799d840efc2b04a11300346ed61ae8b6e5467eea2a0879e8f6a
 commit.1: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
 range.1: 0~58014
-state.0: BROKEN
+state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T00:45:34Z
+resolved_at: 2026-06-06T03:13:05Z

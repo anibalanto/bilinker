@@ -2,11 +2,11 @@ link.0: <
 link.1: crates/bilinker/src/index.rs
 
 # Cache
-hash.0: 80706c6427b5773477d5fadc67a380268cf8fa7162a5872ba131742f5c0c9068
-commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
+hash.0: e51ff39c8629b2a74de988c82e3ab8e093278aca2a616ec7f7e0d7c1138c2856
+commit.0: 1caa218b3291debbd069dd5bfc2fc68ebd31c168
 hash.1: feed7504ce8b869b3044d7ce32e40e0348ab8bbd6de4a3e9d8b31baef80de905
 commit.1: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
 range.1: 0~8937
-state.0: BROKEN
+state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T00:45:34Z
+resolved_at: 2026-06-06T03:13:05Z

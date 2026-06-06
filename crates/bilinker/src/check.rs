@@ -78,22 +78,6 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     bl.write(bilink_path)?;
 
-    // Check subgraph.N if declared (only for structural endpoints)
-    let bilink_dir = layer_root.join(".bilink");
-    let scip_path  = bilink_dir.join("index/index.scip");
-    let subgraphs: [(Option<&String>, &LinkEndpoint); 2] = [
-        (bl.subgraph0.as_ref(), &bl.link0),
-        (bl.subgraph1.as_ref(), &bl.link1),
-    ];
-    for (symbol_opt, endpoint) in subgraphs {
-        if let (Some(symbol), LinkEndpoint::Structural(_)) = (symbol_opt, endpoint) {
-            if scip_path.exists() {
-                if let Ok(index) = ScipIndex::load(&scip_path, layer_root) {
-                    let _ = check_subgraph(&index, layer_root, &bilink_dir, symbol, false);
-                }
-            }
-        }
-    }
 
     Ok(CheckResult { uuid, state0, state1, updated })
 }
@@ -192,7 +176,7 @@ fn check_endpoint(
     stored_range: Option<&ByteRange>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     match endpoint {
-        LinkEndpoint::Structural(sref) => check_structural(root, sref, hash, hash_ast, stored_range),
+        LinkEndpoint::Structural(sref) => check_structural(layer_root, sref, hash, hash_ast, stored_range),
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
         LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
     }

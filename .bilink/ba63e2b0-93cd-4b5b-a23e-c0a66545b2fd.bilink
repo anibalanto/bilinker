@@ -3,11 +3,11 @@ link.1: crates/bilinker/src/capture.rs :: (function_item name: (identifier) @n0 
 subgraph.1: rust-analyzer cargo bilinker 0.1.0 capture/markdown_section_predicate().
 
 # Cache
-hash.0: 0a53caee2b08342eb6f042369ddd8c0f1518eba5dd7cb86407104add19b8b612
-commit.0: 79f1589d4992ff686ab2d7187b9b3831a189f346
+hash.0: ce0dc3b626febb3bbe314dacb6cd45c79dddf48356f060b7db74252a6e636951
+commit.0: a65c294ac641aadf2dfc65a929fb11e1db3d68a0
 hash.1: a29b1c83e760576a5a011ed6220e3d3af466f076984b9ce0e366acd052870846
 commit.1: 8d2904b942e6576d64394fb32e471569e175bfe2
 range.1: 317~3294
-state.0: BROKEN
+state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T00:40:51Z
+resolved_at: 2026-06-06T03:13:05Z

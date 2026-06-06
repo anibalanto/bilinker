@@ -1,7 +1,7 @@
 symbol: rust-analyzer cargo bilinker 0.1.0 check/check_layer().
 file:   crates/bilinker/src/check.rs
-range:  9025~9036
+range:  9031~9042
 hash:   474a30cbc1877100dcbd0e917bfd2c85d73d2496228225e9e3f56e4fac438128
 commit: eb634780783d9e6482cb735206cbf50b0384f005
 state:  ALTERED
-resolved_at: 2026-06-06T00:44:19Z
+resolved_at: 2026-06-06T02:57:08Z

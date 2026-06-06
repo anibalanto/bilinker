@@ -3,12 +3,12 @@ link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#
 subgraph.1: rust-analyzer cargo bilinker 0.1.0 check/check_file().
 
 # Cache
-hash.0: ceca32b66213861aa516b8232e4d692a9940afacf92a56f00358a49d38cf00be
-commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
+hash.0: 79924f3212b0974db67b97a8b8a3abbe8eda7992135ccbc8782290aef645fe88
+commit.0: f76b7b751180716d3c1ddfb79faeb7511d6b7cb7
 hash.1: c7bbb82b8cc4810f6ea0e180a5d570675e5b7986f85b3321bc7dd7e47de9fafb
 hash_ast.1: 099f9ac1640a82113a5a2f3b56e92a498045c42c5a74d98190ea098834780d32
 commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
-range.1: 6930~9260
-state.0: BROKEN
+range.1: 6220~8550
+state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T00:45:34Z
+resolved_at: 2026-06-06T03:13:05Z
