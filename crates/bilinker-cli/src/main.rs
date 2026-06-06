@@ -345,31 +345,41 @@ fn main() -> anyhow::Result<()> {
                 if diff {
                     let result = bilinker::get::get_diff(&root, name, endpoint)?;
                     eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
-                    match result.diff {
+                    match &result.diff {
                         Some(d) => print!("{d}"),
                         None    => eprintln!("[sin cambios]"),
                     }
+                    if recursive {
+                        let abs_file = result.layer_root.join(&result.file).to_string_lossy().to_string();
+                        let lsp_line = (result.start_line as u32).saturating_sub(1);
+                        let lsp_col  = find_fn_col(&abs_file, lsp_line as usize);
+                        print_diff_callees_recursive(
+                            &result.layer_root, &abs_file, lsp_line, lsp_col, &result.commit,
+                            depth.unwrap_or(usize::MAX), 1,
+                            &mut std::collections::HashSet::new(),
+                        )?;
+                    }
                 } else {
-                let before   = before.as_deref().map(parse_pos).transpose()?;
-                let after    = after.as_deref().map(parse_pos).transpose()?;
-                let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
-                eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
-                println!("{}", result.content);
-                }
+                    let before   = before.as_deref().map(parse_pos).transpose()?;
+                    let after    = after.as_deref().map(parse_pos).transpose()?;
+                    let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
+                    eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
+                    println!("{}", result.content);
 
-                if recursive {
-                    let bilink_dir = root.join(".bilink");
-                    let scip_path  = bilink_dir.join("index/index.scip");
-                    if scip_path.exists() {
-                        let bl = bilinker::bilink::BiLinkFile::find_by_id(&bilink_dir, name)
-                            .map(|(_, b)| b).ok();
-                        let subgraph_sym = bl.as_ref().and_then(|b| {
-                            if endpoint == 0 { b.subgraph0.as_deref() }
-                            else             { b.subgraph1.as_deref() }
-                        });
-                        if let Some(root_sym) = subgraph_sym {
-                            if let Ok(index) = bilinker::scip_index::ScipIndex::load(&scip_path, &root) {
-                                print_callees_recursive(&index, &root, root_sym, depth.unwrap_or(usize::MAX), 1, &mut std::collections::HashSet::new())?;
+                    if recursive {
+                        let bilink_dir = root.join(".bilink");
+                        let scip_path  = bilink_dir.join("index/index.scip");
+                        if scip_path.exists() {
+                            let bl = bilinker::bilink::BiLinkFile::find_by_id(&bilink_dir, name)
+                                .map(|(_, b)| b).ok();
+                            let subgraph_sym = bl.as_ref().and_then(|b| {
+                                if endpoint == 0 { b.subgraph0.as_deref() }
+                                else             { b.subgraph1.as_deref() }
+                            });
+                            if let Some(root_sym) = subgraph_sym {
+                                if let Ok(index) = bilinker::scip_index::ScipIndex::load(&scip_path, &root) {
+                                    print_callees_recursive(&index, &root, root_sym, depth.unwrap_or(usize::MAX), 1, &mut std::collections::HashSet::new())?;
+                                }
                             }
                         }
                     }
@@ -1505,6 +1515,85 @@ fn line_col_to_byte(source: &str, line: usize, col: usize) -> usize {
         byte = i;
     }
     byte
+}
+
+/// Scan a source line and return the column (0-based) of the first non-keyword identifier.
+/// Works for Rust (`pub fn foo`), Java (`public void foo`), Python (`def foo`), etc.
+fn find_fn_col(file: &str, line_0based: usize) -> u32 {
+    const SKIP: &[&str] = &[
+        "pub", "fn", "async", "unsafe", "extern",
+        "def", "void", "public", "private", "protected", "static", "final",
+        "abstract", "function", "class", "struct", "trait", "interface", "enum",
+        "override", "virtual", "native", "synchronized",
+    ];
+    let Ok(content) = std::fs::read_to_string(file) else { return 0 };
+    let Some(line)  = content.lines().nth(line_0based) else { return 0 };
+    let bytes = line.as_bytes();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        let b = bytes[pos];
+        if b == b' ' || b == b'\t' { pos += 1; continue; }
+        if !b.is_ascii_alphanumeric() && b != b'_' { pos += 1; continue; }
+        let start = pos;
+        while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+            pos += 1;
+        }
+        if !SKIP.contains(&&line[start..pos]) { return start as u32; }
+    }
+    0
+}
+
+fn print_diff_callees_recursive(
+    root: &std::path::Path,
+    callee_file_abs: &str,
+    callee_line: u32,
+    callee_col: u32,
+    commit: &str,
+    max_depth: usize,
+    current_depth: usize,
+    visited: &mut std::collections::HashSet<String>,
+) -> anyhow::Result<()> {
+    if current_depth > max_depth { return Ok(()); }
+
+    let indent = "  ".repeat(current_depth);
+
+    let callees_val = daemon_rpc("callees", serde_json::json!({
+        "file": callee_file_abs,
+        "line": callee_line,
+        "col":  callee_col,
+    })).unwrap_or(serde_json::json!([]));
+
+    #[derive(serde::Deserialize)]
+    struct CalInfo { file: String, name: String, line: u32, col: u32 }
+    let callees: Vec<CalInfo> = serde_json::from_value(callees_val).unwrap_or_default();
+
+    for callee in callees {
+        // Skip external/stdlib callees (not under the layer root)
+        if !std::path::Path::new(&callee.file).starts_with(root) { continue; }
+
+        let key = format!("{}:{}", callee.file, callee.name);
+        if !visited.insert(key) { continue; }
+
+        match bilinker::get::get_callee_diff(root, &callee.file, &callee.name, commit) {
+            Ok(result) => {
+                let status = if result.diff.is_none() { "OK" } else { "ALTERED" };
+                eprintln!("{indent}↳ {}  {}:{}~{}  ({status})",
+                    callee.name, result.file, result.start_line, result.end_line);
+                match &result.diff {
+                    Some(d) => print!("{d}"),
+                    None    => println!("{indent}[sin cambios]"),
+                }
+                print_diff_callees_recursive(
+                    root, &callee.file, callee.line, callee.col, commit,
+                    max_depth, current_depth + 1, visited,
+                )?;
+            }
+            Err(e) => {
+                eprintln!("{indent}↳ {}  ({})", callee.name, e);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn print_callees_recursive(

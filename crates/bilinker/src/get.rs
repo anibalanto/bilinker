@@ -16,6 +16,7 @@ pub struct GetResult {
 
 pub struct DiffResult {
     pub file: String,
+    pub layer_root: std::path::PathBuf,
     pub commit: String,
     pub start_line: usize,
     pub end_line: usize,
@@ -100,6 +101,7 @@ fn diff_structural(
 
     Ok(DiffResult {
         file: sref.file.clone(),
+        layer_root: root.to_path_buf(),
         commit: commit.to_string(),
         start_line: after_result.start_line,
         end_line: after_result.end_line,
@@ -158,6 +160,74 @@ fn unified_diff(before: &str, after: &str, commit: &str) -> String {
         Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
         Err(_) => format!("--- aceptado ({})\n+++ actual\n(diff no disponible)", &commit[..8.min(commit.len())]),
     }
+}
+
+/// Find a function/method named `callee_name` in `source` using tree-sitter.
+/// Returns byte range (start, end) of the matching declaration.
+fn find_function_body(source: &str, lang: &str, callee_name: &str) -> Option<(usize, usize)> {
+    let language = grammar::for_language(lang).ok()?;
+    let escaped = callee_name.replace('"', "\\\"");
+    for &anchor_kind in grammar::stable_anchor_kinds(lang) {
+        let Some(field) = grammar::name_field(lang, anchor_kind) else { continue };
+        let name_node_type = grammar::name_node_type(lang, anchor_kind);
+        let query_str = format!(
+            "({anchor_kind} {field}: ({name_node_type}) @name (#eq? @name \"{escaped}\")) @target"
+        );
+        if let Ok(Some((s, e))) = query::find_target(language.clone(), source, &query_str) {
+            return Some((s, e));
+        }
+    }
+    None
+}
+
+pub fn get_callee_diff(
+    root: &Path,
+    callee_file_abs: &str,
+    callee_name: &str,
+    commit: &str,
+) -> Result<DiffResult> {
+    let callee_path = std::path::Path::new(callee_file_abs);
+    let rel_file = callee_path
+        .strip_prefix(root)
+        .unwrap_or(callee_path)
+        .to_string_lossy()
+        .to_string();
+
+    let lang = grammar::language_for_file(&rel_file);
+
+    let current_source = std::fs::read_to_string(callee_file_abs)
+        .with_context(|| format!("reading {callee_file_abs}"))?;
+
+    let (start_byte, end_byte) = find_function_body(&current_source, lang, callee_name)
+        .ok_or_else(|| anyhow::anyhow!("function '{callee_name}' not found in {rel_file}"))?;
+
+    let after_text = current_source[start_byte..end_byte].to_string();
+    let start_line = current_source[..start_byte].chars().filter(|&c| c == '\n').count() + 1;
+    let end_line   = current_source[..end_byte].chars().filter(|&c| c == '\n').count() + 1;
+
+    let before_text = match git_show_fragment(root, commit, &rel_file, None) {
+        Ok(old_source) => {
+            find_function_body(&old_source, lang, callee_name)
+                .map(|(s, e)| old_source[s..e].to_string())
+                .unwrap_or_default()
+        }
+        Err(_) => String::new(),
+    };
+
+    let diff = if before_text.trim_end() == after_text.trim_end() {
+        None
+    } else {
+        Some(unified_diff(&before_text, &after_text, commit))
+    };
+
+    Ok(DiffResult {
+        file: rel_file,
+        layer_root: root.to_path_buf(),
+        commit: commit.to_string(),
+        start_line,
+        end_line,
+        diff,
+    })
 }
 
 fn traverse_layer_for_diff(
