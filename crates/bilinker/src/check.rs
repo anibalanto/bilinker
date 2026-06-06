@@ -60,10 +60,10 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
     let uuid = bl.uuid.clone();
 
     let (state0, range0) =
-        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(), bl.range0.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(), bl.range0.as_ref(), bl.commit0.as_deref(), bl.state0.as_ref())?;
 
     let (state1, range1) =
-        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(), bl.range1.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(), bl.range1.as_ref(), bl.commit1.as_deref(), bl.state1.as_ref())?;
 
     let updated = bl.state0.as_ref() != Some(&state0)
         || bl.state1.as_ref() != Some(&state1)
@@ -174,12 +174,23 @@ fn check_endpoint(
     hash: Option<&str>,
     hash_ast: Option<&str>,
     stored_range: Option<&ByteRange>,
+    commit: Option<&str>,
+    cached_state: Option<&EndpointState>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     match endpoint {
-        LinkEndpoint::Structural(sref) => check_structural(layer_root, sref, hash, hash_ast, stored_range),
+        LinkEndpoint::Structural(sref) => check_structural(layer_root, sref, hash, hash_ast, stored_range, commit, cached_state),
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
         LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
     }
+}
+
+fn git_file_changed(layer_root: &Path, file: &str, commit: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["-C", &layer_root.to_string_lossy(), "diff", "--name-only",
+               &format!("{commit}..HEAD"), "--", file])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(true)
 }
 
 fn check_structural(
@@ -188,11 +199,20 @@ fn check_structural(
     hash: Option<&str>,
     hash_ast: Option<&str>,
     stored_range: Option<&ByteRange>,
+    commit: Option<&str>,
+    cached_state: Option<&EndpointState>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     let file_path = root.join(&sref.file);
 
     if !file_path.exists() {
         return Ok((EndpointState::Broken, None));
+    }
+
+    // Fast path: if file unchanged since accepted commit, reuse cached state.
+    if let (Some(commit), Some(state)) = (commit, cached_state) {
+        if !git_file_changed(root, &sref.file, commit) {
+            return Ok((state.clone(), stored_range.cloned()));
+        }
     }
 
     let source = std::fs::read_to_string(&file_path)?;
@@ -308,7 +328,7 @@ fn check_task(
         None => return Ok((EndpointState::Broken, None)),
     };
     let sref = StructuralRef { file: filename, query: None, range: None };
-    check_structural(&task_dir, &sref, stored_hash, None, None)
+    check_structural(&task_dir, &sref, stored_hash, None, None, None, None)
 }
 
 fn find_in_node(
