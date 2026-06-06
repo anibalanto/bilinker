@@ -24,8 +24,8 @@ pub struct CheckResult {
 impl CheckResult {
     pub fn is_clean(&self) -> bool {
         use EndpointState::*;
-        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded | Todo)
-            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded | Todo)
+        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded | Todo | Restyled)
+            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded | Todo | Restyled)
     }
 }
 
@@ -60,10 +60,10 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
     let uuid = bl.uuid.clone();
 
     let (state0, range0) =
-        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.range0.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(), bl.range0.as_ref())?;
 
     let (state1, range1) =
-        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.range1.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(), bl.range1.as_ref())?;
 
     let updated = bl.state0.as_ref() != Some(&state0)
         || bl.state1.as_ref() != Some(&state1)
@@ -188,10 +188,11 @@ fn check_endpoint(
     endpoint: &LinkEndpoint,
     uuid: &str,
     hash: Option<&str>,
+    hash_ast: Option<&str>,
     stored_range: Option<&ByteRange>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     match endpoint {
-        LinkEndpoint::Structural(sref) => check_structural(root, sref, hash, stored_range),
+        LinkEndpoint::Structural(sref) => check_structural(root, sref, hash, hash_ast, stored_range),
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
         LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
     }
@@ -201,6 +202,7 @@ fn check_structural(
     root: &Path,
     sref: &StructuralRef,
     hash: Option<&str>,
+    hash_ast: Option<&str>,
     stored_range: Option<&ByteRange>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     let file_path = root.join(&sref.file);
@@ -226,9 +228,9 @@ fn check_structural(
 
     let lang     = grammar::language_for_file(&sref.file);
     let language = grammar::for_language(lang)?;
-    let node_range = query::find_target(language, &source, query_str)?;
+    let node_range = query::find_target_with_sexp(language, &source, query_str)?;
 
-    let Some((node_start, node_end)) = node_range else {
+    let Some((node_start, node_end, sexp)) = node_range else {
         return Ok((EndpointState::Unanchored, None));
     };
 
@@ -236,9 +238,10 @@ fn check_structural(
         Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
         None    => (node_start, node_end),
     };
-    let fragment  = &source[frag_start..frag_end];
-    let new_hash  = hash::sha256(fragment.as_bytes());
-    let new_range = ByteRange { start: frag_start, end: frag_end };
+    let fragment      = &source[frag_start..frag_end];
+    let new_hash      = hash::sha256(fragment.as_bytes());
+    let new_hash_ast  = hash::sha256(sexp.as_bytes());
+    let new_range     = ByteRange { start: frag_start, end: frag_end };
 
     if hash.is_none() {
         return Ok((EndpointState::Pending, Some(new_range)));
@@ -246,6 +249,11 @@ fn check_structural(
 
     if hash == Some(new_hash.as_str()) {
         return Ok((EndpointState::Ok, Some(new_range)));
+    }
+
+    // Text changed — check if AST is identical (formatting-only change)
+    if hash_ast.is_some() && hash_ast == Some(new_hash_ast.as_str()) {
+        return Ok((EndpointState::Restyled, Some(new_range)));
     }
 
     if let (Some(stored_hash), Some(sr)) = (hash, stored_range) {
@@ -316,7 +324,7 @@ fn check_task(
         None => return Ok((EndpointState::Broken, None)),
     };
     let sref = StructuralRef { file: filename, query: None, range: None };
-    check_structural(&task_dir, &sref, stored_hash, None)
+    check_structural(&task_dir, &sref, stored_hash, None, None)
 }
 
 fn find_in_node(

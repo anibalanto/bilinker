@@ -11,8 +11,10 @@ pub struct BiLinkFile {
     pub subgraph0: Option<String>,
     pub subgraph1: Option<String>,
     pub hash0: Option<String>,
+    pub hash_ast0: Option<String>,
     pub commit0: Option<String>,
     pub hash1: Option<String>,
+    pub hash_ast1: Option<String>,
     pub commit1: Option<String>,
     pub range0: Option<ByteRange>,
     pub range1: Option<ByteRange>,
@@ -39,8 +41,10 @@ impl BiLinkFile {
         let mut subgraph0 = None;
         let mut subgraph1 = None;
         let mut hash0 = None;
+        let mut hash_ast0 = None;
         let mut commit0 = None;
         let mut hash1 = None;
+        let mut hash_ast1 = None;
         let mut commit1 = None;
         let mut range0 = None;
         let mut range1 = None;
@@ -52,8 +56,8 @@ impl BiLinkFile {
         const KEYS: &[&str] = &[
             "link.0", "link.1",
             "subgraph.0", "subgraph.1",
-            "hash.0", "commit.0",
-            "hash.1", "commit.1",
+            "hash.0", "hash_ast.0", "commit.0",
+            "hash.1", "hash_ast.1", "commit.1",
             "range.0", "range.1",
             "state.0", "state.1",
             "resolved_at",
@@ -79,8 +83,10 @@ impl BiLinkFile {
                     "subgraph.0"  => { subgraph0  = Some(value); "" }
                     "subgraph.1"  => { subgraph1  = Some(value); "" }
                     "hash.0"      => { hash0      = Some(value); "" }
+                    "hash_ast.0"  => { hash_ast0  = Some(value); "" }
                     "commit.0"    => { commit0    = Some(value); "" }
                     "hash.1"      => { hash1      = Some(value); "" }
+                    "hash_ast.1"  => { hash_ast1  = Some(value); "" }
                     "commit.1"    => { commit1    = Some(value); "" }
                     "range.0"     => { range0     = Some(value); "" }
                     "range.1"     => { range1     = Some(value); "" }
@@ -111,8 +117,8 @@ impl BiLinkFile {
             link1:       parse_ep(link1, "link.1")?,
             subgraph0,
             subgraph1,
-            hash0, commit0,
-            hash1, commit1,
+            hash0, hash_ast0, commit0,
+            hash1, hash_ast1, commit1,
             range0:      range0.as_deref().map(str::parse).transpose()
                              .context("parsing range.0")?,
             range1:      range1.as_deref().map(str::parse).transpose()
@@ -141,6 +147,7 @@ impl BiLinkFile {
         }
 
         let has_cache = self.hash0.is_some() || self.hash1.is_some()
+            || self.hash_ast0.is_some() || self.hash_ast1.is_some()
             || self.state0.is_some() || self.state1.is_some()
             || self.range0.is_some() || self.range1.is_some()
             || self.resolved_at.is_some();
@@ -148,9 +155,11 @@ impl BiLinkFile {
         if has_cache {
             out.push_str("\n# Cache\n");
             if let Some(h) = &self.hash0     { push_field(&mut out, "hash.0",     h); }
+            if let Some(h) = &self.hash_ast0 { push_field(&mut out, "hash_ast.0", h); }
             if let Some(c) = &self.commit0   { push_field(&mut out, "commit.0",   c); }
             if let Some(r) = &self.range0    { push_field(&mut out, "range.0",    &r.to_string()); }
             if let Some(h) = &self.hash1     { push_field(&mut out, "hash.1",     h); }
+            if let Some(h) = &self.hash_ast1 { push_field(&mut out, "hash_ast.1", h); }
             if let Some(c) = &self.commit1   { push_field(&mut out, "commit.1",   c); }
             if let Some(r) = &self.range1    { push_field(&mut out, "range.1",    &r.to_string()); }
             if let Some(s) = &self.state0    { push_field(&mut out, "state.0",    &s.to_string()); }

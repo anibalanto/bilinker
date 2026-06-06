@@ -15,6 +15,7 @@ pub struct AcceptResult {
     pub uuid: String,
     pub n: u8,
     pub hash: String,
+    pub hash_ast: Option<String>,
     pub commit: String,
 }
 
@@ -39,23 +40,25 @@ pub fn accept(
 
     let endpoint = if n == 0 { &bl.link0 } else { &bl.link1 };
 
-    let (h, c) = compute_hash_and_commit(
+    let (h, ha, c) = compute_hash_and_commit(
         layer_root, endpoint, &bl.uuid, hash_override, commit_override,
     )?;
 
     if n == 0 {
-        bl.hash0   = Some(h.clone());
-        bl.commit0 = Some(c.clone());
-        bl.state0  = Some(EndpointState::Ok);
+        bl.hash0     = Some(h.clone());
+        bl.hash_ast0 = ha.clone();
+        bl.commit0   = Some(c.clone());
+        bl.state0    = Some(EndpointState::Ok);
     } else {
-        bl.hash1   = Some(h.clone());
-        bl.commit1 = Some(c.clone());
-        bl.state1  = Some(EndpointState::Ok);
+        bl.hash1     = Some(h.clone());
+        bl.hash_ast1 = ha.clone();
+        bl.commit1   = Some(c.clone());
+        bl.state1    = Some(EndpointState::Ok);
     }
     bl.resolved_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
     bl.write(bilink_path)?;
 
-    Ok(AcceptResult { uuid: bl.uuid, n, hash: h, commit: c })
+    Ok(AcceptResult { uuid: bl.uuid, n, hash: h, hash_ast: ha, commit: c })
 }
 
 fn compute_hash_and_commit(
@@ -64,18 +67,18 @@ fn compute_hash_and_commit(
     uuid: &str,
     hash_override: Option<&str>,
     commit_override: Option<&str>,
-) -> Result<(String, String)> {
+) -> Result<(String, Option<String>, String)> {
     match endpoint {
         LinkEndpoint::Structural(sref) => {
             let file_path = layer_root.join(&sref.file);
             let source = std::fs::read_to_string(&file_path)
                 .with_context(|| format!("reading {}", file_path.display()))?;
 
-            let frag_hash = if let Some(query_str) = &sref.query {
+            let (frag_hash, ast_hash) = if let Some(query_str) = &sref.query {
                 let lang     = grammar::language_for_file(&sref.file);
                 let language = grammar::for_language(lang)?;
-                let node_range = query::find_target(language, &source, query_str)?;
-                let (node_start, node_end) = node_range
+                let node_range = query::find_target_with_sexp(language, &source, query_str)?;
+                let (node_start, node_end, sexp) = node_range
                     .ok_or_else(|| anyhow::anyhow!(
                         "query matched nothing in '{}'; cannot accept", sref.file
                     ))?;
@@ -83,16 +86,18 @@ fn compute_hash_and_commit(
                     Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
                     None    => (node_start, node_end),
                 };
-                hash::sha256(source[frag_start..frag_end].as_bytes())
+                (hash::sha256(source[frag_start..frag_end].as_bytes()),
+                 Some(hash::sha256(sexp.as_bytes())))
             } else {
-                hash::sha256(source.as_bytes())
+                (hash::sha256(source.as_bytes()), None)
             };
 
-            let h = hash_override.map(String::from).unwrap_or(frag_hash);
-            let c = commit_override.map(String::from)
+            let h  = hash_override.map(String::from).unwrap_or(frag_hash);
+            let ha = ast_hash;
+            let c  = commit_override.map(String::from)
                 .unwrap_or_else(|| try_head_commit_for_file(layer_root, &sref.file)
                     .unwrap_or_default());
-            Ok((h, c))
+            Ok((h, ha, c))
         }
 
         LinkEndpoint::Task(id) => {
@@ -105,7 +110,7 @@ fn compute_hash_and_commit(
             let c = commit_override.map(String::from)
                 .unwrap_or_else(|| try_head_commit_for_file(&project_root, &rel)
                     .unwrap_or_default());
-            Ok((h, c))
+            Ok((h, None, c))
         }
 
         LinkEndpoint::Layer(tokens) => {
@@ -122,9 +127,6 @@ fn compute_hash_and_commit(
             let adj_bl = BiLinkFile::load(&adj)
                 .with_context(|| format!("reading adjacent bilink {}", adj.display()))?;
 
-            // Hash = structural endpoint's accepted hash in the adjacent bilink.
-            // Avoids circular dependency: this value only changes when the adjacent
-            // structural content is accepted, never from accepting a layer endpoint.
             let adj_hash = adj_bl.structural_hash()
                 .ok_or_else(|| anyhow::anyhow!(
                     "adjacent bilink {} has no accepted structural endpoint yet; accept it first",
@@ -134,7 +136,7 @@ fn compute_hash_and_commit(
 
             let h = hash_override.map(String::from).unwrap_or_else(|| adj_hash.to_string());
             let c = commit_override.map(String::from).unwrap_or_else(|| adj_commit.to_string());
-            Ok((h, c))
+            Ok((h, None, c))
         }
     }
 }
@@ -174,7 +176,7 @@ pub fn accept_layer(
 
             let needs_accept = hash.is_none() || matches!(
                 state,
-                Some(EndpointState::Altered) | Some(EndpointState::ChainDirty)
+                Some(EndpointState::Altered) | Some(EndpointState::Restyled) | Some(EndpointState::ChainDirty)
             );
             if !needs_accept { continue; }
 

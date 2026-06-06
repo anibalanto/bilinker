@@ -331,6 +331,7 @@ fn worst_state_str(states: &[&Option<bilinker::link::EndpointState>]) -> String 
         Some(Moved)            => 3,
         Some(Reanchored)       => 3,
         Some(Expanded)         => 3,
+        Some(Restyled)         => 3,
         Some(ChainDirty)       => 4,
         Some(Pending)          => 5,
         Some(Todo)             => 5,
@@ -723,8 +724,9 @@ body { font-family: 'Courier New', monospace; display: flex; height: 100vh; over
 .sg-sym  { flex: 1; color: #c9d1d9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sg-file { font-size: 10px; color: #6e7681; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .sg-badge { font-size: 10px; font-weight: bold; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
-.sg-ok    { background: #1a3a1a; color: #3fb950; }
-.sg-bad   { background: #3a1a1a; color: #f85149; }
+.sg-ok       { background: #1a3a1a; color: #3fb950; }
+.sg-bad      { background: #3a1a1a; color: #f85149; }
+.sg-restyled { background: #3a2e00; color: #d4a017; }
 </style>
 </head>
 <body>
@@ -929,10 +931,14 @@ cy.fit(undefined, 40);
   cy.fit(undefined, 40);
 })();
 
+function stateBadge(state, ok) {
+  if (ok)                    return `<span class="sg-badge sg-ok">OK</span>`;
+  if (state === 'RESTYLED')  return `<span class="sg-badge sg-restyled">RESTYLED</span>`;
+  return `<span class="sg-badge sg-bad">${esc(state)}</span>`;
+}
+
 function renderScipNode(n) {
-  const badge = n.ok
-    ? `<span class="sg-badge sg-ok">OK</span>`
-    : `<span class="sg-badge sg-bad">${esc(n.state)}</span>`;
+  const badge = stateBadge(n.state, n.ok);
   const txt = n.content || '(no content)';
   let contentHtml;
   if (n.lang === 'markdown') {
@@ -974,9 +980,7 @@ function renderNode(n) {
   let sgHtml = '';
   if (n.sciplinks && n.sciplinks.length > 0) {
     const items = n.sciplinks.map(sl => {
-      const badge = sl.ok
-        ? `<span class="sg-badge sg-ok">OK</span>`
-        : `<span class="sg-badge sg-bad">${esc(sl.state)}</span>`;
+      const badge = stateBadge(sl.state, sl.ok);
       return `<div class="sg-item">${badge}<span class="sg-sym" title="${esc(sl.symbol)}">${esc(sl.symbol_short)}</span><span class="sg-file" title="${esc(sl.file)}">${esc(sl.file)}</span></div>`;
     }).join('');
     sgHtml = `<div class="sg-header">SUBGRAPH</div><div class="sg-list">${items}</div>`;
