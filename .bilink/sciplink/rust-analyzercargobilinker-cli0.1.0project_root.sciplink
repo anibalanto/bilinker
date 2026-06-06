@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker-cli 0.1.0 project_root().
+file:   crates/bilinker-cli/src/main.rs
+range:  5613~5625
+hash:   86d270e3e4c64ecbd3042abc0e8787b56935e9b1e4989ea359ac2fbaaaa0b977
+commit: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
+state:  OK
+resolved_at: 2026-06-06T00:42:43Z

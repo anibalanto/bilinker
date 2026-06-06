@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 check/check_subgraph_recursive().
+file:   crates/bilinker/src/check.rs
+range:  3663~3687
+hash:   a1c4de02e9ef1f2bda6b3f32269226ad48e9ae9c5a376d746c8c974f79dc3ce7
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

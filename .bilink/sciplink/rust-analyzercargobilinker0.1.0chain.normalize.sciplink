@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 chain/normalize().
+file:   crates/bilinker/src/chain.rs
+range:  7502~7511
+hash:   8bcc707b7981052edeeea5c42099d68f5a4b2e462476c1585d7bd7cb71749fe2
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

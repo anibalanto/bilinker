@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 scip_index/expand_to_function_body().
+file:   crates/bilinker/src/scip_index.rs
+range:  10297~10320
+hash:   4bffc75344185991f8bc73c8775de4a33eee0cf2e0c18f98a4c59aabd00302c1
+commit: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

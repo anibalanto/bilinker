@@ -4,9 +4,9 @@ link.1: crates/bilinker/src/bilink.rs
 # Cache
 hash.0: 4b4c7fd9dd3d986afbbdac143a794d5fea70882e9e9d70bb5491cd0dd7dec2b8
 commit.0: b1f9bc4493c7339f2bcd37d6a26622e8c8f6f093
-hash.1: 462359878c164585aaabf3a33f4b7539937ec26e9b00d6548765819be3d52dc3
-commit.1: 2bdcb45bf508828c999eb255b8aa1e33a7625c03
-range.1: 0~11617
-state.0: OK
+hash.1: f2a0b67d66caa5f71c81f866025007d41620284e105b7d978dc7eb5987e234a6
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 0~12930
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:45:34Z

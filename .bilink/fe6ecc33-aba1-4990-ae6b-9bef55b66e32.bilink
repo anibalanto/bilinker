@@ -1,12 +1,14 @@
 link.0: <
 link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_layer_chain_dirty_when_hash_differs")) @target
+subgraph.1: rust-analyzer cargo bilinker 0.1.0 check/check_file().
 
 # Cache
 hash.0: 10d1c0f6e79d3f7fa5fed1f33bf19b747d356cbd0fed28eba5aaf18387c4ee4f
 commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
-hash.1: 70ce565a93c99753b3e4ac170e2a867ca446462fa812be9ec1b79c49b3defc34
-commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
-range.1: 14406~16058
-state.0: OK
+hash.1: 3cce1faeae4ed4b387b840ade848d59ed17bcb2a0af5fa9582bad6441b192def
+hash_ast.1: 4e445cc8cd3fe4af0460e9b867e1680af4dc886c9332ad9101a3d47c664a053e
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 19050~20794
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:05Z
+resolved_at: 2026-06-06T00:45:35Z

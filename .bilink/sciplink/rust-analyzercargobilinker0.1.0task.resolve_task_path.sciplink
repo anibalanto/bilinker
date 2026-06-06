@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 task/resolve_task_path().
+file:   crates/bilinker/src/task.rs
+range:  363~380
+hash:   525d2fe7509dfd6b5289550d4febe5e900ecba91bf92675426d46a4dd6b5f183
+commit: bd3856134d9d838fc1f477063d3d5f9b76339564
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

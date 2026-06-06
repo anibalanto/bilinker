@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 scip_index/check_or_create_sciplink().
+file:   crates/bilinker/src/scip_index.rs
+range:  6630~6654
+hash:   46ee28b49bb199e3d3f39fa1b01072ee8bbb9ba1755b96d81090c805ce756684
+commit: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

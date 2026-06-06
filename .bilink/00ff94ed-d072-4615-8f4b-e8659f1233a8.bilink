@@ -1,12 +1,14 @@
 link.0: <
 link.1: crates/bilinker/src/accept.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "accept")) @target
+subgraph.1: rust-analyzer cargo bilinker 0.1.0 accept/compute_hash_and_commit().
 
 # Cache
 hash.0: bb0e7df2d79d4fe457a4a5a43462c8f84d148131ccd4113636c3a940bfc87e54
 commit.0: 729ebf67c92c75ac2140590bd9d162ca298978cb
-hash.1: 7b25ddedd0fd04aac8296101169a5286a0ba1775da9b4da202f2ffa7b2cceab2
-commit.1: 84983794831ead3238b90f8c8a82b35ef56ac0f1
-range.1: 609~1632
-state.0: OK
+hash.1: be35cf63719f630bc8d8f8b8ec41db8fbca3a2c886b030d183bb5a6b55046f50
+hash_ast.1: dadce86750f3c6a678b560d5840fcdf1739ef78a6d32b3dbf2a70443e17c7582
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 643~1766
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:45:34Z

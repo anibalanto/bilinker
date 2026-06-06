@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 grammar/for_language().
+file:   crates/bilinker/src/grammar.rs
+range:  492~504
+hash:   11ce053bf0da06b033b8d2953311e2da300fa7e0bce0870df599d44304ba22a1
+commit: 50436ab2bc806e15f5895cc52980f0326bf337b2
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

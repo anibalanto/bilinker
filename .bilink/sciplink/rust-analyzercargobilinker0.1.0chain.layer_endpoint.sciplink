@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 chain/layer_endpoint().
+file:   crates/bilinker/src/chain.rs
+range:  4234~4248
+hash:   4e34e57580e2beb09ea0c55a58da268eb385bea27e85759ebf9a6e19d9462af4
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

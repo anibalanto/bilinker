@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 bilink/impl#[BiLinkFile]find_by_id().
+file:   crates/bilinker/src/bilink.rs
+range:  7729~7739
+hash:   62841038c6bb4de6ae346ac54a6ae38bb63c7812f5be55e52fef26f88cc7d4d8
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:10Z

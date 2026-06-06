@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 chain/diff_paths().
+file:   crates/bilinker/src/chain.rs
+range:  6042~6052
+hash:   77e6bd5ceea07a4229bd11b2adfce52bdd01b07e191eeb58aba6264c82c623da
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

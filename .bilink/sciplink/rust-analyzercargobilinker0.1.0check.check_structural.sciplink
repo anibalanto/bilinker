@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 check/check_structural().
+file:   crates/bilinker/src/check.rs
+range:  6932~6948
+hash:   11197043d8d9e0e2bd569dd9ec3b64929713acbc9cf700d52a99255a72a79a3b
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

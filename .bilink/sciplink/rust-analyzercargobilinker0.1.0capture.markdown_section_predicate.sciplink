@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 capture/markdown_section_predicate().
+file:   crates/bilinker/src/capture.rs
+range:  7930~7956
+hash:   b4cd887d5e0c7f34c3f6ebf0ec84cb86d51db314d36c88304a2beaada697c021
+commit: 8d2904b942e6576d64394fb32e471569e175bfe2
+state:  OK
+resolved_at: 2026-06-06T00:41:03Z

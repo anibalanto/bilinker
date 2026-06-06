@@ -1,5 +1,6 @@
 link.0: <
 link.1: crates/bilinker-cli/tests/integration.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "capture_hash_is_valid_sha256_and_stable")) @target
+subgraph.1: rust-analyzer cargo bilinker-cli 0.1.0 chain_status_shows_nodes().
 
 # Cache
 hash.0: 5357d12ebda5606fa2719915b0c73d061e0ef5a84e2ad7305e59c28ecfed76b6
@@ -7,6 +8,6 @@ commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
 hash.1: fc8f279edf0fc705a2e286d57521fb114495013a343581da323d4e71be28cb7d
 commit.1: 408de1de6cedc250d7dc509f27a68311768fb73d
 range.1: 2611~3318
-state.0: OK
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:40:06Z

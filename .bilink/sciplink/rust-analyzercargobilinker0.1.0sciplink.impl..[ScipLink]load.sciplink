@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 sciplink/impl#[ScipLink]load().
+file:   crates/bilinker/src/sciplink.rs
+range:  1053~1057
+hash:   0cf67fc72b3c86c7a454f6d86b43ed245a8e491d0e5288d4da8c7ff43a7bcdb0
+commit: eb634780783d9e6482cb735206cbf50b0384f005
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

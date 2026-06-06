@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 sciplink/strip_key().
+file:   crates/bilinker/src/sciplink.rs
+range:  4465~4474
+hash:   911648ec8bba6c58034989dc178629558f225a57d8a0c2534ff42073d0a9ee93
+commit: eb634780783d9e6482cb735206cbf50b0384f005
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

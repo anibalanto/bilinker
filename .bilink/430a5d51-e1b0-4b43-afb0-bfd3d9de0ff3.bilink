@@ -1,12 +1,14 @@
 link.0: <
 link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_altered_when_hash_differs")) @target
+subgraph.1: rust-analyzer cargo bilinker 0.1.0 check/check_file().
 
 # Cache
 hash.0: e5ed130f32b10fa2552449098964d352526dda05fd5fc267eca98f8924e06da2
 commit.0: 7433e75dd92cab6af0eaa9bba74cbb1775c378d4
-hash.1: f1901c3d295665e0e362e554a5a5743f3da36dbd8a7c63b49db3a57eb406ac66
-commit.1: bd3856134d9d838fc1f477063d3d5f9b76339564
-range.1: 10482~11412
-state.0: OK
+hash.1: 41a55e11a3556a94679897dcfaad6a9cacf40aef86f0d3584c3c638af9be1bc5
+hash_ast.1: caa7ed0fe0abade6690807103804ed933bfc265331edb45d7a8845ef0c1e7862
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 14988~15964
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:05Z
+resolved_at: 2026-06-06T00:45:35Z

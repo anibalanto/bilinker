@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 get/byte_to_line().
+file:   crates/bilinker/src/get.rs
+range:  3887~3899
+hash:   fd9b3b10a2021e1769b553574f55c229ea7ba5dfde312b7e0bcc91d0c25fafe6
+commit: 1e78031ea7d9010d4593b14df10c80e080b4dbf1
+state:  OK
+resolved_at: 2026-06-06T00:44:10Z

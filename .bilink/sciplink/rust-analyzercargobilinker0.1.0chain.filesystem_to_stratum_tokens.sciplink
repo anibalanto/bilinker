@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 chain/filesystem_to_stratum_tokens().
+file:   crates/bilinker/src/chain.rs
+range:  4809~4837
+hash:   076243d33a0d585142ba2200d17c3c1d933d61a84b914272774e0380f928e393
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:27Z

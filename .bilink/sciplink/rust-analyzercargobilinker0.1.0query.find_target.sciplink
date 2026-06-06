@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 query/find_target().
+file:   crates/bilinker/src/query.rs
+range:  236~247
+hash:   95dbbc9c0782854918c19c95465e025d6e47e520c90a85622b4939016b3d8115
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:44:19Z

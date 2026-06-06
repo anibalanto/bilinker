@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 accept/compute_hash_and_commit().
+file:   crates/bilinker/src/accept.rs
+range:  1692~1715
+hash:   982bb9a3e303de3f7125eeaf3388196eaeb769bbe98ed72c4e59cbebd4c2b951
+commit: 0e817130512537910c7473988b1e76172a5fd7fe
+state:  OK
+resolved_at: 2026-06-06T00:43:51Z

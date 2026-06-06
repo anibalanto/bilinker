@@ -1,12 +1,14 @@
 link.0: <
 link.1: crates/bilinker/src/chain.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "chain_new")) @target
+subgraph.1: rust-analyzer cargo bilinker 0.1.0 chain/tests/chain_new_three_layers_correct_endpoints().
 
 # Cache
 hash.0: 4fd1350fadf499c5217f8d39a2156f9302170c633f241fac7411e4e13e82cd17
 commit.0: 4b620df6546bce1f93b4aefe847b6d1c3fc18bc2
-hash.1: e66a146715b4464bd745c4ed9d1a05f5f1b78a28e596a075f2724a6832354712
-commit.1: 2f41c92e279f36926db83cb6982c5e9f1416476a
-range.1: 448~2672
-state.0: OK
+hash.1: 597c46806dd09d00825da8c763e879fc47aafb5bc90ff1c314a02da960b3da34
+hash_ast.1: 1b5970656315443d625c80874340d48f54237844ff1f92d41849b7781f1f4e49
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 448~3457
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:45:34Z

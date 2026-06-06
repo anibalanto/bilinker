@@ -1,12 +1,14 @@
 link.0: <
 link.1: crates/bilinker-cli/src/html_graph.rs :: (struct_item name: (type_identifier) @n0 (#eq? @n0 "HtmlGraph")) @target
+subgraph.1: rust-analyzer cargo bilinker-cli 0.1.0 html_graph/impl#[HtmlGraph]add_node().
 
 # Cache
 hash.0: d56e6f72b7a37800e97b165aad7ade40a72846049d5d8512fd75b9d0dcfa80c2
 commit.0: f1fec6efb67cb58a4e9df419927bbce13ff81b52
-hash.1: 91469cfff61fe44148ac5d2ccd2dd1ae5fa97d12b70e0f6c6f906aac060a07de
-commit.1: ce5dc86153ff7960e6ae62d61185a85c1e16e60b
-range.1: 2092~2285
-state.0: OK
+hash.1: b8dfdbff2420257d1c9420c624ac9e6cfefd82e74aa24f29c4ae174a5250fbc3
+hash_ast.1: f40fc09ab39fa62e086fb345a4eb1d49e45b86d25d1c3ed725371f9f59f2ade0
+commit.1: 0e817130512537910c7473988b1e76172a5fd7fe
+range.1: 2896~3492
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:45:34Z

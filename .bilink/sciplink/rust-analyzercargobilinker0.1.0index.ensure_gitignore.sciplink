@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 index/ensure_gitignore().
+file:   crates/bilinker/src/index.rs
+range:  5187~5203
+hash:   e5bdf6dd772f53d2afd17f57155787f2242b026755d40656dea86c718efe080f
+commit: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
+state:  OK
+resolved_at: 2026-06-06T00:41:30Z

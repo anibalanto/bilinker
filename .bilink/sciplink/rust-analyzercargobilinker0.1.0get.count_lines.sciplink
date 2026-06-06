@@ -1,0 +1,7 @@
+symbol: rust-analyzer cargo bilinker 0.1.0 get/count_lines().
+file:   crates/bilinker/src/get.rs
+range:  4020~4031
+hash:   418829a0cab5e68003044ee8c94a062bd3b3d7ad6fef431f9f19af609a46b020
+commit: 1e78031ea7d9010d4593b14df10c80e080b4dbf1
+state:  OK
+resolved_at: 2026-06-06T00:44:10Z

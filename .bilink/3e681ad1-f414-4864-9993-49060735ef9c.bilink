@@ -1,5 +1,6 @@
 link.0: <
 link.1: crates/bilinker/src/get.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "get")) @target
+subgraph.1: rust-analyzer cargo bilinker 0.1.0 get/get().
 
 # Cache
 hash.0: 3d6fae5a5cc4da317c7389ff46c45b8a59604b65f38c5afcd085870bcd6a91ff
@@ -7,6 +8,6 @@ commit.0: 729ebf67c92c75ac2140590bd9d162ca298978cb
 hash.1: b73341a648c245c7ab20928ee19a083c7c3f5da529c93e97d38d93194ae8a7e8
 commit.1: 7361428d62e6eab9b9893fc98bd990d9f7e912d6
 range.1: 328~1118
-state.0: OK
+state.0: BROKEN
 state.1: OK
-resolved_at: 2026-06-02T01:44:04Z
+resolved_at: 2026-06-06T00:43:51Z
