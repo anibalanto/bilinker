@@ -79,6 +79,20 @@ async fn dispatch(
             (resp, false)
         }
 
+        "callers" => {
+            #[derive(serde::Deserialize)]
+            struct P { file: String, line: u32, col: u32 }
+            let p: P = match serde_json::from_value(req.params) {
+                Ok(v) => v,
+                Err(e) => return (RpcResponse::invalid_params(id, e.to_string()), false),
+            };
+            let resp = match manager.callers(&p.file, p.line, p.col).await {
+                Ok(v)  => RpcResponse::ok(id, serde_json::json!(v)),
+                Err(e) => RpcResponse::server_error(id, e.to_string()),
+            };
+            (resp, false)
+        }
+
         "symbol_at" => {
             #[derive(serde::Deserialize)]
             struct P { file: String, line: u32, col: u32 }

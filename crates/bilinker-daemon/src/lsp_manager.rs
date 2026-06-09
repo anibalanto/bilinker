@@ -49,6 +49,12 @@ impl LspManager {
         client.callees(&abs, line, col).await
     }
 
+    pub async fn callers(&self, file: &str, line: u32, col: u32) -> anyhow::Result<Vec<CalleeInfo>> {
+        let client = self.client_for(file).await?;
+        let abs = abs_path(file, &self.workspace);
+        client.callers(&abs, line, col).await
+    }
+
     pub async fn symbol_at(
         &self,
         file: &str,

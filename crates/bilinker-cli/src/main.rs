@@ -117,6 +117,21 @@ enum Command {
         sub: DaemonCommand,
     },
 
+    /// Upward call-graph traversal: which specs are impacted by changed functions
+    ///
+    /// Without arguments: analyzes all bilinks with state.N ≠ OK.
+    /// Requires the bilinker daemon (bilinker daemon start).
+    Impact {
+        /// Selector: file:line:col, file, or UUID/UUID.N. Omit for all non-OK bilinks.
+        selector: Option<String>,
+        /// Maximum traversal depth (default: unlimited)
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Output format: tree, flat, json
+        #[arg(long, default_value = "tree")]
+        format: String,
+    },
+
     /// Traverse the bilink graph from a file, position, or UUID
     Graph {
         /// File, file:line:col, or UUID
@@ -579,6 +594,23 @@ fn main() -> anyhow::Result<()> {
             }
             DaemonCommand::Stop => daemon_stop()?,
             DaemonCommand::Status => daemon_status()?,
+        }
+
+        Command::Impact { selector, depth, format } => {
+            let root = project_root(&cwd)?;
+            let sel = parse_impact_selector(&cwd, selector.as_deref())?;
+            let results = bilinker::impact::impact(&root, &sel, depth)?;
+
+            if results.is_empty() {
+                eprintln!("(no bilinks alcanzados)");
+                std::process::exit(2);
+            }
+
+            match format.as_str() {
+                "json" => print_impact_json(&results),
+                "flat" => print_impact_flat(&results),
+                _      => print_impact_tree(&results),
+            }
         }
 
         Command::Graph { selector, depth, format, recursive, bilink_detail, url_scheme, show_query, show_range, show_data } => {
@@ -1631,4 +1663,111 @@ fn print_callees_recursive(
         print_callees_recursive(index, layer_root, &callee, max_depth, current_depth + 1, visited)?;
     }
     Ok(())
+}
+
+// ─── impact ───────────────────────────────────────────────────────────────────
+
+fn parse_impact_selector(
+    cwd: &Path,
+    s: Option<&str>,
+) -> anyhow::Result<bilinker::impact::Selector> {
+    use bilinker::impact::Selector;
+
+    let Some(s) = s else { return Ok(Selector::All) };
+
+    // UUID or UUID.N
+    let is_uuid_prefix = s.len() >= 8
+        && !s.contains('/')
+        && s.trim_end_matches(|c: char| c == '.' || c.is_ascii_digit())
+            .chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+
+    if is_uuid_prefix {
+        return if s.ends_with(".0") || s.ends_with(".1") {
+            let dot = s.rfind('.').unwrap();
+            let n: u8 = s[dot + 1..].parse()?;
+            Ok(Selector::Uuid { uuid: s[..dot].to_string(), endpoint: Some(n) })
+        } else {
+            Ok(Selector::Uuid { uuid: s.to_string(), endpoint: None })
+        };
+    }
+
+    // file:line:col
+    let parts: Vec<&str> = s.rsplitn(3, ':').collect();
+    if parts.len() == 3
+        && parts[0].parse::<u32>().is_ok()
+        && parts[1].parse::<u32>().is_ok()
+    {
+        let col:  u32 = parts[0].parse()?;
+        let line: u32 = parts[1].parse::<u32>()? - 1; // convert 1-based to 0-based
+        let file = cwd.join(parts[2]);
+        return Ok(Selector::FileLineCol { file, line, col });
+    }
+
+    // bare file
+    Ok(Selector::FileLineCol { file: cwd.join(s), line: 0, col: 0 })
+}
+
+fn print_impact_tree(results: &[bilinker::impact::ImpactResult]) {
+    for r in results {
+        let state_str = r.state.as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "NONE".to_string());
+        let commit_short = &r.commit[..8.min(r.commit.len())];
+
+        println!("◆ {}.{}  {}  [{}]  (desde commit {})",
+            &r.bilink_uuid[..8.min(r.bilink_uuid.len())],
+            r.endpoint,
+            r.other_endpoint,
+            state_str,
+            commit_short,
+        );
+
+        if r.path.is_empty() {
+            println!("  (hit directo)");
+        } else {
+            for (i, item) in r.path.iter().enumerate() {
+                let rel = std::path::Path::new(&item.file)
+                    .file_name().and_then(|n| n.to_str()).unwrap_or(&item.file);
+                let connector = if i == r.path.len() - 1 { "└──" } else { "├──" };
+                println!("  {connector} {}:{}", rel, item.line + 1);
+            }
+        }
+        println!();
+    }
+}
+
+fn print_impact_flat(results: &[bilinker::impact::ImpactResult]) {
+    for r in results {
+        let state_str = r.state.as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "NONE".to_string());
+        let uuid_short = &r.bilink_uuid[..8.min(r.bilink_uuid.len())];
+        print!("{}.{}  {}  [{}]", uuid_short, r.endpoint, r.other_endpoint, state_str);
+        if !r.path.is_empty() {
+            let chain: Vec<String> = r.path.iter().map(|p| {
+                let rel = std::path::Path::new(&p.file)
+                    .file_name().and_then(|n| n.to_str()).unwrap_or(&p.file);
+                format!("{}:{}", rel, p.line + 1)
+            }).collect();
+            print!("  via: {}", chain.join(" → "));
+        }
+        println!();
+    }
+}
+
+fn print_impact_json(results: &[bilinker::impact::ImpactResult]) {
+    let arr: Vec<serde_json::Value> = results.iter().map(|r| {
+        let path: Vec<serde_json::Value> = r.path.iter().map(|p| {
+            serde_json::json!({ "file": p.file, "line": p.line + 1 })
+        }).collect();
+        serde_json::json!({
+            "bilink":   r.bilink_uuid,
+            "endpoint": r.endpoint,
+            "state":    r.state.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+            "other":    r.other_endpoint,
+            "commit":   r.commit,
+            "path":     path,
+        })
+    }).collect();
+    println!("{}", serde_json::to_string_pretty(&arr).unwrap_or_default());
 }

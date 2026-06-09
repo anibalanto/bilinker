@@ -160,6 +160,70 @@ impl LspClient {
         Ok(result)
     }
 
+    pub async fn callers(&self, file: &Path, line: u32, col: u32) -> Result<Vec<CalleeInfo>> {
+        self.queries.fetch_add(1, Ordering::Relaxed);
+
+        let uri = self.file_url(file)?;
+        let mut server = self.server.lock().await;
+
+        let content = std::fs::read_to_string(file)
+            .map_err(|e| anyhow::anyhow!("read {}: {e}", file.display()))?;
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: lang_id(file).to_string(),
+                    version: 0,
+                    text: content,
+                },
+            })
+            .map_err(|e| anyhow::anyhow!("didOpen: {e:?}"))?;
+
+        let items = server
+            .prepare_call_hierarchy(CallHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position { line, character: col },
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("prepareCallHierarchy: {e:?}"))?
+            .unwrap_or_default();
+
+        let mut result = Vec::new();
+
+        for item in items {
+            let calls = server
+                .incoming_calls(CallHierarchyIncomingCallsParams {
+                    item,
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("incomingCalls: {e:?}"))?
+                .unwrap_or_default();
+
+            for call in calls {
+                let f = call.from;
+                let file_path = f
+                    .uri
+                    .to_file_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| f.uri.to_string());
+                result.push(CalleeInfo {
+                    symbol: f.detail.clone().unwrap_or_else(|| f.name.clone()),
+                    name: f.name,
+                    file: file_path,
+                    line: f.selection_range.start.line,
+                    col: f.selection_range.start.character,
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
     pub async fn symbol_at(&self, file: &Path, line: u32, col: u32) -> Result<Option<SymbolInfo>> {
         self.queries.fetch_add(1, Ordering::Relaxed);
 
