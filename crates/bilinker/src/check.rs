@@ -218,7 +218,7 @@ pub(crate) fn find_renamed_anchor(
     hash:      Option<&str>,
     commit:    Option<&str>,
 ) -> Result<Option<(String, f64)>> {
-    let Some(old_text) = accepted_text(root, &language, sref, hash, commit) else {
+    let Some(old_text) = commit.and_then(|c| crate::capture::accepted_text(root, sref, c, hash)) else {
         return Ok(None);
     };
 
@@ -246,48 +246,6 @@ pub(crate) fn find_renamed_anchor(
     if best - second < REANCHOR_MARGIN { return Ok(None); }
 
     Ok(Some((name, best)))
-}
-
-/// El texto del fragmento tal como quedó aceptado, recuperado de git.
-///
-/// **No recorta por el `range` guardado**: `check` lo reescribe en cada corrida,
-/// así que apunta a dónde está el fragmento *ahora*, no a dónde estaba en
-/// `commit.N`. Recortar el contenido viejo con una posición nueva da basura.
-///
-/// En su lugar resuelve la query contra el contenido de `commit.N` y verifica
-/// que el resultado hashee a `hash.N`. Si no verifica, devuelve `None`: es
-/// preferible no detectar nada que razonar sobre el texto equivocado.
-fn accepted_text(
-    root:     &Path,
-    language: &tree_sitter::Language,
-    sref:     &StructuralRef,
-    hash:     Option<&str>,
-    commit:   Option<&str>,
-) -> Option<String> {
-    let (commit, hash) = (commit?, hash?);
-
-    let out = std::process::Command::new("git")
-        .args(["-C", &root.to_string_lossy(), "show", &format!("{commit}:{}", sref.file)])
-        .output().ok()?;
-    if !out.status.success() { return None; }
-    let old_source = String::from_utf8(out.stdout).ok()?;
-
-    let text = match &sref.query {
-        None => old_source.clone(),
-        Some(q) => {
-            let (start, end, _) =
-                query::find_target_with_sexp(language.clone(), &old_source, q).ok()??;
-            let (s, e) = match &sref.range {
-                Some(r) => (start + r.start, (start + r.end).min(old_source.len())),
-                None    => (start, end),
-            };
-            if s > e || e > old_source.len() { return None; }
-            old_source[s..e].to_string()
-        }
-    };
-
-    // La verificación es lo que hace confiable a todo lo que se apoya en esto.
-    (hash::sha256(text.as_bytes()) == hash).then_some(text)
 }
 
 /// ¿El fragmento aceptado existió alguna vez en el historial de este archivo?
@@ -407,7 +365,7 @@ pub(crate) fn check_structural(
     //
     //   fragmento ⊃ aceptado          → creció alrededor        → EXPANDED
     //   fragmento ⊅ aceptado, nodo sí → se corrió, sigue igual  → DISPLACED
-    let accepted = accepted_text(root, &language, sref, hash, commit);
+    let accepted = commit.and_then(|c| crate::capture::accepted_text(root, sref, c, hash));
 
     if let Some(t) = accepted.as_deref() {
         if !t.is_empty() && fragment.len() > t.len() && fragment.contains(t) {

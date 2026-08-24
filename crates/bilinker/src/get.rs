@@ -63,11 +63,13 @@ pub fn get_diff(
     let bilinker_dir = root.join(".bilink");
     let (_, bl) = BiLinkFile::find_by_id(&bilinker_dir, bilink_name)?;
 
-    let (link, commit, range) = match endpoint {
-        0 => (&bl.link0, bl.commit0.as_deref(), bl.range0.as_ref()),
-        1 => (&bl.link1, bl.commit1.as_deref(), bl.range1.as_ref()),
-        _ => bail!("endpoint must be 0 or 1"),
-    };
+    if endpoint > 1 { bail!("endpoint must be 0 or 1"); }
+    let link   = bl.link(endpoint);
+    let commit = bl.commit(endpoint);
+    let hash   = bl.hash(endpoint);
+    // El range del capture, no el del bilink: ahí ya no vive.
+    let cap    = bl.capture_for(root, endpoint).ok().flatten();
+    let range  = cap.as_ref().and_then(|c| c.range.clone());
 
     let commit = commit.context("endpoint has no accepted commit — run bilinker accept first")?;
 
@@ -75,12 +77,14 @@ pub fn get_diff(
         LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
             let sref = crate::capture::sref_of(root, link)?
                 .context("endpoint estructural sin capture resoluble")?;
-            diff_structural(root, &sref, commit, range)
+            diff_structural(root, &sref, commit, range.as_ref(), hash)
         }
         LinkEndpoint::Layer(layer_path) => {
-            let (adj_root, sref_owned, adj_commit, adj_range) =
+            let (adj_root, sref_owned, adj_commit, adj_range, adj_hash) =
                 traverse_layer_for_diff(root, layer_path.clone(), &bl.uuid)?;
-            diff_structural(&adj_root, &sref_owned, adj_commit.as_deref().unwrap_or(commit), adj_range.as_ref())
+            diff_structural(&adj_root, &sref_owned,
+                            adj_commit.as_deref().unwrap_or(commit),
+                            adj_range.as_ref(), adj_hash.as_deref())
         }
         LinkEndpoint::Task(id) => bail!(
             "link.{endpoint} is a task reference ({id})"
@@ -93,13 +97,22 @@ fn diff_structural(
     sref: &StructuralRef,
     commit: &str,
     stored_range: Option<&ByteRange>,
+    hash: Option<&str>,
 ) -> Result<DiffResult> {
     // "after": current fragment via AST query
     let after_result = resolve(root, sref, None, None)?;
     let after_text = &after_result.content;
 
-    // "before": fragment from accepted commit via git show
-    let before_text = git_show_fragment(root, commit, &sref.file, stored_range)?;
+    // "before": el fragmento aceptado, resolviendo la query contra el contenido
+    // de `commit`. Recortarlo por `stored_range` daría bytes arbitrarios: ese
+    // range es la posición *actual*, que check reescribe en cada corrida.
+    //
+    // Si la verificación por hash falla, se cae al recorte por range: para un
+    // diff informativo es mejor mostrar algo aproximado que no mostrar nada.
+    let before_text = match crate::capture::accepted_text(root, sref, commit, hash) {
+        Some(t) => t,
+        None    => git_show_fragment(root, commit, &sref.file, stored_range)?,
+    };
 
     let diff = if before_text.trim_end() == after_text.trim_end() {
         None
@@ -242,7 +255,7 @@ fn traverse_layer_for_diff(
     root: &Path,
     layer_path: StratumPath,
     uuid: &str,
-) -> Result<(std::path::PathBuf, StructuralRef, Option<String>, Option<ByteRange>)> {
+) -> Result<(std::path::PathBuf, StructuralRef, Option<String>, Option<ByteRange>, Option<String>)> {
     let adjacent_root = {
         let p = stratum::resolve(root, root, &layer_path)
             .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
@@ -259,13 +272,14 @@ fn traverse_layer_for_diff(
         .with_context(|| format!("adjacent bilink {uuid} has no structural endpoint"))?;
     let cap = adjacent_bl.capture_for(&adjacent_root, n)?
         .with_context(|| format!("adjacent bilink {uuid}: capture no resoluble"))?;
-    let (sref, commit, range) = (
+    let (sref, commit, range, hash) = (
         cap.sref.clone(),
         adjacent_bl.commit(n).map(String::from),
         cap.range.clone(),
+        adjacent_bl.hash(n).map(String::from),
     );
 
-    Ok((adjacent_root, sref, commit, range))
+    Ok((adjacent_root, sref, commit, range, hash))
 }
 
 fn traverse_layer(

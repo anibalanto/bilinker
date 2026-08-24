@@ -51,6 +51,50 @@ pub fn capture_file_whole(layer: &Path, file: &str, now: &str) -> Result<(String
     Ok((uuid, path))
 }
 
+/// El texto del fragmento tal como quedó aceptado en `commit`.
+///
+/// **No recorta el contenido viejo por el `range` guardado.** `check` reescribe
+/// `range` en cada corrida, así que apunta a dónde está el fragmento *ahora*;
+/// recortar contenido de otro commit con una posición actual da bytes
+/// arbitrarios. En su lugar resuelve la query contra el contenido de ese commit.
+///
+/// Con `expected_hash` presente, verifica que el resultado hashee a ese valor y
+/// devuelve `None` si no coincide. Es preferible no devolver nada que devolver
+/// el fragmento equivocado: quien llama toma decisiones a partir de este texto.
+pub fn accepted_text(
+    layer:         &Path,
+    sref:          &StructuralRef,
+    commit:        &str,
+    expected_hash: Option<&str>,
+) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{}", sref.file)])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let old_source = String::from_utf8(out.stdout).ok()?;
+
+    let text = match &sref.query {
+        None => old_source.clone(),
+        Some(q) => {
+            let lang     = grammar::language_for_file(&sref.file);
+            let language = grammar::for_language(lang).ok()?;
+            let (start, end, _) =
+                crate::query::find_target_with_sexp(language, &old_source, q).ok()??;
+            let (s, e) = match &sref.range {
+                Some(r) => (start + r.start, (start + r.end).min(old_source.len())),
+                None    => (start, end),
+            };
+            if s > e || e > old_source.len() { return None; }
+            old_source[s..e].to_string()
+        }
+    };
+
+    match expected_hash {
+        Some(h) if hash::sha256(text.as_bytes()) != h => None,
+        _ => Some(text),
+    }
+}
+
 /// Byte range absoluto del fragmento en su archivo, resolviendo la query.
 pub fn absolute_range(layer: &Path, sref: &StructuralRef) -> Result<Option<ByteRange>> {
     let path = layer.join(&sref.file);
