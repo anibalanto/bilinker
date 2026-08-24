@@ -79,10 +79,12 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
         let short = bl.uuid[..8.min(bl.uuid.len())].to_string();
 
         for n in [0u8, 1u8] {
-            let Some(state) = bl.state(n).clone() else { continue };
-            if !is_autofixeable(&state) { continue; }
-
             let Ok(Some(cap)) = bl.capture_for(layer, n) else { continue };
+
+            // Los estados auto-fixeables viven en dos lados: MOVED y REANCHORED
+            // son de resolución y los reporta el capture; DISPLACED y EXPANDED
+            // dependen de `hash.N` y los reporta el bilink.
+            let Some(state) = autofixeable_state(&bl, n, &cap) else { continue };
 
             match compute_fix(layer, &bl, n, &cap, &state) {
                 Ok(Some(fix)) => {
@@ -107,9 +109,21 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
     Ok(fixes)
 }
 
-fn is_autofixeable(s: &EndpointState) -> bool {
-    matches!(s, EndpointState::Moved | EndpointState::Displaced
-              | EndpointState::Expanded | EndpointState::Reanchored)
+/// El estado auto-fixeable de un endpoint, mirando capture y bilink.
+///
+/// Devuelve `None` si no hay nada que arreglar. Se consulta primero el capture:
+/// si la ubicación no resolvió, el estado de aceptación del bilink es
+/// `UNRESOLVED` y no dice nada útil.
+fn autofixeable_state(bl: &BiLinkFile, n: u8, cap: &CaptureFile) -> Option<EndpointState> {
+    match cap.state {
+        Some(CaptureState::Moved)      => return Some(EndpointState::Moved),
+        Some(CaptureState::Reanchored) => return Some(EndpointState::Reanchored),
+        _ => {}
+    }
+    match bl.state(n) {
+        Some(s @ EndpointState::Displaced) | Some(s @ EndpointState::Expanded) => Some(s.clone()),
+        _ => None,
+    }
 }
 
 /// Tras el fix: MOVED y DISPLACED no cambiaron el contenido, así que cierran en OK.

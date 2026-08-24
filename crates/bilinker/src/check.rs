@@ -73,25 +73,34 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     // El resultado de la resolución se escribe en el capture; el estado de
     // aceptación, en el bilink. `range.N` ya no vive en el bilink.
+    // La resolución va al capture; la aceptación, al bilink. Si el capture no
+    // resolvió, el endpoint no puede evaluarse y queda UNRESOLVED: el detalle de
+    // por qué lo lleva el capture.
     let mut cap_updated = false;
-    for (n, cap, range, state) in
-        [(0u8, cap0, &range0, &state0), (1u8, cap1, &range1, &state1)]
-    {
+    let mut states      = [state0.clone(), state1.clone()];
+
+    for (n, cap, range) in [(0u8, cap0, &range0), (1u8, cap1, &range1)] {
+        let Some(mut cap) = cap else { continue };
+        let cap_state = capture_state_for(&states[n as usize]);
+
+        if !cap_state.is_resolved() {
+            states[n as usize] = EndpointState::Unresolved;
+        }
+
         // Solo los endpoints ya migrados tienen archivo que escribir; los legacy
         // llevan su ubicación embebida en el bilink hasta que corra `migrate`.
         if bl.link(n).capture_uuid().is_none() { continue; }
-        let Some(mut cap) = cap else { continue };
 
-        let new_state = capture_state_for(state);
-        if cap.range.as_ref() != range.as_ref() || cap.state.as_ref() != Some(&new_state) {
+        if cap.range.as_ref() != range.as_ref() || cap.state.as_ref() != Some(&cap_state) {
             cap.range       = range.clone();
-            cap.state       = Some(new_state);
+            cap.state       = Some(cap_state);
             cap.resolved_at = Some(now.clone());
             cap.write_in(layer_root)?;
             cap_updated = true;
         }
     }
 
+    let [state0, state1] = states;
     let updated = cap_updated
         || bl.state0.as_ref() != Some(&state0)
         || bl.state1.as_ref() != Some(&state1);
@@ -143,6 +152,88 @@ fn check_endpoint(
     }
 }
 
+/// Nueva ruta del archivo si git detecta un rename (≥ 50% de similitud).
+///
+/// Sin pathspec: filtrar por el path viejo puede impedir que git detecte el
+/// rename, porque el destino queda fuera del filtro.
+pub(crate) fn git_renamed_to(layer_root: &Path, file: &str) -> Option<String> {
+    for args in [
+        &["diff", "-M", "--name-status", "HEAD"][..],
+        &["diff", "-M", "--name-status", "--cached"][..],
+    ] {
+        let out = std::process::Command::new("git")
+            .args(["-C", &layer_root.to_string_lossy()])
+            .args(args)
+            .output()
+            .ok()?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if !line.starts_with('R') { continue; }
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() == 3 && parts[1] == file && layer_root.join(parts[2]).exists() {
+                return Some(parts[2].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// ¿Git tiene historial de este archivo?
+///
+/// Distingue "el archivo se borró" de "esta referencia nunca apuntó a nada":
+/// lo primero es rastreable y accionable, lo segundo es un bilink roto.
+fn git_knows_file(layer_root: &Path, file: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["-C", &layer_root.to_string_lossy(), "log", "--oneline", "-1", "--", file])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Busca un nodo del mismo tipo que el anchor pero con otro nombre, cuyo
+/// contenido hashee a `hash`.
+///
+/// Relaja los predicados de nombre de la query y recorre los candidatos. Si uno
+/// coincide, el anchor se renombró y la query se puede reparar.
+pub(crate) fn find_renamed_anchor(
+    language: tree_sitter::Language,
+    source:   &str,
+    query_str: &str,
+    hash:      &str,
+    sref:      &StructuralRef,
+) -> Result<Option<String>> {
+    let relaxed = query::relax_name_predicates(query_str);
+    let Ok(matches) = query::find_all_targets(language, source, &relaxed) else {
+        return Ok(None); // la query relajada puede no ser válida; no es un error
+    };
+
+    for m in matches {
+        let (start, end) = match &sref.range {
+            Some(r) => (m.start + r.start, (m.start + r.end).min(source.len())),
+            None    => (m.start, m.end),
+        };
+        if start > source.len() || end > source.len() || start > end { continue; }
+        if hash::sha256(source[start..end].as_bytes()) == hash {
+            return Ok(m.name);
+        }
+    }
+    Ok(None)
+}
+
+/// ¿El fragmento aceptado existió alguna vez en el historial de este archivo?
+///
+/// `git log -S` busca commits que agreguen o quiten esa cadena. Si aparece,
+/// hubo un commit que se llevó el fragmento — eso es DELETED, rastreable. Si no
+/// aparece nunca, la referencia nunca ancló a algo que git haya visto.
+fn git_fragment_vanished(layer_root: &Path, file: &str, hash: Option<&str>) -> bool {
+    let Some(hash) = hash else { return false };
+    std::process::Command::new("git")
+        .args(["-C", &layer_root.to_string_lossy(), "log", "--oneline", "-1",
+               "-S", hash, "--", file])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
 /// ¿El archivo cambió desde `commit`?
 ///
 /// Ante la duda, `true`: si git no puede resolver la comparación —commit
@@ -171,7 +262,14 @@ pub(crate) fn check_structural(
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     let file_path = root.join(&sref.file);
 
+    // 1. El archivo no está donde lo dejamos: ¿se movió, o se borró?
     if !file_path.exists() {
+        if git_renamed_to(root, &sref.file).is_some() {
+            return Ok((EndpointState::Moved, None));
+        }
+        if git_knows_file(root, &sref.file) {
+            return Ok((EndpointState::Deleted, None));
+        }
         return Ok((EndpointState::Broken, None));
     }
 
@@ -199,9 +297,21 @@ pub(crate) fn check_structural(
 
     let lang     = grammar::language_for_file(&sref.file);
     let language = grammar::for_language(lang)?;
-    let node_range = query::find_target_with_sexp(language, &source, query_str)?;
+    let node_range = query::find_target_with_sexp(language.clone(), &source, query_str)?;
 
+    // 2. La query no matchea: ¿el anchor se renombró, o desapareció?
     let Some((node_start, node_end, sexp)) = node_range else {
+        if let Some(hash) = hash {
+            if find_renamed_anchor(language, &source, query_str, hash, sref)?.is_some() {
+                return Ok((EndpointState::Reanchored, None));
+            }
+        }
+        // El anchor no está y no se renombró. Si git tiene historial del archivo,
+        // el fragmento se fue en algún commit rastreable; si no, la referencia
+        // simplemente ya no ancla.
+        if git_fragment_vanished(root, &sref.file, hash) {
+            return Ok((EndpointState::Deleted, None));
+        }
         return Ok((EndpointState::Unanchored, None));
     };
 
@@ -414,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn check_structural_broken_when_file_missing() {
+    fn check_unresolved_when_file_missing() {
         let dir = tempdir().unwrap();
 
         let bilink_dir = dir.path().join(".bilink");
@@ -423,8 +533,134 @@ mod tests {
             whole_file_endpoint("missing.md"),
         );
 
+        // El archivo no está: eso es un problema de ubicación, no del vínculo.
+        // El bilink no puede evaluarse; el detalle lo lleva el capture.
         let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Broken);
+        assert_eq!(result.state0, EndpointState::Unresolved);
+    }
+
+    /// Prepara un repo git con un archivo commiteado.
+    fn git_repo_with(dir: &Path, file: &str, content: &str) {
+        std::fs::create_dir_all(dir.join(file).parent().unwrap()).ok();
+        std::fs::write(dir.join(file), content).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "init"],
+        ] {
+            std::process::Command::new("git")
+                .args(["-C", &dir.to_string_lossy()]).args(&args)
+                .output().unwrap();
+        }
+    }
+
+    /// Crea un capture y el bilink que lo referencia, con hash aceptado.
+    fn capture_bilink(
+        layer: &Path, uuid: &str, file: &str, query: Option<&str>, hash: &str,
+    ) -> std::path::PathBuf {
+        let cap = crate::capture::CaptureFile {
+            uuid: format!("cap-{uuid}"),
+            sref: StructuralRef {
+                file: file.into(),
+                query: query.map(String::from),
+                range: None,
+            },
+            range: None, state: None, resolved_at: None,
+        };
+        cap.write_in(layer).unwrap();
+
+        let mut bl = BiLinkFile::new(uuid,
+            LinkEndpoint::Capture(cap.uuid.clone()),
+            layer_endpoint(".stratum/impl"));
+        bl.hash0   = Some(hash.into());
+        bl.commit0 = Some("0000000".into());
+        let path = layer.join(".bilink").join(format!("{uuid}.bilink"));
+        bl.write(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn check_detects_moved_after_git_rename() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let content = "# Doc\n";
+        git_repo_with(root, "a.md", content);
+
+        let path = capture_bilink(root, "uuid1", "a.md", None, &hash::sha256(content.as_bytes()));
+
+        // Rename rastreable por git: el contenido no cambia.
+        std::process::Command::new("git")
+            .args(["-C", &root.to_string_lossy(), "mv", "a.md", "b.md"])
+            .output().unwrap();
+
+        let result = check_file(root, &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Unresolved,
+                   "el bilink no puede evaluarse mientras la ubicación no resuelva");
+
+        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Moved),
+                   "el capture es quien sabe que el archivo se movió");
+    }
+
+    #[test]
+    fn check_detects_reanchored_when_anchor_is_renamed() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+
+        // El fragmento capturado es el *cuerpo*, no la firma: por eso renombrar
+        // la función deja el hash intacto y el anchor es lo único que cambia.
+        let before = "fn foo() {\n    let x = 1;\n}\n";
+        let brace  = before.find('{').unwrap();
+        let fn_end = before.trim_end().len();
+        let body   = &before[brace..fn_end];
+
+        git_repo_with(root, "a.rs", before);
+
+        let query = r#"(function_item name: (identifier) @n0 (#eq? @n0 "foo")) @target"#;
+        let cap = crate::capture::CaptureFile {
+            uuid: "cap-uuid1".into(),
+            sref: StructuralRef {
+                file:  "a.rs".into(),
+                query: Some(query.into()),
+                range: Some(ByteRange { start: brace, end: fn_end }),
+            },
+            range: None, state: None, resolved_at: None,
+        };
+        cap.write_in(root).unwrap();
+
+        let mut bl = BiLinkFile::new("uuid1",
+            LinkEndpoint::Capture("cap-uuid1".into()),
+            layer_endpoint(".stratum/impl"));
+        bl.hash0   = Some(hash::sha256(body.as_bytes()));
+        bl.commit0 = Some("0000000".into());
+        let path = root.join(".bilink/uuid1.bilink");
+        bl.write(&path).unwrap();
+
+        // Mismo largo, así que el cuerpo queda en los mismos offsets.
+        std::fs::write(root.join("a.rs"), "fn bar() {\n    let x = 1;\n}\n").unwrap();
+
+        check_file(root, &path).unwrap();
+        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored),
+                   "el anchor se renombró pero el fragmento sigue ahí");
+    }
+
+    #[test]
+    fn check_detects_deleted_when_file_removed_from_git() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let content = "# Doc\n";
+        git_repo_with(root, "a.md", content);
+
+        let path = capture_bilink(root, "uuid1", "a.md", None, &hash::sha256(content.as_bytes()));
+        std::fs::remove_file(root.join("a.md")).unwrap();
+
+        check_file(root, &path).unwrap();
+        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Deleted),
+                   "git tiene historial del archivo: la eliminación es rastreable");
     }
 
     #[test]
