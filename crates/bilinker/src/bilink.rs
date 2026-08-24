@@ -82,6 +82,15 @@ impl BiLinkFile {
                 line.starts_with(k) && line[k.len()..].starts_with(':')
             });
 
+            // Una línea a columna 0 con forma `clave:` termina la continuación,
+            // aunque la clave sea desconocida. Sin esto, cualquier campo que ya
+            // no reconozcamos —`subgraph.N` de versiones viejas, por ejemplo— se
+            // concatenaría al valor de `link.N` y corrompería la query.
+            if !is_new_key && looks_like_key(line) {
+                current_key = None;
+                continue;
+            }
+
             if is_new_key {
                 let colon = line.find(':').unwrap();
                 let key   = line[..colon].trim();
@@ -332,6 +341,18 @@ mod tests {
         assert_eq!(found_path, path);
         assert_eq!(found_bl.uuid, "my-uuid");
     }
+}
+
+/// ¿La línea arranca a columna 0 con forma `clave:`?
+///
+/// Las continuaciones de query tree-sitter van siempre indentadas, así que no
+/// pueden confundirse con esto aunque contengan `:` (`name: (identifier)`).
+fn looks_like_key(line: &str) -> bool {
+    if line.starts_with(char::is_whitespace) { return false; }
+    let Some(colon) = line.find(':') else { return false };
+    let key = &line[..colon];
+    !key.is_empty()
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 fn push_field(out: &mut String, key: &str, value: &str) {
