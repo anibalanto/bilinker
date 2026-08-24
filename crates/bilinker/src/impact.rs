@@ -98,7 +98,7 @@ fn resolve_selector(
                     if matches!(state, Some(EndpointState::Ok)) || state.is_none() {
                         continue;
                     }
-                    let LinkEndpoint::Structural(sref) = link else { continue };
+                    let Ok(Some(sref)) = crate::capture::sref_of(root, link) else { continue };
                     let Some(range) = range else { continue };
 
                     let file_abs = root.join(&sref.file);
@@ -139,7 +139,7 @@ fn resolve_selector(
                 } else {
                     (&bl.link1, &bl.range1)
                 };
-                let LinkEndpoint::Structural(sref) = link else { continue };
+                let Ok(Some(sref)) = crate::capture::sref_of(root, link) else { continue };
                 let Some(range) = range else { continue };
 
                 let file_abs = root.join(&sref.file);

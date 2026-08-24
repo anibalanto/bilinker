@@ -19,7 +19,6 @@ pub fn chain_new(
     root: &Path,
     tips: &[(PathBuf, LinkEndpoint)],
     mids: &[PathBuf],
-    no_subgraph: bool,
 ) -> Result<ChainNew> {
     if tips.len() != 2 {
         bail!("chain new requires exactly 2 --tip arguments");
@@ -39,14 +38,10 @@ pub fn chain_new(
 
     // Same-layer direct link: both tips in the same directory → one file.
     if n == 2 && normalize(&all_layers[0]) == normalize(&all_layers[1]) {
-        let sg0 = if no_subgraph { None } else { detect_scip_symbol(root, &all_layers[0], &tips[0].1) };
-        let sg1 = if no_subgraph { None } else { detect_scip_symbol(root, &all_layers[1], &tips[1].1) };
         let bl = BiLinkFile {
             uuid:      uuid.clone(),
             link0:     tips[0].1.clone(),
             link1:     tips[1].1.clone(),
-            subgraph0: sg0,
-            subgraph1: sg1,
             hash0: None, hash_ast0: None, commit0: None,
             hash1: None, hash_ast1: None, commit1: None,
             range0:    None, range1: None,
@@ -63,28 +58,22 @@ pub fn chain_new(
     for i in 0..n {
         let layer = &all_layers[i];
 
-        let (link0, link1, sg0, sg1) = if i == 0 {
+        let (link0, link1) = if i == 0 {
             let to_next = layer_endpoint(layer, &all_layers[i + 1])?;
-            let sg = if no_subgraph { None } else { detect_scip_symbol(root, layer, &tips[0].1) };
-            // tip0: link0=structural, link1=layer → subgraph.0
-            (tips[0].1.clone(), to_next, sg, None)
+            (tips[0].1.clone(), to_next)
         } else if i == n - 1 {
             let to_prev = layer_endpoint(layer, &all_layers[i - 1])?;
-            let sg = if no_subgraph { None } else { detect_scip_symbol(root, layer, &tips[1].1) };
-            // tip1: link0=layer, link1=structural → subgraph.1
-            (to_prev, tips[1].1.clone(), None, sg)
+            (to_prev, tips[1].1.clone())
         } else {
             let to_prev = layer_endpoint(layer, &all_layers[i - 1])?;
             let to_next = layer_endpoint(layer, &all_layers[i + 1])?;
-            (to_prev, to_next, None, None)
+            (to_prev, to_next)
         };
 
         let bl = BiLinkFile {
             uuid:      uuid.clone(),
             link0,
             link1,
-            subgraph0: sg0,
-            subgraph1: sg1,
             hash0: None, hash_ast0: None, commit0: None,
             hash1: None, hash_ast1: None, commit1: None,
             range0:    None, range1: None,
@@ -97,73 +86,6 @@ pub fn chain_new(
     }
 
     Ok(ChainNew { uuid, files: created })
-}
-
-/// Resolves the `.bilink/<uuid>.bilink` path for a layer endpoint at `target_layer`.
-/// Retrofits existing bilinks in `layer_root` with `subgraph.N` where the
-/// structural endpoint matches a callable symbol in the SCIP index.
-/// Returns the number of bilinks updated.
-pub fn scip_retrofit(layer_root: &Path) -> anyhow::Result<usize> {
-    use crate::bilink::walkdir;
-    let bilink_dir = layer_root.join(".bilink");
-    if !bilink_dir.exists() { return Ok(0); }
-
-    let scip_path = bilink_dir.join("index/index.scip");
-    if !scip_path.exists() {
-        anyhow::bail!("no index.scip found at {} — run `rust-analyzer scip .` first", scip_path.display());
-    }
-
-    let index = crate::scip_index::ScipIndex::load(&scip_path, layer_root)?;
-    let mut count = 0;
-
-    for path in walkdir(&bilink_dir)? {
-        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-        if path.ancestors().any(|a| a.ends_with(".pending")) { continue; }
-
-        let mut bl = crate::bilink::BiLinkFile::load(&path)?;
-        let mut changed = false;
-
-        if bl.subgraph0.is_none() {
-            if let Some(sym) = detect_scip_symbol_from_bilink(&index, &bl.link0) {
-                eprintln!("  {} → subgraph.0: {}", bl.uuid[..8].to_string(), &sym[sym.rfind('/').unwrap_or(0)..]);
-                bl.subgraph0 = Some(sym);
-                changed = true;
-            }
-        }
-        if bl.subgraph1.is_none() {
-            if let Some(sym) = detect_scip_symbol_from_bilink(&index, &bl.link1) {
-                eprintln!("  {} → subgraph.1: {}", bl.uuid[..8].to_string(), &sym[sym.rfind('/').unwrap_or(0)..]);
-                bl.subgraph1 = Some(sym);
-                changed = true;
-            }
-        }
-
-        if changed {
-            bl.write(&path)?;
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn detect_scip_symbol_from_bilink(
-    index: &crate::scip_index::ScipIndex,
-    endpoint: &crate::link::LinkEndpoint,
-) -> Option<String> {
-    use crate::link::LinkEndpoint;
-    let LinkEndpoint::Structural(sref) = endpoint else { return None };
-
-    let range = if let Some(r) = &sref.range {
-        r.clone()
-    } else if let Some(query_str) = &sref.query {
-        // We don't have layer_root here — use a stub path; ScipIndex has the full paths
-        // Try to find by file name match in definitions
-        return index.find_callable_in_file(&sref.file);
-    } else {
-        return None;
-    };
-
-    index.find_callable_at(&sref.file, &range)
 }
 
 pub fn resolve_layer_link(
@@ -256,33 +178,6 @@ fn diff_paths(to: &Path, from: &Path) -> PathBuf {
     result
 }
 
-/// Finds the SCIP symbol for a structural endpoint by looking up
-/// the callable symbol whose body contains the endpoint's range.
-fn detect_scip_symbol(root: &Path, layer: &Path, endpoint: &LinkEndpoint) -> Option<String> {
-    let LinkEndpoint::Structural(sref) = endpoint else { return None };
-    let layer_root = root.join(layer);
-    let scip_path  = layer_root.join(".bilink/index/index.scip");
-    if !scip_path.exists() { return None; }
-
-    let index = crate::scip_index::ScipIndex::load(&scip_path, &layer_root).ok()?;
-
-    // Need a byte range to look up the symbol.
-    // Use stored range if available, otherwise run the tree-sitter query.
-    let range = if let Some(r) = &sref.range {
-        r.clone()
-    } else if let Some(query_str) = &sref.query {
-        let source = std::fs::read_to_string(layer_root.join(&sref.file)).ok()?;
-        let lang = crate::grammar::language_for_file(&sref.file);
-        let language = crate::grammar::for_language(lang).ok()?;
-        let (start, end) = crate::query::find_target(language, &source, query_str).ok()??;
-        crate::link::ByteRange { start, end }
-    } else {
-        return None;
-    };
-
-    index.find_callable_at(&sref.file, &range)
-}
-
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -302,7 +197,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn whole_file(file: &str) -> LinkEndpoint {
-        LinkEndpoint::Structural(StructuralRef {
+        LinkEndpoint::LegacyStructural(StructuralRef {
             file: file.into(),
             query: None,
             range: None,
@@ -313,7 +208,7 @@ mod tests {
         matches!(ep, LinkEndpoint::Layer(_))
     }
     fn is_structural(ep: &LinkEndpoint) -> bool {
-        matches!(ep, LinkEndpoint::Structural(_))
+        matches!(ep, LinkEndpoint::LegacyStructural(_))
     }
 
     // ─── filesystem_to_stratum_tokens ────────────────────────────────────────
@@ -385,7 +280,7 @@ mod tests {
             (PathBuf::from("."), whole_file("a.md")),
             (PathBuf::from("."), whole_file("b.md")),
         ];
-        let result = chain_new(root, &tips, &[], true).unwrap();
+        let result = chain_new(root, &tips, &[]).unwrap();
 
         assert_eq!(result.files.len(), 1);
         let bl = BiLinkFile::load(&result.files[0]).unwrap();
@@ -401,7 +296,7 @@ mod tests {
             (PathBuf::from("."),             whole_file("a.md")),
             (PathBuf::from(".stratum/impl"), whole_file("b.md")),
         ];
-        let result = chain_new(root, &tips, &[], true).unwrap();
+        let result = chain_new(root, &tips, &[]).unwrap();
 
         assert_eq!(result.files.len(), 2);
 
@@ -424,7 +319,7 @@ mod tests {
         ];
         let mids = vec![PathBuf::from(".stratum/td")];
 
-        let result = chain_new(root, &tips, &mids, true).unwrap();
+        let result = chain_new(root, &tips, &mids).unwrap();
         assert_eq!(result.files.len(), 3);
 
         let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
@@ -449,7 +344,7 @@ mod tests {
             (PathBuf::from("."),             whole_file("a.md")),
             (PathBuf::from(".stratum/impl"), whole_file("b.md")),
         ];
-        let result = chain_new(root, &tips, &[], true).unwrap();
+        let result = chain_new(root, &tips, &[]).unwrap();
 
         let uuid0 = BiLinkFile::load(&result.files[0]).unwrap().uuid;
         let uuid1 = BiLinkFile::load(&result.files[1]).unwrap().uuid;
@@ -465,7 +360,7 @@ mod tests {
             (PathBuf::from("."),               whole_file("a.md")),
             (PathBuf::from(".stratum/impl"),   whole_file("b.md")),
         ];
-        let result = chain_new(root, &tips, &[], true).unwrap();
+        let result = chain_new(root, &tips, &[]).unwrap();
 
         let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
         assert_eq!(tip0.link1.to_string(), ">impl");

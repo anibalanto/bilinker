@@ -35,12 +35,6 @@ enum Command {
         before: Option<String>,
         #[arg(short = 'A', value_name = "rows:cols")]
         after: Option<String>,
-        /// Incluir el código de los callees recursivamente (requiere index.scip)
-        #[arg(long)]
-        recursive: bool,
-        /// Profundidad máxima de recursión (default: ilimitada)
-        #[arg(long)]
-        depth: Option<usize>,
         /// Mostrar diff entre el fragmento aceptado y el actual
         #[arg(long)]
         diff: bool,
@@ -71,11 +65,6 @@ enum Command {
         sub: ChainCommand,
     },
 
-    /// SCIP integration commands
-    Scip {
-        #[command(subcommand)]
-        sub: ScipCommand,
-    },
 
     /// Build or check the .bilink/.index
     Index {
@@ -120,20 +109,6 @@ enum Command {
         sub: DaemonCommand,
     },
 
-    /// Upward call-graph traversal: which specs are impacted by changed functions
-    ///
-    /// Without arguments: analyzes all bilinks with state.N ≠ OK.
-    /// Requires the bilinker daemon (bilinker daemon start).
-    Impact {
-        /// Selector: file:line:col, file, or UUID/UUID.N. Omit for all non-OK bilinks.
-        selector: Option<String>,
-        /// Maximum traversal depth (default: unlimited)
-        #[arg(long)]
-        depth: Option<usize>,
-        /// Output format: tree, flat, json
-        #[arg(long, default_value = "tree")]
-        format: String,
-    },
 
     /// Traverse the bilink graph from a file, position, or UUID
     Graph {
@@ -195,23 +170,11 @@ enum ChainCommand {
         /// Intermediate layer (can repeat, order matters)
         #[arg(long = "mid", action = ArgAction::Append)]
         mid: Vec<String>,
-        /// Disable automatic SCIP subgraph tracking for this chain
-        #[arg(long)]
-        no_subgraph: bool,
     },
     /// Show complete state of a chain
     Status { uuid: String },
     /// List all chains in the project
     List,
-}
-
-#[derive(Subcommand)]
-enum ScipCommand {
-    /// Add subgraph.N to existing bilinks whose structural endpoint matches a callable in the SCIP index
-    Retrofit {
-        /// Layer directory to process (default: current directory)
-        path: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -280,12 +243,13 @@ fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bil
     let layer_fs   = layer_tokens_to_fs_path(&layer_tokens)?;
     let layer_root = root.join(&layer_fs);
 
-    let endpoint = if let Some((line, col)) = pos {
-        let result = bilinker::capture::capture(&layer_root, &file_str, (line, col), (line, col))?;
-        LinkEndpoint::Structural(result.endpoint)
+    let now = now_iso8601();
+    let (uuid, _) = if let Some((line, col)) = pos {
+        bilinker::capture::capture_to_file(&layer_root, &file_str, (line, col), (line, col), &now)?
     } else {
-        LinkEndpoint::Structural(StructuralRef { file: file_str, query: None, range: None })
+        bilinker::capture::capture_file_whole(&layer_root, &file_str, &now)?
     };
+    let endpoint = LinkEndpoint::Capture(uuid);
 
     Ok((layer_fs, endpoint))
 }
@@ -321,6 +285,11 @@ fn parse_accept_target(target: &str) -> anyhow::Result<(String, u8)> {
     Ok((target[..dot].to_string(), n))
 }
 
+/// Timestamp UTC en ISO 8601, el formato de `resolved_at`.
+fn now_iso8601() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
@@ -336,7 +305,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("hash: {}", result.hash);
         }
 
-        Command::Get { target, before, after, recursive, depth, diff } => {
+        Command::Get { target, before, after, diff } => {
             let uuid_form = {
                 let t = target.trim();
                 if let Some(dot) = t.rfind('.') {
@@ -367,16 +336,6 @@ fn main() -> anyhow::Result<()> {
                         Some(d) => print!("{d}"),
                         None    => eprintln!("[sin cambios]"),
                     }
-                    if recursive {
-                        let abs_file = result.layer_root.join(&result.file).to_string_lossy().to_string();
-                        let lsp_line = (result.start_line as u32).saturating_sub(1);
-                        let lsp_col  = find_fn_col(&abs_file, lsp_line as usize);
-                        print_diff_callees_recursive(
-                            &result.layer_root, &abs_file, lsp_line, lsp_col, &result.commit,
-                            depth.unwrap_or(usize::MAX), 1,
-                            &mut std::collections::HashSet::new(),
-                        )?;
-                    }
                 } else {
                     let before   = before.as_deref().map(parse_pos).transpose()?;
                     let after    = after.as_deref().map(parse_pos).transpose()?;
@@ -384,23 +343,6 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
                     println!("{}", result.content);
 
-                    if recursive {
-                        let bilink_dir = root.join(".bilink");
-                        let scip_path  = bilink_dir.join("index/index.scip");
-                        if scip_path.exists() {
-                            let bl = bilinker::bilink::BiLinkFile::find_by_id(&bilink_dir, name)
-                                .map(|(_, b)| b).ok();
-                            let subgraph_sym = bl.as_ref().and_then(|b| {
-                                if endpoint == 0 { b.subgraph0.as_deref() }
-                                else             { b.subgraph1.as_deref() }
-                            });
-                            if let Some(root_sym) = subgraph_sym {
-                                if let Ok(index) = bilinker::scip_index::ScipIndex::load(&scip_path, &root) {
-                                    print_callees_recursive(&index, &root, root_sym, depth.unwrap_or(usize::MAX), 1, &mut std::collections::HashSet::new())?;
-                                }
-                            }
-                        }
-                    }
                 }
             } else if pos_form {
                 let mut parts = target.rsplitn(3, ':');
@@ -509,18 +451,22 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Apply each fix
-            let mut applied: Vec<&std::path::Path> = Vec::new();
+            let now = now_iso8601();
+            let mut applied: Vec<std::path::PathBuf> = Vec::new();
             let mut bullet_lines = Vec::new();
-            let mut errors = 0usize;
+            let mut errors  = 0usize;
+            let mut forked  = 0usize;
 
             for f in &fixes {
-                match bilinker::apply::apply_fix(&f.bilink_path, f.n, &f.fix) {
-                    Ok(()) => {
-                        applied.push(&f.bilink_path);
+                match bilinker::apply::apply_fix(&cwd, f, &now) {
+                    Ok(paths) => {
+                        applied.extend(paths);
+                        if f.fork { forked += 1; }
                         bullet_lines.push(format!(
-                            "- {}… link.{}: {} {}",
+                            "- {}… link.{}: {} {}{}",
                             f.uuid_short, f.n, f.fix.state_name(),
                             f.fix.description(&f.sref_file),
+                            if f.fork { "  (capture forkeado)" } else { "" },
                         ));
                     }
                     Err(e) => {
@@ -541,10 +487,23 @@ fn main() -> anyhow::Result<()> {
             let body    = bullet_lines.join("\n");
             let message = format!("{summary}\n\n{body}");
 
-            let applied_paths: Vec<&std::path::Path> = applied.iter().copied().collect();
-            match bilinker::apply::git_commit(&root, &applied_paths, &message) {
+            match bilinker::apply::git_commit(&root, &applied, &message) {
                 Ok(hash) => {
-                    println!("\nApplied {} fix(es).", applied.len());
+                    println!("\nApplied {} fix(es).", fixes.len() - errors);
+                    if forked > 0 {
+                        println!("  {} capture(s) corregidos, {forked} forkeado(s)",
+                                 fixes.len() - errors - forked);
+                    }
+                    let needs_accept: Vec<&str> = fixes.iter()
+                        .filter(|f| matches!(f.post_state,
+                            bilinker::link::EndpointState::Expanded
+                          | bilinker::link::EndpointState::Reanchored))
+                        .map(|f| f.uuid_short.as_str())
+                        .collect();
+                    if !needs_accept.is_empty() {
+                        println!("  {} requiere(n) `bilinker accept` — el contenido cambió: {}",
+                                 needs_accept.len(), needs_accept.join(", "));
+                    }
                     println!("Committed: {hash} \"{summary}\"");
                     if errors > 0 {
                         eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
@@ -554,19 +513,6 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     eprintln!("error al commitear: {e}");
                     std::process::exit(1);
-                }
-            }
-        }
-
-        Command::Scip { sub } => match sub {
-            ScipCommand::Retrofit { path } => {
-                let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
-                    .unwrap_or_else(|| cwd.clone());
-                eprintln!("Scanning bilinks in {}…", layer.display());
-                match bilinker::chain::scip_retrofit(&layer) {
-                    Ok(0) => eprintln!("No bilinks updated (all already have subgraph.N or no callable match found)."),
-                    Ok(n) => eprintln!("Updated {n} bilink(s) with subgraph.N."),
-                    Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
                 }
             }
         }
@@ -681,23 +627,6 @@ fn main() -> anyhow::Result<()> {
             DaemonCommand::Status => daemon_status()?,
         }
 
-        Command::Impact { selector, depth, format } => {
-            let root = project_root(&cwd)?;
-            let sel = parse_impact_selector(&cwd, selector.as_deref())?;
-            let results = bilinker::impact::impact(&root, &sel, depth)?;
-
-            if results.is_empty() {
-                eprintln!("(no bilinks alcanzados)");
-                std::process::exit(2);
-            }
-
-            match format.as_str() {
-                "json" => print_impact_json(&results),
-                "flat" => print_impact_flat(&results),
-                _      => print_impact_tree(&results),
-            }
-        }
-
         Command::Graph { selector, depth, format, recursive, bilink_detail, url_scheme, show_query, show_range, show_data } => {
             let root = project_root(&cwd)?;
             let detail = DetailOptions { show_query, show_range, show_data };
@@ -711,7 +640,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid, no_subgraph } => {
+            ChainCommand::New { tip, mid } => {
                 if tip.len() != 2 {
                     anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                 }
@@ -721,7 +650,7 @@ fn main() -> anyhow::Result<()> {
                 let tips = vec![(layer0, ep0), (layer1, ep1)];
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
-                let result = bilinker::chain::chain_new(&cwd, &tips, &mids, no_subgraph)?;
+                let result = bilinker::chain::chain_new(&cwd, &tips, &mids)?;
 
                 println!("Created chain: {}", result.uuid);
                 println!();
@@ -880,10 +809,9 @@ fn watch(root: &Path) -> anyhow::Result<()> {
                 let Ok(bl) = BiLinkFile::load(&entry) else { continue };
 
                 let references_file = [&bl.link0, &bl.link1].iter().any(|link| {
-                    if let LinkEndpoint::Structural(sref) = link {
-                        rel.contains(&sref.file) || sref.file.contains(&rel)
-                    } else {
-                        false
+                    match bilinker::capture::sref_of(root, link) {
+                        Ok(Some(sref)) => rel.contains(&sref.file) || sref.file.contains(&rel),
+                        _ => false,
                     }
                 });
 
@@ -939,12 +867,10 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
 
         // Group by the structural endpoint's parent directory
         let (dir, file_name) = {
-            let sref = match (&bl.link0, &bl.link1) {
-                (LinkEndpoint::Structural(s), _) => Some(&s.file),
-                (_, LinkEndpoint::Structural(s)) => Some(&s.file),
-                _ => None,
-            };
-            match sref {
+            let sref = bl.structural_n()
+                .and_then(|n| bl.capture_for(layer, n).ok().flatten())
+                .map(|c| c.sref.file);
+            match sref.as_ref() {
                 Some(f) => {
                     let p = std::path::Path::new(f);
                     let dir = p.parent().and_then(|d| if d.as_os_str().is_empty() { None } else { Some(d) })
@@ -1336,12 +1262,10 @@ fn add_structural_node(
     detail: &DetailOptions,
     url_scheme: &str,
 ) -> Option<String> {
-    use bilinker::link::LinkEndpoint;
-    let (sref, range) = match (&bl.link0, &bl.link1) {
-        (LinkEndpoint::Structural(s), _) => (s, bl.range0.as_ref()),
-        (_, LinkEndpoint::Structural(s)) => (s, bl.range1.as_ref()),
-        _ => return None,
-    };
+    let n    = bl.structural_n()?;
+    let cap  = bl.capture_for(layer_root, n).ok().flatten()?;
+    let sref = &cap.sref;
+    let range = cap.range.as_ref();
     // Compute start line to differentiate fragments of the same file
     let start_line = range.and_then(|r| {
         std::fs::read_to_string(layer_root.join(&sref.file)).ok().map(|c| {
@@ -1471,8 +1395,11 @@ fn collect_dot(
 
     for (n, endpoint) in [(&bl.link0, "0"), (&bl.link1, "1")] {
         match n {
-            LinkEndpoint::Structural(sref) => {
-                let range      = if endpoint == "0" { bl.range0.as_ref() } else { bl.range1.as_ref() };
+            LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
+                let idx = if endpoint == "0" { 0u8 } else { 1u8 };
+                let Some(cap) = bl.capture_for(layer_root, idx).ok().flatten() else { continue };
+                let sref       = &cap.sref;
+                let range      = cap.range.as_ref();
                 let file_id    = format!("{}@{lbl}", sref.file);
                 let node_label = structural_node_label(layer_root, sref, range, detail);
                 let url        = node_url(layer_root, &sref.file, range, url_scheme);
@@ -1634,211 +1561,7 @@ fn line_col_to_byte(source: &str, line: usize, col: usize) -> usize {
     byte
 }
 
-/// Scan a source line and return the column (0-based) of the first non-keyword identifier.
-/// Works for Rust (`pub fn foo`), Java (`public void foo`), Python (`def foo`), etc.
-fn find_fn_col(file: &str, line_0based: usize) -> u32 {
-    const SKIP: &[&str] = &[
-        "pub", "fn", "async", "unsafe", "extern",
-        "def", "void", "public", "private", "protected", "static", "final",
-        "abstract", "function", "class", "struct", "trait", "interface", "enum",
-        "override", "virtual", "native", "synchronized",
-    ];
-    let Ok(content) = std::fs::read_to_string(file) else { return 0 };
-    let Some(line)  = content.lines().nth(line_0based) else { return 0 };
-    let bytes = line.as_bytes();
-    let mut pos = 0usize;
-    while pos < bytes.len() {
-        let b = bytes[pos];
-        if b == b' ' || b == b'\t' { pos += 1; continue; }
-        if !b.is_ascii_alphanumeric() && b != b'_' { pos += 1; continue; }
-        let start = pos;
-        while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
-            pos += 1;
-        }
-        if !SKIP.contains(&&line[start..pos]) { return start as u32; }
-    }
-    0
-}
-
-fn print_diff_callees_recursive(
-    root: &std::path::Path,
-    callee_file_abs: &str,
-    callee_line: u32,
-    callee_col: u32,
-    commit: &str,
-    max_depth: usize,
-    current_depth: usize,
-    visited: &mut std::collections::HashSet<String>,
-) -> anyhow::Result<()> {
-    if current_depth > max_depth { return Ok(()); }
-
-    let indent = "  ".repeat(current_depth);
-
-    let callees_val = daemon_rpc("callees", serde_json::json!({
-        "file": callee_file_abs,
-        "line": callee_line,
-        "col":  callee_col,
-    })).unwrap_or(serde_json::json!([]));
-
-    #[derive(serde::Deserialize)]
-    struct CalInfo { file: String, name: String, line: u32, col: u32 }
-    let callees: Vec<CalInfo> = serde_json::from_value(callees_val).unwrap_or_default();
-
-    for callee in callees {
-        // Skip external/stdlib callees (not under the layer root)
-        if !std::path::Path::new(&callee.file).starts_with(root) { continue; }
-
-        let key = format!("{}:{}", callee.file, callee.name);
-        if !visited.insert(key) { continue; }
-
-        match bilinker::get::get_callee_diff(root, &callee.file, &callee.name, commit) {
-            Ok(result) => {
-                let status = if result.diff.is_none() { "OK" } else { "ALTERED" };
-                eprintln!("{indent}↳ {}  {}:{}~{}  ({status})",
-                    callee.name, result.file, result.start_line, result.end_line);
-                match &result.diff {
-                    Some(d) => print!("{d}"),
-                    None    => println!("{indent}[sin cambios]"),
-                }
-                print_diff_callees_recursive(
-                    root, &callee.file, callee.line, callee.col, commit,
-                    max_depth, current_depth + 1, visited,
-                )?;
-            }
-            Err(e) => {
-                eprintln!("{indent}↳ {}  ({})", callee.name, e);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn print_callees_recursive(
-    index: &bilinker::scip_index::ScipIndex,
-    layer_root: &Path,
-    symbol: &str,
-    max_depth: usize,
-    current_depth: usize,
-    visited: &mut HashSet<String>,
-) -> anyhow::Result<()> {
-    if current_depth > max_depth { return Ok(()); }
-    if !visited.insert(symbol.to_string()) { return Ok(()); }
-
-    for (callee, _name_file, _name_range) in index.direct_callees(symbol) {
-        let indent = "  ".repeat(current_depth);
-
-        // Use body_range for full function source
-        let Some((file, range)) = index.body_range(&callee) else { continue };
-        let source_path = layer_root.join(file);
-        let Ok(content) = std::fs::read(&source_path) else { continue };
-        let fragment = &content[range.start.min(content.len())..range.end.min(content.len())];
-        let Ok(text) = std::str::from_utf8(fragment) else { continue };
-
-        let start_line = content[..range.start.min(content.len())]
-            .iter().filter(|&&b| b == b'\n').count() + 1;
-        let end_line = content[..range.end.min(content.len())]
-            .iter().filter(|&&b| b == b'\n').count() + 1;
-
-        eprintln!("{indent}# {file}  lines {start_line}–{end_line}  [depth {current_depth}]");
-        for line in text.lines() {
-            println!("{indent}{line}");
-        }
-        println!();
-
-        print_callees_recursive(index, layer_root, &callee, max_depth, current_depth + 1, visited)?;
-    }
-    Ok(())
-}
-
 // ─── impact ───────────────────────────────────────────────────────────────────
-
-fn parse_impact_selector(
-    cwd: &Path,
-    s: Option<&str>,
-) -> anyhow::Result<bilinker::impact::Selector> {
-    use bilinker::impact::Selector;
-
-    let Some(s) = s else { return Ok(Selector::All) };
-
-    // UUID or UUID.N
-    let is_uuid_prefix = s.len() >= 8
-        && !s.contains('/')
-        && s.trim_end_matches(|c: char| c == '.' || c.is_ascii_digit())
-            .chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-
-    if is_uuid_prefix {
-        return if s.ends_with(".0") || s.ends_with(".1") {
-            let dot = s.rfind('.').unwrap();
-            let n: u8 = s[dot + 1..].parse()?;
-            Ok(Selector::Uuid { uuid: s[..dot].to_string(), endpoint: Some(n) })
-        } else {
-            Ok(Selector::Uuid { uuid: s.to_string(), endpoint: None })
-        };
-    }
-
-    // file:line:col
-    let parts: Vec<&str> = s.rsplitn(3, ':').collect();
-    if parts.len() == 3
-        && parts[0].parse::<u32>().is_ok()
-        && parts[1].parse::<u32>().is_ok()
-    {
-        let col:  u32 = parts[0].parse()?;
-        let line: u32 = parts[1].parse::<u32>()? - 1; // convert 1-based to 0-based
-        let file = cwd.join(parts[2]);
-        return Ok(Selector::FileLineCol { file, line, col });
-    }
-
-    // bare file
-    Ok(Selector::FileLineCol { file: cwd.join(s), line: 0, col: 0 })
-}
-
-fn print_impact_tree(results: &[bilinker::impact::ImpactResult]) {
-    for r in results {
-        let state_str = r.state.as_ref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "NONE".to_string());
-        let commit_short = &r.commit[..8.min(r.commit.len())];
-
-        println!("◆ {}.{}  {}  [{}]  (desde commit {})",
-            &r.bilink_uuid[..8.min(r.bilink_uuid.len())],
-            r.endpoint,
-            r.other_endpoint,
-            state_str,
-            commit_short,
-        );
-
-        if r.path.is_empty() {
-            println!("  (hit directo)");
-        } else {
-            for (i, item) in r.path.iter().enumerate() {
-                let rel = std::path::Path::new(&item.file)
-                    .file_name().and_then(|n| n.to_str()).unwrap_or(&item.file);
-                let connector = if i == r.path.len() - 1 { "└──" } else { "├──" };
-                println!("  {connector} {}:{}", rel, item.line + 1);
-            }
-        }
-        println!();
-    }
-}
-
-fn print_impact_flat(results: &[bilinker::impact::ImpactResult]) {
-    for r in results {
-        let state_str = r.state.as_ref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "NONE".to_string());
-        let uuid_short = &r.bilink_uuid[..8.min(r.bilink_uuid.len())];
-        print!("{}.{}  {}  [{}]", uuid_short, r.endpoint, r.other_endpoint, state_str);
-        if !r.path.is_empty() {
-            let chain: Vec<String> = r.path.iter().map(|p| {
-                let rel = std::path::Path::new(&p.file)
-                    .file_name().and_then(|n| n.to_str()).unwrap_or(&p.file);
-                format!("{}:{}", rel, p.line + 1)
-            }).collect();
-            print!("  via: {}", chain.join(" → "));
-        }
-        println!();
-    }
-}
 
 fn print_impact_json(results: &[bilinker::impact::ImpactResult]) {
     let arr: Vec<serde_json::Value> = results.iter().map(|r| {

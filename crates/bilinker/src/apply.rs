@@ -1,27 +1,40 @@
+//! `bilinker apply` — corrige **dónde está** un fragmento, escribiendo en el capture.
+//!
+//! Nunca escribe `hash.N`, `hash_ast.N` ni `commit.N`: eso es exclusivo de `accept`.
+//! Su único efecto sobre un bilink es `state.N` y repuntar `link.N` al forkear.
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 
 use crate::bilink::{walkdir, BiLinkFile};
+use crate::capture::{CaptureFile, CaptureState};
+use crate::check;
 use crate::grammar;
-use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
 use crate::query;
 
 // ─── tipos públicos ────────────────────────────────────────────────────────────
 
 pub struct PendingFix {
-    pub bilink_path: PathBuf,
-    pub uuid_short:  String,
-    pub n:           u8,
-    pub sref_file:   String,
-    pub fix:         Fix,
+    pub bilink_path:  PathBuf,
+    pub uuid_short:   String,
+    pub n:            u8,
+    pub capture_uuid: String,
+    pub sref_file:    String,
+    pub fix:          Fix,
+    /// El capture está compartido y este fix depende de datos propios del bilink,
+    /// así que se crea un capture nuevo en vez de corregir el existente.
+    pub fork:         bool,
+    /// Estado del endpoint después de aplicar el fix.
+    pub post_state:   EndpointState,
 }
 
 pub enum Fix {
-    Moved      { new_file:  String    },
-    Displaced  { new_range: ByteRange },
-    Expanded   { new_range: ByteRange },
-    Reanchored { new_query: String    },
+    Moved      { new_file:   String    },
+    Displaced  { new_offset: ByteRange },
+    Expanded   { new_offset: ByteRange },
+    Reanchored { new_query:  String    },
 }
 
 impl Fix {
@@ -34,69 +47,59 @@ impl Fix {
         }
     }
 
+    /// Un fix cuya resolución depende de `hash.N` o de una inferencia ambigua no
+    /// puede imponerse a los demás referentes de un capture compartido.
+    fn needs_fork(&self) -> bool {
+        matches!(self, Fix::Displaced { .. } | Fix::Reanchored { .. })
+    }
+
     pub fn description(&self, sref_file: &str) -> String {
         match self {
-            Fix::Moved      { new_file }  => format!("{sref_file} → {new_file}"),
-            Fix::Displaced  { new_range } => format!("offset {}~{}", new_range.start, new_range.end),
-            Fix::Expanded   { new_range } => format!("range {}~{} ampliado", new_range.start, new_range.end),
-            Fix::Reanchored { new_query } => format!("query → {new_query}"),
+            Fix::Moved      { new_file }   => format!("{sref_file} → {new_file}"),
+            Fix::Displaced  { new_offset } => format!("offset → {new_offset}"),
+            Fix::Expanded   { new_offset } => format!("offset → {new_offset} ampliado"),
+            Fix::Reanchored { new_query }  => format!("query → {new_query}"),
         }
     }
 }
 
 // ─── scan ─────────────────────────────────────────────────────────────────────
 
-/// Scan the current layer for bilinks with auto-fixeable states and compute their fixes.
-/// Returns an error only if a fix calculation fails irrecoverably; individual bilinks
-/// that can't be fixed are skipped with a warning.
+/// Recorre la capa, re-resuelve cada endpoint auto-fixeable y calcula su fix.
+///
+/// Nunca deriva el fix de la cache: re-resuelve contra git y el AST actuales, y
+/// descarta el fix si el estado re-derivado no coincide con `state.N`.
 pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
     let bilink_dir = layer.join(".bilink");
+    let referents  = count_referents(&bilink_dir)?;
     let mut fixes  = Vec::new();
 
-    for entry in walkdir(&bilink_dir)? {
-        if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-        if entry.file_name().and_then(|n| n.to_str())
-            .map(|n| n.starts_with('.')).unwrap_or(false) { continue; }
-
+    for entry in bilink_files(&bilink_dir) {
         let Ok(bl) = BiLinkFile::load(&entry) else { continue };
+        let short = bl.uuid[..8.min(bl.uuid.len())].to_string();
 
         for n in [0u8, 1u8] {
-            let state       = if n == 0 { &bl.state0     } else { &bl.state1     };
-            let link        = if n == 0 { &bl.link0      } else { &bl.link1      };
-            let range       = if n == 0 { bl.range0.as_ref() } else { bl.range1.as_ref() };
-            let stored_hash = if n == 0 { bl.hash0.as_deref() } else { bl.hash1.as_deref() };
+            let Some(state) = bl.state(n).clone() else { continue };
+            if !is_autofixeable(&state) { continue; }
 
-            let LinkEndpoint::Structural(sref) = link else { continue };
+            let Ok(Some(cap)) = bl.capture_for(layer, n) else { continue };
 
-            let result = match state {
-                Some(EndpointState::Moved) => {
-                    compute_moved(layer, &sref.file, stored_hash)
+            match compute_fix(layer, &bl, n, &cap, &state) {
+                Ok(Some(fix)) => {
+                    let shared = referents.get(&cap.uuid).copied().unwrap_or(1) > 1;
+                    fixes.push(PendingFix {
+                        bilink_path:  entry.clone(),
+                        uuid_short:   short.clone(),
+                        n,
+                        capture_uuid: cap.uuid.clone(),
+                        sref_file:    cap.sref.file.clone(),
+                        post_state:   post_state_for(&fix),
+                        fork:         fix.needs_fork() && shared,
+                        fix,
+                    });
                 }
-                Some(EndpointState::Displaced) => {
-                    let Some(abs) = range else { continue };
-                    compute_relative(layer, sref, abs, false).map(Some)
-                }
-                Some(EndpointState::Expanded) => {
-                    let Some(abs) = range else { continue };
-                    compute_relative(layer, sref, abs, true).map(Some)
-                }
-                Some(EndpointState::Reanchored) => {
-                    // check no detecta REANCHORED aún — skip silencioso
-                    continue;
-                }
-                _ => continue,
-            };
-
-            match result {
-                Ok(Some(fix)) => fixes.push(PendingFix {
-                    bilink_path: entry.clone(),
-                    uuid_short:  bl.uuid[..8.min(bl.uuid.len())].to_string(),
-                    n,
-                    sref_file:   sref.file.clone(),
-                    fix,
-                }),
-                Ok(None) => {}
-                Err(e) => eprintln!("warn  {}.{n}: {e}", &bl.uuid[..8.min(bl.uuid.len())]),
+                Ok(None)  => {}
+                Err(e)    => eprintln!("warn  {short}.{n}: {e}"),
             }
         }
     }
@@ -104,106 +107,195 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
     Ok(fixes)
 }
 
-// ─── cálculo por estado ────────────────────────────────────────────────────────
+fn is_autofixeable(s: &EndpointState) -> bool {
+    matches!(s, EndpointState::Moved | EndpointState::Displaced
+              | EndpointState::Expanded | EndpointState::Reanchored)
+}
 
-/// MOVED: encuentra la nueva ruta vía `git diff -M --name-status`.
-fn compute_moved(
-    root:        &Path,
-    old_file:    &str,
-    stored_hash: Option<&str>,
+/// Tras el fix: MOVED y DISPLACED no cambiaron el contenido, así que cierran en OK.
+/// EXPANDED y REANCHORED sí — siguen no-OK hasta que un humano corra `accept`.
+fn post_state_for(fix: &Fix) -> EndpointState {
+    match fix {
+        Fix::Moved { .. } | Fix::Displaced { .. } => EndpointState::Ok,
+        Fix::Expanded { .. }   => EndpointState::Expanded,
+        Fix::Reanchored { .. } => EndpointState::Reanchored,
+    }
+}
+
+/// Cuántos bilinks de la capa referencian cada capture.
+fn count_referents(bilink_dir: &Path) -> Result<HashMap<String, usize>> {
+    let mut counts = HashMap::new();
+    for entry in bilink_files(bilink_dir) {
+        let Ok(bl) = BiLinkFile::load(&entry) else { continue };
+        for n in [0u8, 1u8] {
+            if let Some(uuid) = bl.link(n).capture_uuid() {
+                *counts.entry(uuid.to_string()).or_insert(0usize) += 1;
+            }
+        }
+    }
+    Ok(counts)
+}
+
+fn bilink_files(bilink_dir: &Path) -> Vec<PathBuf> {
+    walkdir(bilink_dir).unwrap_or_default().into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bilink"))
+        .filter(|p| !p.file_name().and_then(|n| n.to_str())
+                      .map(|n| n.starts_with('.')).unwrap_or(false))
+        .collect()
+}
+
+// ─── cálculo del fix ──────────────────────────────────────────────────────────
+
+fn compute_fix(
+    layer: &Path,
+    bl:    &BiLinkFile,
+    n:     u8,
+    cap:   &CaptureFile,
+    state: &EndpointState,
 ) -> Result<Option<Fix>> {
+    // MOVED no pasa por check_structural: el archivo no está en su path conocido,
+    // así que la re-resolución es contra el índice de renames de git.
+    if *state == EndpointState::Moved {
+        return compute_moved(layer, &cap.sref);
+    }
+
+    // Para el resto, re-resolver con el mismo algoritmo que usa `check`.
+    // `cached_state: None` fuerza la evaluación completa.
+    let (derived, new_range) = check::check_structural(
+        layer,
+        &cap.sref,
+        bl.hash(n),
+        bl.hash_ast(n),
+        cap.range.as_ref(),
+        bl.commit(n),
+        None,
+    )?;
+
+    // Validación de frescura.
+    if derived == EndpointState::Ok {
+        return Ok(None); // el fix ya no hace falta
+    }
+    if derived != *state {
+        bail!(
+            "state.{n} dice {state} pero la resolución actual da {derived} \
+             — cache desactualizada, fix descartado. Correr `bilinker check`."
+        );
+    }
+
+    let Some(abs) = new_range else { return Ok(None) };
+    let Some(node_start) = node_start_of(layer, &cap.sref)? else { return Ok(None) };
+
+    let new_offset = ByteRange {
+        start: abs.start.saturating_sub(node_start),
+        end:   abs.end.saturating_sub(node_start),
+    };
+
+    // No-op: el capture ya apunta al lugar correcto.
+    if cap.sref.range.as_ref() == Some(&new_offset) {
+        return Ok(None);
+    }
+
+    Ok(Some(match derived {
+        EndpointState::Displaced => Fix::Displaced { new_offset },
+        EndpointState::Expanded  => Fix::Expanded  { new_offset },
+        other => bail!("estado {other} sin fix definido"),
+    }))
+}
+
+/// MOVED: nueva ruta vía `git diff -M --name-status`, sin pathspec — filtrar por el
+/// path viejo puede impedir que git detecte el rename.
+fn compute_moved(layer: &Path, sref: &StructuralRef) -> Result<Option<Fix>> {
     for git_args in [
         &["diff", "-M", "--name-status", "HEAD"][..],
         &["diff", "-M", "--name-status", "--cached"][..],
     ] {
         let out = std::process::Command::new("git")
             .args(git_args)
-            .current_dir(root)
+            .current_dir(layer)
             .output()?;
 
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             if !line.starts_with('R') { continue; }
             let parts: Vec<&str> = line.splitn(3, '\t').collect();
-            if parts.len() < 3 || parts[1] != old_file { continue; }
+            if parts.len() < 3 || parts[1] != sref.file { continue; }
 
             let new_file = parts[2];
-            let new_abs  = root.join(new_file);
-            if !new_abs.exists() { continue; }
+            if !layer.join(new_file).exists() { continue; }
 
-            // Verify hash still matches at new path
-            if let Some(expected) = stored_hash {
-                let content = std::fs::read(&new_abs).unwrap_or_default();
-                if hash::sha256(&content) != expected { continue; }
+            // Verificar que la referencia siga resolviendo en el path nuevo.
+            let probe = StructuralRef {
+                file:  new_file.to_string(),
+                query: sref.query.clone(),
+                range: sref.range.clone(),
+            };
+            if node_start_of(layer, &probe)?.is_none() && sref.query.is_some() {
+                continue;
             }
 
             return Ok(Some(Fix::Moved { new_file: new_file.to_string() }));
         }
     }
 
-    bail!("MOVED: no se encontró la nueva ruta para '{old_file}' en git diff -M")
+    bail!("MOVED: no se encontró la nueva ruta de '{}' en git diff -M", sref.file)
 }
 
-/// DISPLACED / EXPANDED: convierte el range.N absoluto al relativo dentro del nodo AST.
-fn compute_relative(
-    root:      &Path,
-    sref:      &StructuralRef,
-    abs_range: &ByteRange,
-    expanded:  bool,
-) -> Result<Fix> {
-    // Archivos sin query usan el archivo completo — el range ya es desde byte 0.
-    let Some(query_str) = &sref.query else {
-        let rel = ByteRange { start: abs_range.start, end: abs_range.end };
-        return Ok(if expanded { Fix::Expanded { new_range: rel } } else { Fix::Displaced { new_range: rel } });
-    };
-
-    let file_path = root.join(&sref.file);
-    let source    = std::fs::read_to_string(&file_path)?;
-    let lang      = grammar::language_for_file(&sref.file);
-    let language  = grammar::for_language(lang)?;
-
-    let state_name = if expanded { "EXPANDED" } else { "DISPLACED" };
-    let Some((node_start, _, _)) = query::find_target_with_sexp(language, &source, query_str)? else {
-        bail!("{state_name}: la query ya no matchea en '{}'", sref.file);
-    };
-
-    let rel = ByteRange {
-        start: abs_range.start.saturating_sub(node_start),
-        end:   abs_range.end.saturating_sub(node_start),
-    };
-    Ok(if expanded { Fix::Expanded { new_range: rel } } else { Fix::Displaced { new_range: rel } })
+/// Byte de inicio del nodo que matchea la query. `None` para endpoints de archivo
+/// completo (el nodo es el archivo, arranca en 0) o si la query no matchea.
+fn node_start_of(layer: &Path, sref: &StructuralRef) -> Result<Option<usize>> {
+    let Some(query_str) = &sref.query else { return Ok(Some(0)) };
+    let path = layer.join(&sref.file);
+    if !path.exists() { return Ok(None); }
+    let source   = std::fs::read_to_string(&path)?;
+    let lang     = grammar::language_for_file(&sref.file);
+    let language = grammar::for_language(lang)?;
+    Ok(query::find_target_with_sexp(language, &source, query_str)?.map(|(s, _, _)| s))
 }
 
 // ─── aplicación ───────────────────────────────────────────────────────────────
 
-/// Aplica un fix al archivo .bilink (in place).
-pub fn apply_fix(bilink_path: &Path, n: u8, fix: &Fix) -> Result<()> {
-    let mut bl = BiLinkFile::load(bilink_path)?;
+/// Escribe el fix. Devuelve el path del capture escrito (nuevo si forkeó) y, si
+/// forkeó, el path del bilink repuntado.
+pub fn apply_fix(layer: &Path, pf: &PendingFix, now: &str) -> Result<Vec<PathBuf>> {
+    let mut bl  = BiLinkFile::load(&pf.bilink_path)?;
+    let mut cap = bl.capture_for(layer, pf.n)?
+        .ok_or_else(|| anyhow::anyhow!("endpoint {} sin capture", pf.n))?;
+    let mut written = Vec::new();
 
-    let link = if n == 0 { &mut bl.link0 } else { &mut bl.link1 };
-    let LinkEndpoint::Structural(sref) = link else {
-        bail!("endpoint {n} no es estructural");
-    };
-
-    match fix {
-        Fix::Moved { new_file } => {
-            sref.file = new_file.clone();
-        }
-        Fix::Displaced { new_range } | Fix::Expanded { new_range } => {
-            sref.range = Some(new_range.clone());
-        }
-        Fix::Reanchored { new_query } => {
-            sref.query = Some(new_query.clone());
+    match &pf.fix {
+        Fix::Moved { new_file }        => cap.sref.file  = new_file.clone(),
+        Fix::Reanchored { new_query }  => cap.sref.query = Some(new_query.clone()),
+        Fix::Displaced { new_offset } | Fix::Expanded { new_offset } => {
+            cap.sref.range = Some(new_offset.clone());
         }
     }
 
-    bl.write(bilink_path)
+    // Re-resolver el range absoluto tras el fix.
+    cap.range = node_start_of(layer, &cap.sref)?.map(|start| {
+        let off = cap.sref.range.clone().unwrap_or(ByteRange { start: 0, end: 0 });
+        ByteRange { start: start + off.start, end: start + off.end }
+    });
+    cap.state       = Some(CaptureState::Resolved);
+    cap.resolved_at = Some(now.to_string());
+
+    if pf.fork {
+        cap.uuid = uuid::Uuid::new_v4().to_string();
+        *bl.link_mut(pf.n) = LinkEndpoint::Capture(cap.uuid.clone());
+    }
+
+    written.push(cap.write_in(layer)?);
+
+    bl.set_state(pf.n, Some(pf.post_state.clone()));
+    bl.resolved_at = Some(now.to_string());
+    bl.write(&pf.bilink_path)?;
+    written.push(pf.bilink_path.clone());
+
+    Ok(written)
 }
 
 // ─── git commit ───────────────────────────────────────────────────────────────
 
-/// Stagea y commitea todos los .bilink modificados.
-/// Retorna el hash corto del commit resultante.
-pub fn git_commit(root: &Path, paths: &[&Path], message: &str) -> Result<String> {
+/// Stagea y commitea los archivos modificados. Retorna el hash corto del commit.
+pub fn git_commit(root: &Path, paths: &[PathBuf], message: &str) -> Result<String> {
     for path in paths {
         let rel = path.strip_prefix(root).unwrap_or(path);
         let st = std::process::Command::new("git")
@@ -224,7 +316,6 @@ pub fn git_commit(root: &Path, paths: &[&Path], message: &str) -> Result<String>
         bail!("git commit falló:\n{}", String::from_utf8_lossy(&out.stderr));
     }
 
-    // Primera línea de git commit: "[branch abc1234] message"
     let stdout   = String::from_utf8_lossy(&out.stdout);
     let hash_str = stdout.lines().next()
         .and_then(|l| l.split_whitespace().nth(1))

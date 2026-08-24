@@ -25,11 +25,13 @@ pub fn build(layer_root: &Path) -> Result<usize> {
 
     for path in bilink_files_in(&bilink_dir) {
         let Ok(bl) = BiLinkFile::load(&path) else { continue };
-        for (n, link) in [(0u8, &bl.link0), (1u8, &bl.link1)] {
-            if let LinkEndpoint::Structural(sref) = link {
-                out.push_str(&sref.file);
+        for n in [0u8, 1u8] {
+            if let Ok(Some(cap)) = bl.capture_for(layer_root, n) {
+                out.push_str(&cap.sref.file);
                 out.push('\t');
                 out.push_str(&format!("{}.{n}", bl.uuid));
+                out.push('\t');
+                out.push_str(&cap.uuid);
                 out.push('\n');
                 count += 1;
             }
@@ -130,7 +132,9 @@ fn lookup_from_index(index_path: &Path, file: &str) -> Result<Vec<(String, u8)>>
     let mut results = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.is_empty() { continue; }
-        let Some((indexed_file, ref_str)) = line.split_once('\t') else { continue };
+        let Some((indexed_file, rest)) = line.split_once('\t') else { continue };
+        // `<archivo>\t<uuid>.<N>\t<capture-uuid>` — la 3ra columna es opcional
+        let ref_str = rest.split('\t').next().unwrap_or(rest);
         if indexed_file != file { continue; }
         let Some((uuid, n_str)) = ref_str.rsplit_once('.') else { continue };
         if let Ok(n) = n_str.parse::<u8>() {
@@ -141,12 +145,13 @@ fn lookup_from_index(index_path: &Path, file: &str) -> Result<Vec<(String, u8)>>
 }
 
 fn lookup_scan(bilink_dir: &Path, file: &str) -> Result<Vec<(String, u8)>> {
+    let layer_root = bilink_dir.parent().unwrap_or(bilink_dir);
     let mut results = Vec::new();
     for path in bilink_files_in(bilink_dir) {
         let Ok(bl) = BiLinkFile::load(&path) else { continue };
-        for (n, link) in [(0u8, &bl.link0), (1u8, &bl.link1)] {
-            if let LinkEndpoint::Structural(sref) = link {
-                if sref.file == file {
+        for n in [0u8, 1u8] {
+            if let Ok(Some(cap)) = bl.capture_for(layer_root, n) {
+                if cap.sref.file == file {
                     results.push((bl.uuid.clone(), n));
                 }
             }
@@ -188,17 +193,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_bilink(bilink_dir: &Path, uuid: &str, file0: &str, file1: &str) {
-        let bl = BiLinkFile {
-            uuid: uuid.into(),
-            link0: LinkEndpoint::Structural(StructuralRef { file: file0.into(), query: None, range: None }),
-            link1: LinkEndpoint::Structural(StructuralRef { file: file1.into(), query: None, range: None }),
-            subgraph0: None, subgraph1: None,
-            hash0: None, commit0: None,
-            hash1: None, commit1: None,
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let bl = BiLinkFile::new(uuid, LinkEndpoint::LegacyStructural(StructuralRef { file: file0.into(), query: None, range: None }), LinkEndpoint::LegacyStructural(StructuralRef { file: file1.into(), query: None, range: None }));
         std::fs::create_dir_all(bilink_dir).unwrap();
         bl.write(&bilink_dir.join(format!("{uuid}.bilink"))).unwrap();
     }

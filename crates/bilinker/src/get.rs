@@ -41,7 +41,11 @@ pub fn get(
     };
 
     match link {
-        LinkEndpoint::Structural(sref) => resolve(root, sref, before, after),
+        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
+            let sref = crate::capture::sref_of(root, link)?
+                .context("endpoint estructural sin capture resoluble")?;
+            resolve(root, &sref, before, after)
+        }
         LinkEndpoint::Layer(layer_path) => {
             traverse_layer(root, layer_path.clone(), &bl.uuid, before, after)
         }
@@ -68,7 +72,11 @@ pub fn get_diff(
     let commit = commit.context("endpoint has no accepted commit — run bilinker accept first")?;
 
     match link {
-        LinkEndpoint::Structural(sref) => diff_structural(root, sref, commit, range),
+        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
+            let sref = crate::capture::sref_of(root, link)?
+                .context("endpoint estructural sin capture resoluble")?;
+            diff_structural(root, &sref, commit, range)
+        }
         LinkEndpoint::Layer(layer_path) => {
             let (adj_root, sref_owned, adj_commit, adj_range) =
                 traverse_layer_for_diff(root, layer_path.clone(), &bl.uuid)?;
@@ -247,11 +255,15 @@ fn traverse_layer_for_diff(
     let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)
         .with_context(|| format!("bilink {uuid} not found in {}", adjacent_bilink_dir.display()))?;
 
-    let (sref, commit, range) = match (&adjacent_bl.link0, &adjacent_bl.link1) {
-        (LinkEndpoint::Structural(r), _) => (r.clone(), adjacent_bl.commit0.clone(), adjacent_bl.range0.clone()),
-        (_, LinkEndpoint::Structural(r)) => (r.clone(), adjacent_bl.commit1.clone(), adjacent_bl.range1.clone()),
-        _ => bail!("adjacent bilink {uuid} has no structural endpoint"),
-    };
+    let n = adjacent_bl.structural_n()
+        .with_context(|| format!("adjacent bilink {uuid} has no structural endpoint"))?;
+    let cap = adjacent_bl.capture_for(&adjacent_root, n)?
+        .with_context(|| format!("adjacent bilink {uuid}: capture no resoluble"))?;
+    let (sref, commit, range) = (
+        cap.sref.clone(),
+        adjacent_bl.commit(n).map(String::from),
+        cap.range.clone(),
+    );
 
     Ok((adjacent_root, sref, commit, range))
 }
@@ -276,13 +288,12 @@ fn traverse_layer(
     let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)
         .with_context(|| format!("bilink {uuid} not found in {}", adjacent_bilink_dir.display()))?;
 
-    let sref = match (&adjacent_bl.link0, &adjacent_bl.link1) {
-        (LinkEndpoint::Structural(r), _) => r,
-        (_, LinkEndpoint::Structural(r)) => r,
-        _ => bail!("adjacent bilink {uuid} has no structural endpoint"),
-    };
+    let n = adjacent_bl.structural_n()
+        .with_context(|| format!("adjacent bilink {uuid} has no structural endpoint"))?;
+    let cap = adjacent_bl.capture_for(&adjacent_root, n)?
+        .with_context(|| format!("adjacent bilink {uuid}: capture no resoluble"))?;
 
-    resolve(&adjacent_root, sref, before, after)
+    resolve(&adjacent_root, &cap.sref, before, after)
 }
 
 fn resolve(

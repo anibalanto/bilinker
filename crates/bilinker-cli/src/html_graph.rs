@@ -2,8 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use bilinker::link::{LinkEndpoint, ByteRange};
 use bilinker::bilink::BiLinkFile;
-use bilinker::scip_index::ScipIndex;
-use bilinker::sciplink::{ScipLink, ScipLinkState, normalize_symbol_id};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -44,14 +42,6 @@ fn lang_from_file(file: &str) -> &'static str {
 
 // ─── data model ───────────────────────────────────────────────────────────────
 
-pub struct ScipLinkData {
-    pub symbol:       String,
-    pub symbol_short: String,   // last segment for display
-    pub file:         String,
-    pub state:        String,   // "OK", "ALTERED", "DELETED", etc.
-    pub ok:           bool,
-}
-
 pub struct HtmlNode {
     pub id:            String,
     pub file:          String,
@@ -61,9 +51,6 @@ pub struct HtmlNode {
     pub content:       String,
     pub start_line:    usize,
     pub lang:          &'static str,
-    pub subgraph_sym:  Option<String>,
-    pub sciplinks:     Vec<ScipLinkData>,
-    pub subgraph_ok:   bool,   // false if any sciplink is not OK
 }
 
 pub struct HtmlEdge {
@@ -76,44 +63,19 @@ pub struct HtmlEdge {
     pub link1:  String,
 }
 
-pub struct ScipNode {
-    pub id:         String,
-    pub sym:        String,
-    pub short:      String,
-    pub file:       String,
-    pub state:      String,
-    pub ok:         bool,
-    pub depth:      usize,
-    pub parent_id:  String,
-    pub content:    String,
-    pub start_line: usize,
-    pub lang:       &'static str,
-}
-
 pub struct HtmlGraph {
     layers:          BTreeMap<String, usize>,
     nodes:           Vec<HtmlNode>,
     edges:           Vec<HtmlEdge>,
-    scip_nodes:      Vec<ScipNode>,
-    /// All caller→callee edges (parent_id, child_id) — may have duplicates filtered by seen_scip_edges
-    scip_edges:      Vec<(String, String)>,
     seen_nodes:      HashSet<String>,
     seen_edges:      HashSet<String>,
-    seen_scip_nodes: HashSet<String>,
-    seen_scip_edges: HashSet<(String, String)>,
-    scip_cache:      HashMap<std::path::PathBuf, Option<ScipIndex>>,
-    daemon_ok:       Option<bool>,
 }
 
 impl Default for HtmlGraph {
     fn default() -> Self {
         Self {
             layers: BTreeMap::new(), nodes: Vec::new(), edges: Vec::new(),
-            scip_nodes: Vec::new(), scip_edges: Vec::new(),
             seen_nodes: HashSet::new(), seen_edges: HashSet::new(),
-            seen_scip_nodes: HashSet::new(), seen_scip_edges: HashSet::new(),
-            scip_cache: HashMap::new(),
-            daemon_ok: None,
         }
     }
 }
@@ -126,18 +88,6 @@ impl HtmlGraph {
         self.layers.insert(node.layer.clone(), depth);
         if self.seen_nodes.insert(node.id.clone()) {
             self.nodes.push(node);
-        }
-    }
-
-    pub fn add_scip_node(&mut self, node: ScipNode) {
-        // Record the edge regardless (each caller gets its own edge)
-        let edge = (node.parent_id.clone(), node.id.clone());
-        if self.seen_scip_edges.insert(edge.clone()) {
-            self.scip_edges.push(edge);
-        }
-        // Add the node only once (deduplicated by symbol id)
-        if self.seen_scip_nodes.insert(node.id.clone()) {
-            self.scip_nodes.push(node);
         }
     }
 
@@ -218,21 +168,12 @@ impl HtmlGraph {
                 *row += 1;
                 v
             };
-            let sciplinks_json = n.sciplinks.iter().map(|sl| {
-                format!(r#"{{"sym":"{}","short":"{}","file":"{}","state":"{}","ok":{}}}"#,
-                    esc_json(&sl.symbol), esc_json(&sl.symbol_short),
-                    esc_json(&sl.file), esc_json(&sl.state), sl.ok)
-            }).collect::<Vec<_>>().join(",");
-            let subgraph_sym_json = n.subgraph_sym.as_deref()
-                .map(|s| format!(r#""{}""#, esc_json(s)))
-                .unwrap_or_else(|| "null".to_string());
             format!(
-                r#"{{"id":"{}","label":"{}","file_group_id":"{}","layer_id":"{}","layer":"{}","abs_path":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{},"subgraph_sym":{},"subgraph_ok":{},"sciplinks":[{}]}}"#,
+                r#"{{"id":"{}","label":"{}","file_group_id":"{}","layer_id":"{}","layer":"{}","abs_path":"{}","content":"{}","start_line":{},"lang":"{}","xi":{},"yi":{}}}"#,
                 esc_json(&n.id), esc_json(&n.label),
                 esc_json(&gid), esc_json(&layer_id(&n.layer)), esc_json(&n.layer),
                 esc_json(&n.abs_path), esc_json(&n.content),
-                n.start_line, n.lang, depth, y,
-                subgraph_sym_json, n.subgraph_ok, sciplinks_json
+                n.start_line, n.lang, depth, y
             )
         }).collect::<Vec<_>>().join(",");
 
@@ -245,18 +186,7 @@ impl HtmlGraph {
             )
         }).collect::<Vec<_>>().join(",");
 
-        let scip_nodes_json = self.scip_nodes.iter().map(|sn| {
-            format!(r#"{{"id":"{}","sym":"{}","short":"{}","file":"{}","state":"{}","ok":{},"content":"{}","start_line":{},"lang":"{}"}}"#,
-                esc_json(&sn.id), esc_json(&sn.sym), esc_json(&sn.short),
-                esc_json(&sn.file), esc_json(&sn.state), sn.ok,
-                esc_json(&sn.content), sn.start_line, sn.lang)
-        }).collect::<Vec<_>>().join(",");
-
-        let scip_edges_json = self.scip_edges.iter().map(|(src, tgt)| {
-            format!(r#"{{"s":"{}","t":"{}"}}"#, esc_json(src), esc_json(tgt))
-        }).collect::<Vec<_>>().join(",");
-
-        let data = format!(r#"{{"layers":[{layers_json}],"file_groups":[{file_groups_json}],"nodes":[{nodes_json}],"edges":[{edges_json}],"scip_nodes":[{scip_nodes_json}],"scip_edges":[{scip_edges_json}]}}"#);
+        let data = format!(r#"{{"layers":[{layers_json}],"file_groups":[{file_groups_json}],"nodes":[{nodes_json}],"edges":[{edges_json}]}}"#);
         TEMPLATE.replace("GRAPH_DATA_PLACEHOLDER", &data)
     }
 }
@@ -315,10 +245,9 @@ pub fn collect(
 }
 
 fn structural_endpoint_str(bl: &BiLinkFile) -> String {
-    match (&bl.link0, &bl.link1) {
-        (LinkEndpoint::Structural(_), _) => bl.link0.to_string(),
-        (_, LinkEndpoint::Structural(_)) => bl.link1.to_string(),
-        _ => String::new(),
+    match bl.structural_n() {
+        Some(n) => bl.link(n).to_string(),
+        None    => String::new(),
     }
 }
 
@@ -333,6 +262,7 @@ fn worst_state_str(states: &[&Option<bilinker::link::EndpointState>]) -> String 
         Some(Expanded)         => 3,
         Some(Restyled)         => 3,
         Some(ChainDirty)       => 4,
+        Some(Unresolved)       => 7,
         Some(Pending)          => 5,
         Some(Todo)             => 5,
         Some(Altered)          => 6,
@@ -346,133 +276,6 @@ fn worst_state_str(states: &[&Option<bilinker::link::EndpointState>]) -> String 
         .unwrap_or_else(|| "NONE".to_string())
 }
 
-// ─── daemon IPC ───────────────────────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-struct DaemonCallee {
-    symbol: String,
-    name:   String,
-    file:   String,
-    line:   u32,
-    col:    u32,
-}
-
-fn daemon_ping() -> bool {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    let Ok(home) = std::env::var("HOME") else { return false };
-    let socket = std::path::PathBuf::from(home).join(".bilinker/daemon.sock");
-    let Ok(mut stream) = UnixStream::connect(&socket) else { return false };
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-    if stream.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}\n").is_err() {
-        return false;
-    }
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).is_ok() && line.contains("pong")
-}
-
-fn daemon_callees_rpc(abs_file: &str, line: u32, col: u32) -> Option<Vec<DaemonCallee>> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    let Ok(home) = std::env::var("HOME") else { return None };
-    let socket = std::path::PathBuf::from(home).join(".bilinker/daemon.sock");
-    let mut stream = UnixStream::connect(&socket).ok()?;
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
-    let file_json = serde_json::to_string(abs_file).ok()?;
-    let req = format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"callees\",\"params\":{{\"file\":{file_json},\"line\":{line},\"col\":{col}}}}}\n"
-    );
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut resp = String::new();
-    BufReader::new(stream).read_line(&mut resp).ok()?;
-    let v: serde_json::Value = serde_json::from_str(resp.trim()).ok()?;
-    serde_json::from_value(v["result"].clone()).ok()
-}
-
-/// Extract the bare function/method name from a SCIP-style symbol.
-/// e.g. "rust-analyzer cargo bilinker 0.1.0 check/check_layer()."   → "check_layer"
-///      "rust-analyzer cargo foo 0.1.0 mod/impl#[Type]method()."    → "method"
-fn fn_name_from_sym(sym: &str) -> Option<String> {
-    let descriptor = sym.split_whitespace().last()?;
-    let name_part  = descriptor.rsplit('/').next()?;
-    let trimmed = name_part.trim_end_matches('.').trim_end_matches(')').trim_end_matches('(');
-    // impl#[Type]method → method
-    let name = if let Some(pos) = trimmed.rfind(']') { &trimmed[pos+1..] } else { trimmed };
-    if name.is_empty() { None } else { Some(name.to_string()) }
-}
-
-/// Find the first occurrence of `fn <name>` in the file; return (0-indexed line, col at name start).
-fn find_fn_in_file(abs_file: &str, fn_name: &str) -> Option<(u32, u32)> {
-    let src = std::fs::read_to_string(abs_file).ok()?;
-    let needle = format!("fn {fn_name}");
-    for (i, line) in src.lines().enumerate() {
-        if let Some(col) = line.find(&needle) {
-            return Some((i as u32, (col + 3) as u32)); // position at the identifier
-        }
-    }
-    None
-}
-
-fn read_lines_at_file(abs_file: &str, start_line: usize, max_lines: usize) -> (String, usize) {
-    let Ok(src) = std::fs::read_to_string(abs_file) else { return (String::new(), 1) };
-    let lines: Vec<&str> = src.lines().collect();
-    if lines.is_empty() { return (String::new(), 1); }
-    let from = start_line.min(lines.len().saturating_sub(1));
-    let to   = (from + max_lines).min(lines.len());
-    (lines[from..to].join("\n"), from + 1)
-}
-
-fn collect_daemon_nodes(
-    abs_file: &str,
-    line: u32,
-    col: u32,
-    parent_id: &str,
-    bilink_dir: &Path,
-    workspace: &str,
-    depth: usize,
-    visited: &mut HashSet<String>,
-    result: &mut Vec<ScipNode>,
-    all_ok: &mut bool,
-) {
-    const MAX_DEPTH: usize = 3;
-    if depth > MAX_DEPTH { return; }
-    let Some(callees) = daemon_callees_rpc(abs_file, line, col) else { return };
-    for callee in callees {
-        // Skip stdlib/dependency files — only follow workspace code
-        if !callee.file.starts_with(workspace) { continue; }
-        let rel_file = callee.file
-            .strip_prefix(workspace).unwrap_or(&callee.file)
-            .trim_start_matches('/');
-
-        let id = scip_node_id(&callee.symbol);
-        if !visited.insert(id.clone()) { continue; }
-        let sciplink_path = bilink_dir.join("sciplink").join(normalize_symbol_id(&callee.symbol));
-        let (state, ok) = if sciplink_path.exists() {
-            match ScipLink::load(&sciplink_path) {
-                Ok(sl) => {
-                    let ok = matches!(sl.state, Some(ScipLinkState::Ok) | None);
-                    (sl.state.map(|s| s.as_str().to_string()).unwrap_or_else(|| "PENDING".to_string()), ok)
-                }
-                Err(_) => ("?".to_string(), true),
-            }
-        } else {
-            ("PENDING".to_string(), true)
-        };
-        if !ok { *all_ok = false; }
-        let lang = lang_from_file(rel_file);
-        let (content, start_line) = read_lines_at_file(&callee.file, callee.line as usize, 100);
-        result.push(ScipNode {
-            id: id.clone(), sym: callee.symbol.clone(), short: callee.name.clone(),
-            file: rel_file.to_string(), state, ok, depth,
-            parent_id: parent_id.to_string(), content, start_line, lang,
-        });
-        collect_daemon_nodes(
-            &callee.file, callee.line, callee.col, &id,
-            bilink_dir, workspace, depth + 1, visited, result, all_ok,
-        );
-    }
-}
-
 fn add_structural(
     bl: &BiLinkFile,
     layer_root: &Path,
@@ -480,30 +283,10 @@ fn add_structural(
     hg: &mut HtmlGraph,
     _url_scheme: &str,
 ) -> Option<String> {
-    // Cache daemon availability once per HtmlGraph instance
-    if hg.daemon_ok.is_none() {
-        hg.daemon_ok = Some(daemon_ping());
-    }
-    let daemon_available = hg.daemon_ok == Some(true);
-
-    // Load ScipIndex once per layer_root (cached in HtmlGraph)
-    let scip_path = layer_root.join(".bilink/index/index.scip");
-    let layer_root_buf = layer_root.to_path_buf();
-    if !hg.scip_cache.contains_key(&layer_root_buf) {
-        let loaded = if scip_path.exists() {
-            ScipIndex::load(&scip_path, layer_root).ok()
-        } else {
-            None
-        };
-        hg.scip_cache.insert(layer_root_buf.clone(), loaded);
-    }
-    let scip = hg.scip_cache.get(&layer_root_buf).and_then(|o| o.as_ref());
-    let (sref, range, ep_n) = match (&bl.link0, &bl.link1) {
-        (LinkEndpoint::Structural(s), _) => (s, bl.range0.as_ref(), 0u8),
-        (_, LinkEndpoint::Structural(s)) => (s, bl.range1.as_ref(), 1u8),
-        _ => return None,
-    };
-    let (content, start_line) = file_content(layer_root, sref, range);
+    let ep_n = bl.structural_n()?;
+    let cap  = bl.capture_for(layer_root, ep_n).ok().flatten()?;
+    let sref = &cap.sref;
+    let (content, start_line) = file_content(layer_root, sref, cap.range.as_ref());
     let lang     = lang_from_file(&sref.file);
     let abs_path = layer_root.join(&sref.file)
                        .canonicalize()
@@ -518,119 +301,11 @@ fn add_structural(
         sref.file.clone()
     };
 
-    // Load subgraph callees: daemon first, SCIP as fallback
-    let subgraph_sym = if ep_n == 0 { bl.subgraph0.as_deref() } else { bl.subgraph1.as_deref() };
-    let (sciplinks, subgraph_ok) = if subgraph_sym.is_some() {
-        let bilink_dir = layer_root.join(".bilink");
-        let mut visited = HashSet::new();
-        let mut nodes   = Vec::new();
-        let mut all_ok  = true;
-
-        let workspace = layer_root.canonicalize()
-            .unwrap_or_else(|_| layer_root.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
-        let used_daemon = if daemon_available {
-            if let Some(sym) = subgraph_sym {
-                let full = layer_root.join(&sref.file);
-                let abs  = full.canonicalize().unwrap_or(full).to_string_lossy().into_owned();
-                if let Some(name) = fn_name_from_sym(sym) {
-                    if let Some((ln, col)) = find_fn_in_file(&abs, &name) {
-                        collect_daemon_nodes(&abs, ln, col, &id, &bilink_dir, &workspace, 1, &mut visited, &mut nodes, &mut all_ok);
-                        true  // daemon queried — skip SCIP regardless of result count
-                    } else { false }
-                } else { false }
-            } else { false }
-        } else { false };
-
-        if !used_daemon {
-            if let (Some(sym), Some(idx)) = (subgraph_sym, scip) {
-                collect_scip_nodes(idx, sym, &id, &bilink_dir, 1, &mut visited, &mut nodes, &mut all_ok);
-            }
-        }
-
-        for sn in nodes {
-            hg.add_scip_node(sn);
-        }
-        let flat = hg.scip_nodes.iter()
-            .filter(|sn| sn.parent_id.starts_with(&id) || sn.parent_id == id
-                || hg.scip_nodes.iter().any(|p| p.id == sn.parent_id))
-            .map(|sn| ScipLinkData {
-                symbol: sn.sym.clone(), symbol_short: sn.short.clone(),
-                file: sn.file.clone(), state: sn.state.clone(), ok: sn.ok,
-            }).collect::<Vec<_>>();
-        (flat, all_ok)
-    } else {
-        (vec![], true)
-    };
-
     hg.add_node(HtmlNode {
         id: id.clone(), file: sref.file.clone(), label, layer: lbl.to_string(),
         abs_path, content, start_line, lang,
-        subgraph_sym: subgraph_sym.map(|s| s.to_string()),
-        sciplinks, subgraph_ok,
     });
     Some(id)
-}
-
-fn scip_node_id(sym: &str) -> String {
-    format!("scip_{}", normalize_symbol_id(sym).replace('.', "_").replace('-', "_"))
-}
-
-fn collect_scip_nodes(
-    scip: &ScipIndex,
-    sym: &str,
-    parent_id: &str,
-    bilink_dir: &Path,
-    depth: usize,
-    visited: &mut HashSet<String>,
-    result: &mut Vec<ScipNode>,
-    all_ok: &mut bool,
-) {
-    for (callee, _, _) in scip.direct_callees(sym) {
-        if !visited.insert(callee.clone()) { continue; }
-
-        let sciplink_path = bilink_dir.join("sciplink").join(normalize_symbol_id(&callee));
-        let (state, ok) = if sciplink_path.exists() {
-            match ScipLink::load(&sciplink_path) {
-                Ok(sl) => {
-                    let ok = matches!(sl.state, Some(ScipLinkState::Ok) | None);
-                    (sl.state.map(|s| s.as_str().to_string()).unwrap_or_else(|| "PENDING".to_string()), ok)
-                }
-                Err(_) => ("?".to_string(), true),
-            }
-        } else {
-            ("PENDING".to_string(), true)
-        };
-
-        if !ok { *all_ok = false; }
-
-        let short = callee.rsplit('/').next().unwrap_or(&callee)
-            .trim_end_matches('.').to_string();
-        let file = scip.definition(&callee).map(|(f, _)| f.to_string()).unwrap_or_default();
-        let id   = scip_node_id(&callee);
-        let lang = lang_from_file(&file);
-
-        // Read source code at body range
-        let (content, start_line) = scip.body_range(&callee)
-            .and_then(|(f, range)| {
-                let src = std::fs::read(bilink_dir.parent()?.join(f)).ok()?;
-                let frag = &src[range.start.min(src.len())..range.end.min(src.len())];
-                let text = std::str::from_utf8(frag).ok()?;
-                let s_line = src[..range.start.min(src.len())]
-                    .iter().filter(|&&b| b == b'\n').count() + 1;
-                let display = text.lines().take(100).collect::<Vec<_>>().join("\n");
-                Some((display, s_line))
-            })
-            .unwrap_or_default();
-
-        result.push(ScipNode {
-            id: id.clone(), sym: callee.clone(), short, file, state, ok, depth,
-            parent_id: parent_id.to_string(), content, start_line, lang,
-        });
-
-        collect_scip_nodes(scip, &callee, &id, bilink_dir, depth + 1, visited, result, all_ok);
-    }
 }
 
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {

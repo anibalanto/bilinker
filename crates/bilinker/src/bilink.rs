@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
+use crate::capture::CaptureFile;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint};
 
 #[derive(Debug)]
@@ -8,8 +9,6 @@ pub struct BiLinkFile {
     pub uuid: String,
     pub link0: LinkEndpoint,
     pub link1: LinkEndpoint,
-    pub subgraph0: Option<String>,
-    pub subgraph1: Option<String>,
     pub hash0: Option<String>,
     pub hash_ast0: Option<String>,
     pub commit0: Option<String>,
@@ -24,6 +23,19 @@ pub struct BiLinkFile {
 }
 
 impl BiLinkFile {
+    /// Un bilink recién creado: dos endpoints, sin nada de cache.
+    pub fn new(uuid: impl Into<String>, link0: LinkEndpoint, link1: LinkEndpoint) -> Self {
+        Self {
+            uuid: uuid.into(),
+            link0, link1,
+            hash0: None, hash_ast0: None, commit0: None,
+            hash1: None, hash_ast1: None, commit1: None,
+            range0: None, range1: None,
+            state0: None, state1: None,
+            resolved_at: None,
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -38,8 +50,6 @@ impl BiLinkFile {
     pub fn parse(text: &str, uuid: &str) -> Result<Self> {
         let mut link0: Option<String> = None;
         let mut link1: Option<String> = None;
-        let mut subgraph0 = None;
-        let mut subgraph1 = None;
         let mut hash0 = None;
         let mut hash_ast0 = None;
         let mut commit0 = None;
@@ -55,7 +65,6 @@ impl BiLinkFile {
 
         const KEYS: &[&str] = &[
             "link.0", "link.1",
-            "subgraph.0", "subgraph.1",
             "hash.0", "hash_ast.0", "commit.0",
             "hash.1", "hash_ast.1", "commit.1",
             "range.0", "range.1",
@@ -80,8 +89,6 @@ impl BiLinkFile {
                 current_key = Some(match key {
                     "link.0"      => { link0      = Some(value); "link.0" }
                     "link.1"      => { link1      = Some(value); "link.1" }
-                    "subgraph.0"  => { subgraph0  = Some(value); "" }
-                    "subgraph.1"  => { subgraph1  = Some(value); "" }
                     "hash.0"      => { hash0      = Some(value); "" }
                     "hash_ast.0"  => { hash_ast0  = Some(value); "" }
                     "commit.0"    => { commit0    = Some(value); "" }
@@ -115,8 +122,6 @@ impl BiLinkFile {
             uuid:        uuid.to_string(),
             link0:       parse_ep(link0, "link.0")?,
             link1:       parse_ep(link1, "link.1")?,
-            subgraph0,
-            subgraph1,
             hash0, hash_ast0, commit0,
             hash1, hash_ast1, commit1,
             range0:      range0.as_deref().map(str::parse).transpose()
@@ -139,12 +144,6 @@ impl BiLinkFile {
 
         push_field(&mut out, "link.0", &self.link0.to_string());
         push_field(&mut out, "link.1", &self.link1.to_string());
-        if let Some(sg) = &self.subgraph0 {
-            push_field(&mut out, "subgraph.0", sg);
-        }
-        if let Some(sg) = &self.subgraph1 {
-            push_field(&mut out, "subgraph.1", sg);
-        }
 
         let has_cache = self.hash0.is_some() || self.hash1.is_some()
             || self.hash_ast0.is_some() || self.hash_ast1.is_some()
@@ -170,22 +169,75 @@ impl BiLinkFile {
         std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
     }
 
-    /// Hash of the structural endpoint's accepted content hash.
-    /// Used by adjacent layer endpoints instead of hashing the full bilink file.
-    pub fn structural_hash(&self) -> Option<&str> {
-        match (&self.link0, &self.link1) {
-            (LinkEndpoint::Structural(_), _) => self.hash0.as_deref(),
-            (_, LinkEndpoint::Structural(_)) => self.hash1.as_deref(),
-            _ => None,
+    // ─── accessors por índice de endpoint ─────────────────────────────────────
+
+    pub fn link(&self, n: u8) -> &LinkEndpoint {
+        if n == 0 { &self.link0 } else { &self.link1 }
+    }
+
+    pub fn link_mut(&mut self, n: u8) -> &mut LinkEndpoint {
+        if n == 0 { &mut self.link0 } else { &mut self.link1 }
+    }
+
+    pub fn state(&self, n: u8) -> &Option<EndpointState> {
+        if n == 0 { &self.state0 } else { &self.state1 }
+    }
+
+    pub fn set_state(&mut self, n: u8, s: Option<EndpointState>) {
+        if n == 0 { self.state0 = s } else { self.state1 = s }
+    }
+
+    pub fn hash(&self, n: u8) -> Option<&str> {
+        if n == 0 { self.hash0.as_deref() } else { self.hash1.as_deref() }
+    }
+
+    pub fn hash_ast(&self, n: u8) -> Option<&str> {
+        if n == 0 { self.hash_ast0.as_deref() } else { self.hash_ast1.as_deref() }
+    }
+
+    pub fn commit(&self, n: u8) -> Option<&str> {
+        if n == 0 { self.commit0.as_deref() } else { self.commit1.as_deref() }
+    }
+
+    /// Índice del endpoint estructural, si hay exactamente uno.
+    pub fn structural_n(&self) -> Option<u8> {
+        match (self.link0.is_structural(), self.link1.is_structural()) {
+            (true, _) => Some(0),
+            (_, true) => Some(1),
+            _         => None,
         }
     }
 
-    pub fn structural_commit(&self) -> Option<&str> {
-        match (&self.link0, &self.link1) {
-            (LinkEndpoint::Structural(_), _) => self.commit0.as_deref(),
-            (_, LinkEndpoint::Structural(_)) => self.commit1.as_deref(),
-            _ => None,
+    /// Resuelve el endpoint `n` a un capture.
+    ///
+    /// Para endpoints migrados carga el `.capture`. Para los legacy sintetiza uno
+    /// en memoria desde la referencia embebida y `range.N`, de modo que el resto
+    /// del código no tenga que distinguir los dos formatos. `bilinker migrate`
+    /// no hace más que persistir ese capture sintetizado.
+    ///
+    /// `Ok(None)` si el endpoint no es estructural.
+    pub fn capture_for(&self, layer: &Path, n: u8) -> Result<Option<CaptureFile>> {
+        match self.link(n) {
+            LinkEndpoint::Capture(uuid) => CaptureFile::load_in(layer, uuid).map(Some),
+            LinkEndpoint::LegacyStructural(sref) => Ok(Some(CaptureFile {
+                uuid:        format!("legacy-{}-{n}", self.uuid),
+                sref:        sref.clone(),
+                range:       if n == 0 { self.range0.clone() } else { self.range1.clone() },
+                state:       None,
+                resolved_at: self.resolved_at.clone(),
+            })),
+            _ => Ok(None),
         }
+    }
+
+    /// Hash of the structural endpoint's accepted content hash.
+    /// Used by adjacent layer endpoints instead of hashing the full bilink file.
+    pub fn structural_hash(&self) -> Option<&str> {
+        self.structural_n().and_then(|n| self.hash(n))
+    }
+
+    pub fn structural_commit(&self) -> Option<&str> {
+        self.structural_n().and_then(|n| self.commit(n))
     }
 
     pub fn find_by_id(bilinker_dir: &Path, id: &str) -> Result<(PathBuf, BiLinkFile)> {
@@ -209,7 +261,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn structural(file: &str) -> LinkEndpoint {
-        LinkEndpoint::Structural(crate::link::StructuralRef {
+        LinkEndpoint::LegacyStructural(crate::link::StructuralRef {
             file: file.into(),
             query: None,
             range: None,
@@ -225,17 +277,7 @@ mod tests {
         let dir  = tempdir().unwrap();
         let path = dir.path().join("test-uuid.bilink");
 
-        let original = BiLinkFile {
-            uuid:      "test-uuid".into(),
-            link0:     structural("file.md"),
-            link1:     layer(".stratum/impl"),
-            subgraph0: None, subgraph1: None,
-            hash0: None, commit0: None,
-            hash1: None, commit1: None,
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let original = BiLinkFile::new("test-uuid", structural("file.md"), layer(".stratum/impl"));
         original.write(&path).unwrap();
 
         let loaded = BiLinkFile::load(&path).unwrap();
@@ -249,21 +291,16 @@ mod tests {
         let dir  = tempdir().unwrap();
         let path = dir.path().join("abc123.bilink");
 
-        let original = BiLinkFile {
-            uuid:      "abc123".into(),
-            link0:     structural("a.md"),
-            link1:     structural("b.md"),
-            subgraph0: None, subgraph1: None,
-            hash0:   Some("aabbcc".into()),
-            commit0: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into()),
-            hash1:   Some("ddeeff".into()),
-            commit1: Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1".into()),
-            range0:      Some(ByteRange { start: 10, end: 50 }),
-            range1:      Some(ByteRange { start: 0, end: 100 }),
-            state0:      Some(EndpointState::Ok),
-            state1:      Some(EndpointState::Altered),
-            resolved_at: Some("2026-05-27T00:00:00Z".into()),
-        };
+        let mut original = BiLinkFile::new("abc123", structural("a.md"), structural("b.md"));
+        original.hash0   = Some("aabbcc".into());
+        original.commit0 = Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into());
+        original.hash1   = Some("ddeeff".into());
+        original.commit1 = Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1".into());
+        original.range0  = Some(ByteRange { start: 10, end: 50 });
+        original.range1  = Some(ByteRange { start: 0, end: 100 });
+        original.state0  = Some(EndpointState::Ok);
+        original.state1  = Some(EndpointState::Altered);
+        original.resolved_at = Some("2026-05-27T00:00:00Z".into());
         original.write(&path).unwrap();
 
         let loaded = BiLinkFile::load(&path).unwrap();
@@ -287,17 +324,7 @@ mod tests {
     #[test]
     fn find_by_id_locates_file() {
         let dir = tempdir().unwrap();
-        let bl = BiLinkFile {
-            uuid:      "my-uuid".into(),
-            link0:     structural("a.md"),
-            link1:     structural("b.md"),
-            subgraph0: None, subgraph1: None,
-            hash0: None, commit0: None,
-            hash1: None, commit1: None,
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let bl = BiLinkFile::new("my-uuid", structural("a.md"), structural("b.md"));
         let path = dir.path().join("my-uuid.bilink");
         bl.write(&path).unwrap();
 

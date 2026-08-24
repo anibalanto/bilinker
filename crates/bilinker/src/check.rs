@@ -9,8 +9,6 @@ use crate::grammar;
 use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
 use crate::query;
-use crate::scip_index::{check_or_create_sciplink, ScipIndex};
-use crate::sciplink::{sciplink_path, ScipLinkState};
 use crate::task::resolve_task_path;
 
 #[derive(Debug)]
@@ -59,22 +57,50 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
 
     let uuid = bl.uuid.clone();
 
+    // El `range` de partida sale del capture, no del bilink.
+    let cap0 = bl.capture_for(layer_root, 0).ok().flatten();
+    let cap1 = bl.capture_for(layer_root, 1).ok().flatten();
+
     let (state0, range0) =
-        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(), bl.range0.as_ref(), bl.commit0.as_deref(), bl.state0.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(),
+                       cap0.as_ref().and_then(|c| c.range.as_ref()), bl.commit0.as_deref(), bl.state0.as_ref())?;
 
     let (state1, range1) =
-        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(), bl.range1.as_ref(), bl.commit1.as_deref(), bl.state1.as_ref())?;
+        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(),
+                       cap1.as_ref().and_then(|c| c.range.as_ref()), bl.commit1.as_deref(), bl.state1.as_ref())?;
 
-    let updated = bl.state0.as_ref() != Some(&state0)
-        || bl.state1.as_ref() != Some(&state1)
-        || bl.range0 != range0
-        || bl.range1 != range1;
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    bl.range0      = range0;
-    bl.range1      = range1;
+    // El resultado de la resolución se escribe en el capture; el estado de
+    // aceptación, en el bilink. `range.N` ya no vive en el bilink.
+    let mut cap_updated = false;
+    for (n, cap, range, state) in
+        [(0u8, cap0, &range0, &state0), (1u8, cap1, &range1, &state1)]
+    {
+        // Solo los endpoints ya migrados tienen archivo que escribir; los legacy
+        // llevan su ubicación embebida en el bilink hasta que corra `migrate`.
+        if bl.link(n).capture_uuid().is_none() { continue; }
+        let Some(mut cap) = cap else { continue };
+
+        let new_state = capture_state_for(state);
+        if cap.range.as_ref() != range.as_ref() || cap.state.as_ref() != Some(&new_state) {
+            cap.range       = range.clone();
+            cap.state       = Some(new_state);
+            cap.resolved_at = Some(now.clone());
+            cap.write_in(layer_root)?;
+            cap_updated = true;
+        }
+    }
+
+    let updated = cap_updated
+        || bl.state0.as_ref() != Some(&state0)
+        || bl.state1.as_ref() != Some(&state1);
+
+    bl.range0      = None;
+    bl.range1      = None;
     bl.state0      = Some(state0.clone());
     bl.state1      = Some(state1.clone());
-    bl.resolved_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    bl.resolved_at = Some(now);
 
     bl.write(bilink_path)?;
 
@@ -82,88 +108,17 @@ fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
     Ok(CheckResult { uuid, state0, state1, updated })
 }
 
-pub fn check_subgraph(
-    index: &ScipIndex,
-    layer_root: &Path,
-    bilink_dir: &Path,
-    root_symbol: &str,
-    prune: bool,
-) -> Result<Vec<(String, ScipLinkState)>> {
-    let mut results = Vec::new();
-    let mut visited = HashSet::new();
-    check_subgraph_recursive(index, layer_root, bilink_dir, root_symbol, &mut visited, &mut results, prune)?;
-    Ok(results)
-}
-
-fn check_subgraph_recursive(
-    index: &ScipIndex,
-    layer_root: &Path,
-    bilink_dir: &Path,
-    symbol: &str,
-    visited: &mut HashSet<String>,
-    results: &mut Vec<(String, ScipLinkState)>,
-    prune: bool,
-) -> Result<()> {
-    if !visited.insert(symbol.to_string()) { return Ok(()); }
-
-    // Check or create the sciplink for this symbol
-    if let Some((file, range)) = index.definition(symbol) {
-        let path = sciplink_path(bilink_dir, symbol);
-
-        // RENAMED: sciplink exists but symbol moved
-        if path.exists() {
-            if let Ok(sl) = crate::sciplink::ScipLink::load(&path) {
-                if sl.symbol != symbol {
-                    // update symbol in place
-                    let updated = crate::sciplink::ScipLink {
-                        symbol: symbol.to_string(),
-                        file: file.to_string(),
-                        range: range.clone(),
-                        ..sl
-                    }.with_state(ScipLinkState::Renamed);
-                    updated.write(&path)?;
-                    results.push((symbol.to_string(), ScipLinkState::Renamed));
-                    return Ok(());
-                }
-            }
-        }
-
-        let sl = check_or_create_sciplink(&path, symbol, file, range, layer_root)?;
-        let state = sl.state.clone().unwrap_or(ScipLinkState::Ok);
-        results.push((symbol.to_string(), state));
-    } else {
-        // Symbol not in index — DELETED or RENAMED
-        let path = sciplink_path(bilink_dir, symbol);
-        if path.exists() {
-            if let Ok(sl) = crate::sciplink::ScipLink::load(&path) {
-                // Try to find by location
-                if let Some(new_sym) = index.find_by_location(&sl.file, &sl.range) {
-                    let updated = crate::sciplink::ScipLink {
-                        symbol: new_sym.clone(),
-                        ..sl
-                    }.with_state(ScipLinkState::Renamed);
-                    updated.write(&path)?;
-                    results.push((symbol.to_string(), ScipLinkState::Renamed));
-                } else {
-                    let deleted = sl.with_state(ScipLinkState::Deleted);
-                    if prune {
-                        std::fs::remove_file(&path)?;
-                    } else {
-                        deleted.write(&path)?;
-                    }
-                    results.push((symbol.to_string(), ScipLinkState::Deleted));
-                }
-            }
-        }
-        return Ok(());
+/// Estado de resolución del capture, derivado del estado del endpoint.
+fn capture_state_for(state: &EndpointState) -> crate::capture::CaptureState {
+    use crate::capture::CaptureState as C;
+    match state {
+        EndpointState::Unanchored => C::Unanchored,
+        EndpointState::Deleted    => C::Deleted,
+        EndpointState::Broken     => C::Broken,
+        EndpointState::Moved      => C::Moved,
+        EndpointState::Reanchored => C::Reanchored,
+        _                         => C::Resolved,
     }
-
-    // Recurse into direct callees
-    for (callee, callee_file, callee_range) in index.direct_callees(symbol) {
-        check_subgraph_recursive(index, layer_root, bilink_dir, &callee, visited, results, prune)?;
-    }
-
-    Ok(())
 }
 
 fn check_endpoint(
@@ -178,22 +133,34 @@ fn check_endpoint(
     cached_state: Option<&EndpointState>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
     match endpoint {
-        LinkEndpoint::Structural(sref) => check_structural(layer_root, sref, hash, hash_ast, stored_range, commit, cached_state),
+        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
+            let sref = crate::capture::sref_of(layer_root, endpoint)?
+                .expect("endpoint estructural sin referencia resoluble");
+            check_structural(layer_root, &sref, hash, hash_ast, stored_range, commit, cached_state)
+        }
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
         LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
     }
 }
 
+/// ¿El archivo cambió desde `commit`?
+///
+/// Ante la duda, `true`: si git no puede resolver la comparación —commit
+/// inexistente, repo sin historial— no se puede concluir que el archivo no
+/// cambió, y asumirlo saltea la verificación y reporta un estado obsoleto.
 fn git_file_changed(layer_root: &Path, file: &str, commit: &str) -> bool {
     std::process::Command::new("git")
+        // `<commit>` sin `..HEAD`: compara contra el árbol de trabajo, no contra
+        // HEAD. Con `..HEAD` los cambios sin commitear quedaban invisibles y el
+        // fast-path devolvía el estado cacheado.
         .args(["-C", &layer_root.to_string_lossy(), "diff", "--name-only",
-               &format!("{commit}..HEAD"), "--", file])
+               commit, "--", file])
         .output()
-        .map(|o| !o.stdout.is_empty())
+        .map(|o| !o.status.success() || !o.stdout.is_empty())
         .unwrap_or(true)
 }
 
-fn check_structural(
+pub(crate) fn check_structural(
     root: &Path,
     sref: &StructuralRef,
     hash: Option<&str>,
@@ -369,7 +336,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn whole_file_endpoint(file: &str) -> LinkEndpoint {
-        LinkEndpoint::Structural(StructuralRef {
+        LinkEndpoint::LegacyStructural(StructuralRef {
             file: file.into(),
             query: None,
             range: None,
@@ -381,16 +348,7 @@ mod tests {
     }
 
     fn make_bilink(dir: &Path, uuid: &str, link0: LinkEndpoint, link1: LinkEndpoint) -> std::path::PathBuf {
-        let bl = BiLinkFile {
-            uuid: uuid.into(),
-            link0, link1,
-            subgraph0: None, subgraph1: None,
-            hash0: None, commit0: None,
-            hash1: None, commit1: None,
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let bl = BiLinkFile::new(uuid, link0, link1);
         let path = dir.join(format!("{uuid}.bilink"));
         bl.write(&path).unwrap();
         path
@@ -420,21 +378,16 @@ mod tests {
         let stored_hash = hash::sha256(content);
 
         let bilink_dir = dir.path().join(".bilink");
-        let bl = BiLinkFile {
-            uuid:    "uuid1".into(),
-            link0:   whole_file_endpoint("a.md"),
-            link1:   whole_file_endpoint("a.md"),
-            subgraph0: None, subgraph1: None,
-            hash0:   Some(stored_hash.clone()),
-            commit0: Some("abc1234".into()),
-            hash1:   Some(stored_hash),
-            commit1: Some("abc1234".into()),
-            range0:  Some(ByteRange { start: 0, end: content.len() }),
-            range1:  Some(ByteRange { start: 0, end: content.len() }),
-            state0:  Some(EndpointState::Ok),
-            state1:  Some(EndpointState::Ok),
-            resolved_at: Some("2026-01-01T00:00:00Z".into()),
-        };
+        let mut bl = BiLinkFile::new("uuid1", whole_file_endpoint("a.md"), whole_file_endpoint("a.md"));
+        bl.hash0 = Some(stored_hash.clone());
+        bl.commit0 = Some("abc1234".into());
+        bl.hash1 = Some(stored_hash);
+        bl.commit1 = Some("abc1234".into());
+        bl.range0 = Some(ByteRange { start: 0, end: content.len() });
+        bl.range1 = Some(ByteRange { start: 0, end: content.len() });
+        bl.state0 = Some(EndpointState::Ok);
+        bl.state1 = Some(EndpointState::Ok);
+        bl.resolved_at = Some("2026-01-01T00:00:00Z".into());
         let path = bilink_dir.join("uuid1.bilink");
         bl.write(&path).unwrap();
 
@@ -448,19 +401,11 @@ mod tests {
         std::fs::write(dir.path().join("a.md"), "new content").unwrap();
 
         let bilink_dir = dir.path().join(".bilink");
-        let bl = BiLinkFile {
-            uuid:    "uuid1".into(),
-            link0:   whole_file_endpoint("a.md"),
-            link1:   whole_file_endpoint("a.md"),
-            subgraph0: None, subgraph1: None,
-            hash0:   Some("old-hash-that-wont-match".into()),
-            commit0: Some("abc1234".into()),
-            hash1:   Some("old-hash-that-wont-match".into()),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut bl = BiLinkFile::new("uuid1", whole_file_endpoint("a.md"), whole_file_endpoint("a.md"));
+        bl.hash0   = Some("old-hash-that-wont-match".into());
+        bl.commit0 = Some("abc1234".into());
+        bl.hash1   = Some("old-hash-that-wont-match".into());
+        bl.commit1 = Some("abc1234".into());
         let path = bilink_dir.join("uuid1.bilink");
         bl.write(&path).unwrap();
 
@@ -511,34 +456,16 @@ mod tests {
         let adj_struct_hash = "deadbeefdeadbeef".to_string();
         let adj_dir = dir.path().join(".stratum/impl/.bilink");
         std::fs::create_dir_all(&adj_dir).unwrap();
-        let adj_bl = BiLinkFile {
-            uuid:    uuid.into(),
-            link0:   layer_endpoint("../.."),
-            link1:   whole_file_endpoint("b.md"),
-            subgraph0: None, subgraph1: None,
-            hash0:   None, commit0: None,
-            hash1:   Some(adj_struct_hash.clone()),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut adj_bl = BiLinkFile::new(uuid, layer_endpoint("../.."), whole_file_endpoint("b.md"));
+        adj_bl.hash1   = Some(adj_struct_hash.clone());
+        adj_bl.commit1 = Some("abc1234".into());
         adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
 
         // Spec bilink stores adj structural hash as its layer endpoint hash
         let bilink_dir = dir.path().join(".bilink");
-        let bl = BiLinkFile {
-            uuid:    uuid.into(),
-            link0:   whole_file_endpoint("a.md"),
-            link1:   layer_endpoint(".stratum/impl"),
-            subgraph0: None, subgraph1: None,
-            hash0:   None, commit0: None,
-            hash1:   Some(adj_struct_hash),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
+        bl.hash1   = Some(adj_struct_hash);
+        bl.commit1 = Some("abc1234".into());
         let path = bilink_dir.join(format!("{uuid}.bilink"));
         bl.write(&path).unwrap();
         std::fs::write(dir.path().join("a.md"), "content").unwrap();
@@ -555,34 +482,16 @@ mod tests {
         // Adjacent bilink has structural hash "current-hash"
         let adj_dir = dir.path().join(".stratum/impl/.bilink");
         std::fs::create_dir_all(&adj_dir).unwrap();
-        let adj_bl = BiLinkFile {
-            uuid:    uuid.into(),
-            link0:   layer_endpoint("../.."),
-            link1:   whole_file_endpoint("b.md"),
-            subgraph0: None, subgraph1: None,
-            hash0:   None, commit0: None,
-            hash1:   Some("current-hash".into()),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut adj_bl = BiLinkFile::new(uuid, layer_endpoint("../.."), whole_file_endpoint("b.md"));
+        adj_bl.hash1   = Some("current-hash".into());
+        adj_bl.commit1 = Some("abc1234".into());
         adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
 
         // Spec bilink stores a different (stale) hash
         let bilink_dir = dir.path().join(".bilink");
-        let bl = BiLinkFile {
-            uuid:    uuid.into(),
-            link0:   whole_file_endpoint("a.md"),
-            link1:   layer_endpoint(".stratum/impl"),
-            subgraph0: None, subgraph1: None,
-            hash0:   None, commit0: None,
-            hash1:   Some("stale-hash-000".into()),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
+        bl.hash1   = Some("stale-hash-000".into());
+        bl.commit1 = Some("abc1234".into());
         let path = bilink_dir.join(format!("{uuid}.bilink"));
         bl.write(&path).unwrap();
         std::fs::write(dir.path().join("a.md"), "content").unwrap();
@@ -615,18 +524,9 @@ mod tests {
 
         let bilink_dir = dir.path().join(".bilink");
         std::fs::write(dir.path().join("a.md"), "content").unwrap();
-        let bl = BiLinkFile {
-            uuid:    uuid.into(),
-            link0:   whole_file_endpoint("a.md"),
-            link1:   layer_endpoint(".stratum/impl"),
-            subgraph0: None, subgraph1: None,
-            hash0:   None, commit0: None,
-            hash1:   Some("previously-accepted-hash".into()),
-            commit1: Some("abc1234".into()),
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
-        };
+        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
+        bl.hash1   = Some("previously-accepted-hash".into());
+        bl.commit1 = Some("abc1234".into());
         let path = bilink_dir.join(format!("{uuid}.bilink"));
         bl.write(&path).unwrap();
 
@@ -690,9 +590,10 @@ pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, B
         for (uuid, n) in crate::index::lookup(&layer_root, rel_str)? {
             let bilink_path = bilink_dir.join(format!("{uuid}.bilink"));
             let Ok(bl) = BiLinkFile::load(&bilink_path) else { continue };
-            let range = if n == 0 { &bl.range0 } else { &bl.range1 };
-            if let Some(r) = range {
-                results.push((bilink_path, n, r.clone()));
+            // El range vive en el capture; `capture_for` lo sintetiza para legacy.
+            let Ok(Some(cap)) = bl.capture_for(&layer_root, n) else { continue };
+            if let Some(r) = cap.range {
+                results.push((bilink_path, n, r));
             }
         }
     }

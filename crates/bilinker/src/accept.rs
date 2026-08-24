@@ -69,7 +69,10 @@ fn compute_hash_and_commit(
     commit_override: Option<&str>,
 ) -> Result<(String, Option<String>, String)> {
     match endpoint {
-        LinkEndpoint::Structural(sref) => {
+        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
+            let sref = crate::capture::sref_of(layer_root, endpoint)?
+                .ok_or_else(|| anyhow::anyhow!("endpoint estructural sin capture resoluble"))?;
+            let sref = &sref;
             let file_path = layer_root.join(&sref.file);
             let source = std::fs::read_to_string(&file_path)
                 .with_context(|| format!("reading {}", file_path.display()))?;
@@ -182,7 +185,9 @@ pub fn accept_layer(
 
             let matches = if all {
                 true
-            } else if let (Some(filter), LinkEndpoint::Structural(sref)) = (path_filter, endpoint) {
+            } else if let (Some(filter), Ok(Some(sref))) =
+                (path_filter, crate::capture::sref_of(&layer_root, endpoint))
+            {
                 sref.file == filter
                     || sref.file.starts_with(&format!("{filter}/"))
                     || sref.file.starts_with(filter)
