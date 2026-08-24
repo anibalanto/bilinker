@@ -13,14 +13,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Capture a bilink endpoint from a file selection
+    /// Crea un capture a partir de una selección, y escribe el .capture
     ///
-    /// FILE is relative to the project root (.bilinker.toml).
-    /// START and END are line:col positions (1-based).
+    /// FILE es relativo a la raíz de la capa. START y END son posiciones línea:col (1-based).
+    /// Imprime el UUID del capture por stdout, listo para referenciar desde un link.N.
+    #[command(args_conflicts_with_subcommands = true)]
     Capture {
-        file: String,
-        start: String,
-        end: String,
+        #[command(subcommand)]
+        sub: Option<CaptureCommand>,
+        file:  Option<String>,
+        start: Option<String>,
+        end:   Option<String>,
+        /// Mostrar el capture que se crearía sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Print content or list bilinks referencing a file/position
@@ -167,6 +173,16 @@ enum DaemonCommand {
 }
 
 #[derive(Subcommand)]
+enum CaptureCommand {
+    /// Elimina los captures de la capa que ningún .bilink referencia
+    Prune {
+        path: Option<PathBuf>,
+        #[arg(short = 'y')]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ChainCommand {
     /// Create a new chain or direct link
     ///
@@ -256,7 +272,7 @@ fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bil
     let layer_root = root.join(&layer_fs);
 
     let now = now_iso8601();
-    let (uuid, _) = if let Some((line, col)) = pos {
+    let (uuid, _, _reused) = if let Some((line, col)) = pos {
         bilinker::capture::capture_to_file(&layer_root, &file_str, (line, col), (line, col), &now)?
     } else {
         bilinker::capture::capture_file_whole(&layer_root, &file_str, &now)?
@@ -307,14 +323,81 @@ fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
     match cli.command {
-        Command::Capture { file, start, end } => {
-            let root = project_root(&cwd)?;
-            let result = bilinker::capture::capture(
-                &root, &file,
-                parse_pos(&start)?, parse_pos(&end)?,
-            )?;
-            println!("{}", result.endpoint);
-            eprintln!("hash: {}", result.hash);
+        Command::Capture { sub, file, start, end, dry_run } => {
+            match sub {
+                Some(CaptureCommand::Prune { path, yes }) => {
+                    let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                        .unwrap_or_else(|| cwd.clone());
+                    let orphans = bilinker::capture::orphans(&layer)?;
+                    if orphans.is_empty() {
+                        eprintln!("no hay captures sin referentes");
+                        return Ok(());
+                    }
+                    println!("{} capture(s) sin referentes:", orphans.len());
+                    for c in &orphans {
+                        // La query es multilínea; en una lista de confirmación
+                        // previa a borrar archivos, una línea por capture.
+                        let anchor = match c.sref.query.as_deref() {
+                            None => "archivo completo".to_string(),
+                            Some(q) => {
+                                let kind = q.split_whitespace().next().unwrap_or("")
+                                    .trim_start_matches('(');
+                                let name = q.split("#eq?").nth(1)
+                                    .and_then(|t| t.split('"').nth(1)).unwrap_or("");
+                                format!("{kind} {name}").trim().to_string()
+                            }
+                        };
+                        println!("  {}…  {}  [{anchor}]",
+                                 &c.uuid[..8.min(c.uuid.len())], c.sref.file);
+                    }
+                    if !yes {
+                        eprint!("
+Eliminar? [y/N] ");
+                        use std::io::Write;
+                        std::io::stderr().flush().ok();
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        if input.trim().to_lowercase() != "y" {
+                            eprintln!("abortado");
+                            return Ok(());
+                        }
+                    }
+                    for c in &orphans {
+                        std::fs::remove_file(
+                            bilinker::capture::CaptureFile::path_in(&layer, &c.uuid))?;
+                    }
+                    eprintln!("eliminados {} capture(s)", orphans.len());
+                }
+
+                None => {
+                    let (Some(file), Some(start), Some(end)) = (file, start, end) else {
+                        anyhow::bail!("uso: bilinker capture <file> <start> <end>");
+                    };
+                    let root = project_root(&cwd)?;
+                    let (s, e) = (parse_pos(&start)?, parse_pos(&end)?);
+
+                    if dry_run {
+                        let result = bilinker::capture::capture(&root, &file, s, e)?;
+                        eprintln!("[dry-run] no se escribió nada");
+                        eprintln!("file:   {}", result.endpoint.file);
+                        if let Some(q) = &result.endpoint.query {
+                            eprintln!("query:  {q}");
+                        }
+                        return Ok(());
+                    }
+
+                    let now = now_iso8601();
+                    let (uuid, path, reused) =
+                        bilinker::capture::capture_to_file(&root, &file, s, e, &now)?;
+                    println!("{uuid}");
+                    if reused {
+                        eprintln!("reusado: {}", path.display());
+                        eprintln!("  ya existía un capture con esta misma referencia");
+                    } else {
+                        eprintln!("creado: {}", path.display());
+                    }
+                }
+            }
         }
 
         Command::Get { target, before, after, diff } => {

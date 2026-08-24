@@ -35,18 +35,26 @@ fn run(args: &[&str]) -> (String, String, bool) {
 // ─── 1. capture ────────────────────────────────────────────────────────────
 
 #[test]
-fn capture_identifies_workspace_file_and_method() {
-    let _guard = PERSONA_LOCK.lock().unwrap();
-    let (stdout, stderr, ok) = run(&[
-        "capture",
-        "tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java",
-        "10:5", "12:5",
-    ]);
-    assert!(ok, "capture failed:\n{stderr}");
-    assert!(stdout.contains("Persona.java"), "missing file in link");
-    assert!(stdout.contains("Persona"),      "missing class name in query");
-    assert!(stdout.contains("vote"),         "missing method name in query");
-    assert!(stderr.contains("hash:"),        "missing hash in stderr");
+fn capture_writes_a_capture_with_the_stable_anchor() {
+    let (_tmp, root) = isolated_git_workspace();
+
+    let (stdout, stderr, ok) = run_in(&root, &["capture", "src/Service.java", "2:5", "2:24"]);
+    assert!(ok, "capture failed:
+{stderr}");
+
+    let uuid = stdout.trim();
+    assert!(!uuid.is_empty(), "capture debe imprimir el uuid por stdout");
+
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.capture")))
+        .expect("capture no fue escrito");
+    assert!(cap.contains("file:   src/Service.java"), "falta el archivo:
+{cap}");
+    assert!(cap.contains("Service"), "falta la clase en la query:
+{cap}");
+    assert!(cap.contains("run"),     "falta el método en la query:
+{cap}");
+    assert!(!cap.contains("hash"),   "un capture no guarda hashes:
+{cap}");
 }
 
 // ─── 2. get matches sed ────────────────────────────────────────────────────
@@ -75,60 +83,49 @@ fn get_content_matches_sed_selection() {
 // ─── 3. hash is a valid sha256 and is deterministic ───────────────────────
 
 #[test]
-fn capture_hash_is_valid_sha256_and_stable() {
-    let _guard = PERSONA_LOCK.lock().unwrap();
-    let args = &[
-        "capture",
-        "tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java",
-        "10:5", "12:5",
-    ];
+fn capturing_the_same_fragment_twice_reuses_the_capture() {
+    let (_tmp, root) = isolated_git_workspace();
+    let args = &["capture", "src/Service.java", "2:5", "2:24"];
 
-    let (_, stderr1, ok1) = run(args);
-    assert!(ok1, "first capture failed:\n{stderr1}");
-    let hash1 = extract_hash(&stderr1);
+    let (out1, err1, ok1) = run_in(&root, args);
+    assert!(ok1, "primera captura falló:
+{err1}");
+    let (out2, err2, ok2) = run_in(&root, args);
+    assert!(ok2, "segunda captura falló:
+{err2}");
 
-    assert_eq!(hash1.len(), 64, "hash must be 64 hex chars (SHA-256)");
-    assert!(hash1.chars().all(|c| c.is_ascii_hexdigit()), "hash must be hex");
+    assert_eq!(out1.trim(), out2.trim(), "la misma referencia debe reusar el capture");
+    assert!(err2.contains("reusado"), "la segunda debería reportar reuso:
+{err2}");
 
-    let (_, stderr2, ok2) = run(args);
-    assert!(ok2, "second capture failed:\n{stderr2}");
-    assert_eq!(hash1, extract_hash(&stderr2), "hash must be deterministic");
+    let n = fs::read_dir(root.join(".bilink/capture")).unwrap().count();
+    assert_eq!(n, 1, "no debería haber dos captures para la misma referencia");
 }
 
 // ─── 4. drift detection ────────────────────────────────────────────────────
 
 #[test]
-fn drift_changes_hash() {
-    let _guard = PERSONA_LOCK.lock().unwrap();
-    let path = persona_java();
-    let original = fs::read_to_string(&path).expect("read Persona.java");
+fn the_reference_survives_a_content_change() {
+    let (_tmp, root) = isolated_git_workspace();
+    let args = &["capture", "src/Service.java", "2:5", "2:24"];
 
-    let (_, stderr1, ok1) = run(&[
-        "capture",
-        "tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java",
-        "10:5", "12:5",
-    ]);
-    assert!(ok1, "capture (before) failed:\n{stderr1}");
-    let hash_before = extract_hash(&stderr1);
+    let (out1, err1, ok1) = run_in(&root, args);
+    assert!(ok1, "captura inicial falló:
+{err1}");
 
-    let modified = original.replace(
-        "System.out.println(name + \" votes for \" + candidate);",
-        "System.out.println(name + \" voted for \" + candidate); // drift",
-    );
-    fs::write(&path, &modified).expect("write modified");
+    // Cambia el cuerpo del método, no su firma: la referencia apunta al nodo AST,
+    // así que debe seguir siendo la misma. Es la promesa central de la herramienta.
+    fs::write(root.join("src/Service.java"),
+        "public class Service {
+    public void run() { log(); }
+}
+").unwrap();
 
-    let (_, stderr2, ok2) = run(&[
-        "capture",
-        "tests/fixtures/java-app/src/main/java/ar/example/demo/persona/Persona.java",
-        "10:5", "12:5",
-    ]);
-
-    fs::write(&path, &original).expect("restore original");
-
-    assert!(ok2, "capture (after) failed:\n{stderr2}");
-    let hash_after = extract_hash(&stderr2);
-
-    assert_ne!(hash_before, hash_after, "hash should change when code drifts");
+    let (out2, err2, ok2) = run_in(&root, args);
+    assert!(ok2, "captura posterior falló:
+{err2}");
+    assert_eq!(out1.trim(), out2.trim(),
+               "cambiar el contenido no debería cambiar la referencia");
 }
 
 // ─── 5. chain new ──────────────────────────────────────────────────────────
@@ -143,6 +140,25 @@ fn isolated_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
     fs::write(root.join("src/Service.java"),
         "public class Service {\n    public void run() {}\n}\n").unwrap();
 
+    (tmp, root)
+}
+
+/// Como `isolated_workspace`, pero con los archivos commiteados.
+///
+/// `capture` exige historial git: un bilink solo se puede crear sobre algo que
+/// git pueda rastrear.
+fn isolated_git_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_workspace();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "init"],
+    ] {
+        std::process::Command::new("git")
+            .current_dir(&root).args(&args).output().unwrap();
+    }
     (tmp, root)
 }
 
@@ -442,12 +458,3 @@ fn index_recursive_covers_all_layers() {
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
-fn extract_hash(stderr: &str) -> String {
-    stderr
-        .lines()
-        .find(|l| l.starts_with("hash:"))
-        .expect("no hash line")
-        .trim_start_matches("hash:")
-        .trim()
-        .to_string()
-}

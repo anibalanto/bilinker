@@ -9,6 +9,17 @@ use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
 use crate::link::{ByteRange, StructuralRef};
 
+/// Busca un capture de la capa con la misma referencia exacta.
+///
+/// La igualdad es `(file, query, offset)`: referencias idénticas describen la
+/// misma ubicación, así que comparten capture. Es el mismo criterio que usa la
+/// migración — si no, cada cadena nueva volvería a duplicar lo que aquélla unificó.
+pub fn find_equivalent(layer: &Path, sref: &StructuralRef) -> Option<String> {
+    CaptureFile::all_in(layer).ok()?.into_iter()
+        .find(|c| c.sref == *sref)
+        .map(|c| c.uuid)
+}
+
 /// Captura un fragmento y persiste el `.capture` en la capa.
 ///
 /// Devuelve el UUID del capture creado, listo para referenciar desde un `link.N`.
@@ -18,10 +29,14 @@ pub fn capture_to_file(
     start: (usize, usize),
     end:   (usize, usize),
     now:   &str,
-) -> Result<(String, PathBuf)> {
+) -> Result<(String, PathBuf, bool)> {
     let result = capture(layer, file, start, end)?;
-    let uuid   = uuid::Uuid::new_v4().to_string();
 
+    if let Some(uuid) = find_equivalent(layer, &result.endpoint) {
+        return Ok((uuid.clone(), CaptureFile::path_in(layer, &uuid), true));
+    }
+
+    let uuid = uuid::Uuid::new_v4().to_string();
     let mut cap = CaptureFile {
         uuid:        uuid.clone(),
         sref:        result.endpoint,
@@ -32,13 +47,17 @@ pub fn capture_to_file(
     cap.range = absolute_range(layer, &cap.sref)?;
 
     let path = cap.write_in(layer)?;
-    Ok((uuid, path))
+    Ok((uuid, path, false))
 }
 
 /// Captura un archivo completo, sin query.
-pub fn capture_file_whole(layer: &Path, file: &str, now: &str) -> Result<(String, PathBuf)> {
-    let uuid = uuid::Uuid::new_v4().to_string();
+pub fn capture_file_whole(layer: &Path, file: &str, now: &str) -> Result<(String, PathBuf, bool)> {
     let sref = StructuralRef { file: file.to_string(), query: None, range: None };
+    if let Some(uuid) = find_equivalent(layer, &sref) {
+        return Ok((uuid.clone(), CaptureFile::path_in(layer, &uuid), true));
+    }
+
+    let uuid = uuid::Uuid::new_v4().to_string();
     let mut cap = CaptureFile {
         uuid:        uuid.clone(),
         sref,
@@ -48,7 +67,30 @@ pub fn capture_file_whole(layer: &Path, file: &str, now: &str) -> Result<(String
     };
     cap.range = absolute_range(layer, &cap.sref)?;
     let path = cap.write_in(layer)?;
-    Ok((uuid, path))
+    Ok((uuid, path, false))
+}
+
+/// Captures de la capa que ningún `.bilink` referencia.
+///
+/// Un capture huérfano no rompe nada: se resuelve en cada `check` sin que nadie
+/// lea el resultado. Limpiarlo es higiene, no reparación.
+pub fn orphans(layer: &Path) -> Result<Vec<CaptureFile>> {
+    use std::collections::HashSet;
+    let mut referenced: HashSet<String> = HashSet::new();
+
+    for path in crate::bilink::walkdir(&layer.join(".bilink"))? {
+        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
+        let Ok(bl) = crate::bilink::BiLinkFile::load(&path) else { continue };
+        for n in [0u8, 1u8] {
+            if let Some(uuid) = bl.link(n).capture_uuid() {
+                referenced.insert(uuid.to_string());
+            }
+        }
+    }
+
+    Ok(CaptureFile::all_in(layer)?.into_iter()
+        .filter(|c| !referenced.contains(&c.uuid))
+        .collect())
 }
 
 /// El texto del fragmento tal como quedó aceptado en `commit`.
@@ -587,5 +629,76 @@ pub fn sref_of(layer: &Path, endpoint: &crate::link::LinkEndpoint) -> Result<Opt
         LinkEndpoint::Capture(uuid) => Ok(Some(CaptureFile::load_in(layer, uuid)?.sref)),
         LinkEndpoint::LegacyStructural(sref) => Ok(Some(sref.clone())),
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod capture_file_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn sref(file: &str, query: Option<&str>) -> StructuralRef {
+        StructuralRef { file: file.into(), query: query.map(String::from), range: None }
+    }
+
+    fn write_cap(layer: &Path, uuid: &str, s: StructuralRef) {
+        CaptureFile { uuid: uuid.into(), sref: s, range: None, state: None, resolved_at: None }
+            .write_in(layer).unwrap();
+    }
+
+    #[test]
+    fn find_equivalent_matches_identical_reference() {
+        let dir = tempdir().unwrap();
+        write_cap(dir.path(), "cap-a", sref("a.rs", Some("(function_item) @target")));
+        let found = find_equivalent(dir.path(), &sref("a.rs", Some("(function_item) @target")));
+        assert_eq!(found.as_deref(), Some("cap-a"));
+    }
+
+    #[test]
+    fn find_equivalent_ignores_different_reference() {
+        let dir = tempdir().unwrap();
+        write_cap(dir.path(), "cap-a", sref("a.rs", Some("(function_item) @target")));
+        assert!(find_equivalent(dir.path(), &sref("a.rs", Some("(struct_item) @target"))).is_none());
+        assert!(find_equivalent(dir.path(), &sref("b.rs", Some("(function_item) @target"))).is_none());
+    }
+
+    #[test]
+    fn orphans_excludes_referenced_captures() {
+        let dir   = tempdir().unwrap();
+        let layer = dir.path();
+        write_cap(layer, "cap-usado",    sref("a.rs", None));
+        write_cap(layer, "cap-huerfano", sref("b.rs", None));
+
+        crate::bilink::BiLinkFile::new("uuid1",
+            crate::link::LinkEndpoint::Capture("cap-usado".into()),
+            crate::link::LinkEndpoint::Task("3a".into()))
+            .write(&layer.join(".bilink/uuid1.bilink")).unwrap();
+
+        let o = orphans(layer).unwrap();
+        assert_eq!(o.len(), 1);
+        assert_eq!(o[0].uuid, "cap-huerfano");
+    }
+
+    #[test]
+    fn roundtrip_preserves_query_and_offset() {
+        let dir  = tempdir().unwrap();
+        let path = dir.path().join("x.capture");
+        CaptureFile {
+            uuid: "x".into(),
+            sref: StructuralRef {
+                file:  "a.rs".into(),
+                query: Some("(function_item\n  name: (identifier) @n0) @target".into()),
+                range: Some(ByteRange { start: 4, end: 20 }),
+            },
+            range: Some(ByteRange { start: 100, end: 200 }),
+            state: Some(CaptureState::Resolved),
+            resolved_at: Some("2026-08-24T00:00:00Z".into()),
+        }.write(&path).unwrap();
+
+        let back = CaptureFile::load(&path).unwrap();
+        assert_eq!(back.sref.range, Some(ByteRange { start: 4, end: 20 }));
+        assert_eq!(back.range, Some(ByteRange { start: 100, end: 200 }));
+        assert_eq!(back.state, Some(CaptureState::Resolved));
+        assert!(back.sref.query.as_deref().unwrap().contains("name: (identifier)"));
     }
 }
