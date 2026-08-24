@@ -54,12 +54,15 @@ enum Command {
     /// Watch for changes in linked files and alert on drift
     Watch,
 
-    /// Apply pending auto-fixes from check
+    /// Apply auto-fixes for bilinks in MOVED/DISPLACED/EXPANDED/REANCHORED state
     Apply {
         #[arg(long)]
         dry_run: bool,
         #[arg(short = 'y')]
         yes: bool,
+        /// Only apply fixes of this state (e.g. --filter MOVED)
+        #[arg(long, value_name = "ESTADO")]
+        filter: Option<String>,
     },
 
     /// Manage chains of bilinks
@@ -460,16 +463,98 @@ fn main() -> anyhow::Result<()> {
             watch(&root)?;
         }
 
-        Command::Apply { dry_run, yes: _ } => {
-            let pending = cwd.join(".bilink").join(".pending");
-            if !pending.exists() {
-                eprintln!("no pending fixes");
+        Command::Apply { dry_run, yes, filter } => {
+            let root   = project_root(&cwd)?;
+            let mut fixes = bilinker::apply::scan_fixeable(&cwd)?;
+
+            if let Some(ref state) = filter {
+                let state_up = state.to_uppercase();
+                fixes.retain(|f| f.fix.state_name() == state_up);
+            }
+
+            if fixes.is_empty() {
+                eprintln!("no hay bilinks en estado auto-fixeable");
                 std::process::exit(2);
             }
+
+            // Collect state names for commit message summary
+            let mut state_set: Vec<&str> = fixes.iter().map(|f| f.fix.state_name()).collect();
+            state_set.dedup();
+            let states_label = state_set.join(" + ");
+
+            // Print summary
+            let max_state = fixes.iter().map(|f| f.fix.state_name().len()).max().unwrap_or(0);
+            println!("Pending fixes ({}):", fixes.len());
+            for f in &fixes {
+                println!("  {:<width$}  {}…  link.{}  {}",
+                    f.fix.state_name(), f.uuid_short, f.n,
+                    f.fix.description(&f.sref_file),
+                    width = max_state,
+                );
+            }
+
             if dry_run {
-                eprintln!("apply --dry-run: not yet implemented");
-            } else {
-                eprintln!("apply: not yet implemented");
+                return Ok(());
+            }
+
+            // Confirm
+            if !yes {
+                eprint!("\nApply? [y/N] ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().to_lowercase() != "y" {
+                    eprintln!("abortado");
+                    std::process::exit(1);
+                }
+            }
+
+            // Apply each fix
+            let mut applied: Vec<&std::path::Path> = Vec::new();
+            let mut bullet_lines = Vec::new();
+            let mut errors = 0usize;
+
+            for f in &fixes {
+                match bilinker::apply::apply_fix(&f.bilink_path, f.n, &f.fix) {
+                    Ok(()) => {
+                        applied.push(&f.bilink_path);
+                        bullet_lines.push(format!(
+                            "- {}… link.{}: {} {}",
+                            f.uuid_short, f.n, f.fix.state_name(),
+                            f.fix.description(&f.sref_file),
+                        ));
+                    }
+                    Err(e) => {
+                        eprintln!("error  {}.{}: {e}", f.uuid_short, f.n);
+                        errors += 1;
+                    }
+                }
+            }
+
+            if applied.is_empty() {
+                eprintln!("ningún fix aplicado");
+                std::process::exit(if errors > 0 { 1 } else { 2 });
+            }
+
+            // Commit
+            let date    = chrono::Utc::now().format("%Y-%m-%d");
+            let summary = format!("bilinker: auto-fix {states_label} ({date})");
+            let body    = bullet_lines.join("\n");
+            let message = format!("{summary}\n\n{body}");
+
+            let applied_paths: Vec<&std::path::Path> = applied.iter().copied().collect();
+            match bilinker::apply::git_commit(&root, &applied_paths, &message) {
+                Ok(hash) => {
+                    println!("\nApplied {} fix(es).", applied.len());
+                    println!("Committed: {hash} \"{summary}\"");
+                    if errors > 0 {
+                        eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error al commitear: {e}");
+                    std::process::exit(1);
+                }
             }
         }
 
