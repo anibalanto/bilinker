@@ -2,6 +2,6 @@ file:   crates/bilinker-cli/tests/integration.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "get_by_file_returns_bilink_after_check")) @target
 
 # Cache
-range:       11359~11796
+range:       11821~12258
 state:       RESOLVED
-resolved_at: 2026-08-24T17:35:04Z
+resolved_at: 2026-08-24T23:33:00Z

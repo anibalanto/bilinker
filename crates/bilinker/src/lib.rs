@@ -1,7 +1,6 @@
 pub mod accept;
 pub mod apply;
 pub mod bilink;
-pub mod daemon;
 pub mod capture;
 pub mod chain;
 pub mod check;
@@ -10,7 +9,6 @@ pub mod get;
 pub mod git;
 pub mod grammar;
 pub mod hash;
-pub mod impact;
 pub mod index;
 pub mod link;
 pub mod migrations;

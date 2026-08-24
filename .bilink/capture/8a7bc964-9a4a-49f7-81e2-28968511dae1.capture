@@ -2,6 +2,6 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_altered_when_hash_differs")) @target
 
 # Cache
-range:       13941~14687
+range:       21228~21974
 state:       RESOLVED
-resolved_at: 2026-08-24T17:35:04Z
+resolved_at: 2026-08-24T23:33:01Z

@@ -2,6 +2,6 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_first_time_is_pending")) @target
 
 # Cache
-range:       12291~12833
+range:       19578~20120
 state:       RESOLVED
-resolved_at: 2026-08-24T17:35:04Z
+resolved_at: 2026-08-24T23:33:00Z

@@ -173,6 +173,12 @@ fn compute_fix(
         return compute_moved(layer, &cap.sref);
     }
 
+    // REANCHORED tampoco: la query vieja no matchea nada, así que hay que volver
+    // a buscar el anchor y reescribir su predicado con el nombre encontrado.
+    if *state == EndpointState::Reanchored {
+        return compute_reanchored(layer, bl, n, cap);
+    }
+
     // Para el resto, re-resolver con el mismo algoritmo que usa `check`.
     // `cached_state: None` fuerza la evaluación completa.
     let (derived, new_range) = check::check_structural(
@@ -214,6 +220,36 @@ fn compute_fix(
         EndpointState::Expanded  => Fix::Expanded  { new_offset },
         other => bail!("estado {other} sin fix definido"),
     }))
+}
+
+/// REANCHORED: vuelve a localizar el anchor por similitud y reescribe la query.
+fn compute_reanchored(
+    layer: &Path,
+    bl:    &BiLinkFile,
+    n:     u8,
+    cap:   &CaptureFile,
+) -> Result<Option<Fix>> {
+    let Some(query_str) = &cap.sref.query else { return Ok(None) };
+    let path = layer.join(&cap.sref.file);
+    if !path.exists() { return Ok(None); }
+
+    let source   = std::fs::read_to_string(&path)?;
+    let lang     = grammar::language_for_file(&cap.sref.file);
+    let language = grammar::for_language(lang)?;
+
+    let Some((new_name, score)) = check::find_renamed_anchor(
+        layer, language, &source, query_str, &cap.sref, bl.hash(n), bl.commit(n))?
+    else {
+        bail!("REANCHORED: el anchor ya no se localiza — correr `bilinker check`");
+    };
+
+    let Some(new_query) = query::rewrite_name_predicate(query_str, &new_name) else {
+        bail!("REANCHORED: la query no tiene predicado de nombre para reescribir");
+    };
+    if new_query == *query_str { return Ok(None); }
+
+    eprintln!("  anchor → {new_name}  (similitud {:.0}%)", score * 100.0);
+    Ok(Some(Fix::Reanchored { new_query }))
 }
 
 /// MOVED: nueva ruta vía `git diff -M --name-status`, sin pathspec — filtrar por el

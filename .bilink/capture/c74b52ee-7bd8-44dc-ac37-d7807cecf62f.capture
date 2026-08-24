@@ -2,6 +2,5 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_structural_broken_when_file_missing")) @target
 
 # Cache
-range:       14705~15129
-state:       RESOLVED
-resolved_at: 2026-08-24T17:35:04Z
+state:       REANCHORED
+resolved_at: 2026-08-24T23:33:00Z

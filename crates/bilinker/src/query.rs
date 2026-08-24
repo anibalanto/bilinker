@@ -145,3 +145,44 @@ mod tests {
         assert_eq!(relax_name_predicates(q), q);
     }
 }
+
+/// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
+///
+/// El anchor es el nodo más externo de la query, cuya captura es `@n0` —así la
+/// arma `capture`— de modo que reescribir ese predicado es exactamente reanclar.
+/// Los predicados internos (`@n1`, `@n2`…) quedan intactos.
+pub fn rewrite_name_predicate(query_str: &str, new_name: &str) -> Option<String> {
+    let at = query_str.find("(#eq? @n0")?;
+    let rest = &query_str[at..];
+    let open = rest.find('"')?;
+    let close = rest[open + 1..].find('"')? + open + 1;
+    let escaped = new_name.replace('\\', "\\\\").replace('"', "\\\"");
+    Some(format!("{}{}{}{}",
+        &query_str[..at + open + 1], escaped, &query_str[at + close..], ""))
+}
+
+#[cfg(test)]
+mod rewrite_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_the_anchor_name() {
+        let q = r#"(function_item name: (identifier) @n0 (#eq? @n0 "foo")) @target"#;
+        let r = rewrite_name_predicate(q, "bar").unwrap();
+        assert!(r.contains(r#"(#eq? @n0 "bar")"#), "{r}");
+        assert!(!r.contains("foo"));
+    }
+
+    #[test]
+    fn leaves_inner_predicates_alone() {
+        let q = r#"(class_declaration name: (identifier) @n0 (#eq? @n0 "A") body: (class_body (method_declaration name: (identifier) @n1 (#eq? @n1 "b")) @target))"#;
+        let r = rewrite_name_predicate(q, "Z").unwrap();
+        assert!(r.contains(r#"(#eq? @n0 "Z")"#), "{r}");
+        assert!(r.contains(r#"(#eq? @n1 "b")"#), "el predicado interno no debería cambiar: {r}");
+    }
+
+    #[test]
+    fn returns_none_without_a_name_predicate() {
+        assert!(rewrite_name_predicate("(source_file) @target", "x").is_none());
+    }
+}
