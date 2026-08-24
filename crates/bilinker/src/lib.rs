@@ -13,6 +13,7 @@ pub mod hash;
 pub mod impact;
 pub mod index;
 pub mod link;
+pub mod migrations;
 pub use link::state_str;
 pub mod query;
 pub mod task;

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/accreta-migrate",
     "crates/bilinker",
     "crates/bilinker-cli",
     "crates/bilinker-lsp",

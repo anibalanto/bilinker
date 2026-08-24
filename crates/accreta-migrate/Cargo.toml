@@ -1,0 +1,9 @@
+[package]
+name = "accreta-migrate"
+version = "0.1.0"
+edition = "2021"
+
+# Sin dependencias de ningún subsistema: cada herramienta registra sus propias
+# migraciones. Vive en este workspace por ahora; extraerlo a su repo es copiarlo.
+[dependencies]
+anyhow = "1"

@@ -59,6 +59,18 @@ enum Command {
         filter: Option<String>,
     },
 
+    /// Migra los metadatos de bilinker al formato actual
+    Migrate {
+        /// Capa a migrar (default: directorio actual)
+        path: Option<PathBuf>,
+        /// Migrar también todas las capas descendientes
+        #[arg(long)]
+        recursive: bool,
+        /// Mostrar qué haría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Manage chains of bilinks
     Chain {
         #[command(subcommand)]
@@ -514,6 +526,41 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("error al commitear: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+
+        Command::Migrate { path, recursive, dry_run } => {
+            let base = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                .unwrap_or_else(|| cwd.clone());
+            let layers = if recursive {
+                bilinker::index::layer_roots(&base)
+            } else {
+                vec![base.clone()]
+            };
+
+            let report = accreta_migrate::run(&layers, &bilinker::migrations::all(), dry_run)?;
+
+            for id in &report.skipped {
+                eprintln!("ya aplicada: {id}");
+            }
+            if report.is_noop() {
+                eprintln!("nada que migrar ({} capa(s) revisada(s))", layers.len());
+                return Ok(());
+            }
+            for a in &report.applied {
+                println!("{}{}", a.id, if dry_run { "  [dry-run]" } else { "" });
+                for note in &a.notes {
+                    println!("  {note}");
+                }
+                println!("  {} archivo(s) afectado(s)", a.changed.len());
+            }
+            for l in &report.ledgers {
+                println!("ledger: {}", l.display());
+            }
+            if dry_run {
+                eprintln!("\ndry-run: no se escribió nada");
+            } else {
+                eprintln!("\nrevisar con `git diff` y correr `bilinker check .`");
             }
         }
 

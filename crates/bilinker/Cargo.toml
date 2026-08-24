@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+accreta-migrate = { path = "../accreta-migrate" }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 tree-sitter-java = "0.23"
