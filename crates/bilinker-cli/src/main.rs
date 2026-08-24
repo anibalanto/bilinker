@@ -1045,6 +1045,7 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: O
     let mut visited: HashSet<String> = HashSet::new();
 
     match format {
+        "json" => graph_json(root, &starts)?,
         "flat" => {
             for (bilink_path, layer_root) in &starts {
                 let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
@@ -1133,6 +1134,101 @@ fn find_graph_starts(root: &Path, cwd: &Path, selector: &str, recursive: bool) -
             .unwrap_or(cwd).to_path_buf();
         (bilink_path, layer_root)
     }).collect())
+}
+
+// ─── formato json: contrato de proveedor hacia lattice ───────────────────────
+
+/// La raíz más externa del ecosistema que contiene a `start`.
+///
+/// La forma canónica de un nodo tiene que ser la misma sin importar desde qué
+/// capa se invoque: una cadena que sube a la capa de specs no puede identificar
+/// al mismo fragmento distinto según se corra desde impl o desde la raíz. Por eso
+/// el label se calcula contra el ancestro más externo que sea repo o capa, y no
+/// contra el directorio de invocación.
+fn outermost_root(start: &Path) -> PathBuf {
+    let mut best = start.to_path_buf();
+    let mut cur  = start;
+    while let Some(parent) = cur.parent() {
+        if parent.join(".git").exists() || parent.join(".bilink").exists() {
+            best = parent.to_path_buf();
+        }
+        cur = parent;
+    }
+    best
+}
+
+/// Un extremo estructural de una cadena, en forma canónica de lattice.
+struct TipNode {
+    canonical: String,
+    state:     String,
+    commit:    String,
+}
+
+/// Recorre la cadena de `bl` y devuelve sus extremos estructurales.
+///
+/// Los nodos intermedios son mecanismo interno de bilinker: si lattice los
+/// viera, el grafo se llenaría de nodos `.bilink` que no son contenido del
+/// proyecto. Por eso una cadena de N nodos emite **una** arista entre sus tips.
+fn chain_tips(base: &Path, bl: &bilinker::bilink::BiLinkFile, layer_root: &Path) -> Vec<TipNode> {
+    let mut tips    = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut queue   = vec![(bl.uuid.clone(), layer_root.to_path_buf())];
+
+    while let Some((uuid, layer)) = queue.pop() {
+        if !visited.insert(visit_key(&uuid, &layer)) { continue; }
+        let path = layer.join(".bilink").join(format!("{uuid}.bilink"));
+        let Ok(node) = bilinker::bilink::BiLinkFile::load(&path) else { continue };
+
+        for n in [0u8, 1u8] {
+            if !node.link(n).is_structural() { continue; }
+            let Ok(Some(cap)) = node.capture_for(&layer, n) else { continue };
+            let Some(range) = &cap.range else { continue };
+            tips.push(TipNode {
+                canonical: format!("{}::{}#{}~{}",
+                    layer_label(base, &layer), cap.sref.file, range.start, range.end),
+                state:  bilinker::state_str(node.state(n)),
+                commit: node.commit(n).unwrap_or("").to_string(),
+            });
+        }
+
+        for (adj_path, adj_layer) in layer_children(&node, &layer) {
+            let _ = adj_path;
+            queue.push((uuid.clone(), adj_layer));
+        }
+    }
+    tips
+}
+
+/// Emite las aristas de bilinker en el modelo de lattice.
+fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> anyhow::Result<()> {
+    use bilinker::link::LinkEndpoint;
+    let base     = outermost_root(root);
+    let mut out  = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (path, layer_root) in starts {
+        let Ok(bl) = bilinker::bilink::BiLinkFile::load(path) else { continue };
+        if !seen.insert(bl.uuid.clone()) { continue; }
+
+        // El `kind` sale de la semántica declarada; sin `kind`, es un bilink.
+        let kind = match (&bl.link0, &bl.link1) {
+            (LinkEndpoint::Task(_), _) | (_, LinkEndpoint::Task(_)) => "task",
+            _ => "bilink",
+        };
+
+        let tips = chain_tips(&base, &bl, layer_root);
+        if tips.len() < 2 { continue; }
+        let (a, b) = (&tips[0], &tips[1]);
+
+        out.push(format!(
+            r#"  {{"from":"{}","to":"{}","kind":"{}","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"{}","state":["{}","{}"],"commit":["{}","{}"]}}"#,
+            html_graph::esc_json(&a.canonical), html_graph::esc_json(&b.canonical),
+            kind, bl.uuid, a.state, b.state, a.commit, b.commit,
+        ));
+    }
+
+    println!("[\n{}\n]", out.join(",\n"));
+    Ok(())
 }
 
 fn visit_key(uuid: &str, layer_root: &Path) -> String {
