@@ -1,0 +1,7 @@
+file:   crates/bilinker-cli/src/html_graph.rs
+query:  (impl_item body: (declaration_list (function_item name: (identifier) @n0 (#eq? @n0 "add_node")) @target))
+
+# Cache
+range:       2580~2829
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:04Z

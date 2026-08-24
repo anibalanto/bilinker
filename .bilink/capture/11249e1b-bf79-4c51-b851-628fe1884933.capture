@@ -1,0 +1,7 @@
+file:   crates/bilinker/src/check.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_layer_chain_dirty_when_hash_differs")) @target
+
+# Cache
+range:       17237~18445
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:04Z

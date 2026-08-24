@@ -134,6 +134,9 @@ pub fn repo_root_of(start: &Path) -> PathBuf {
 
 pub struct Applied {
     pub id:      String,
+    /// Repo cuyo ledger registra esta aplicación. Una misma migración aparece
+    /// una vez por repo alcanzado, no una sola vez en total.
+    pub repo:    PathBuf,
     pub notes:   Vec<String>,
     pub changed: Vec<PathBuf>,
 }
@@ -207,7 +210,12 @@ pub fn run(
                 ledger.record(m.id);
                 ledger_changed = true;
             }
-            report.applied.push(Applied { id: m.id.to_string(), notes, changed });
+            report.applied.push(Applied {
+                id: m.id.to_string(),
+                repo: repo_root.clone(),
+                notes,
+                changed,
+            });
         }
 
         if ledger_changed {

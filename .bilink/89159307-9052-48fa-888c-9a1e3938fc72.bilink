@@ -1,6 +1,5 @@
 link.0: <
-link.1: crates/bilinker-cli/src/main.rs :: (enum_item name: (type_identifier) @n0 (#eq? @n0 "Command")) @target
-subgraph.1: rust-analyzer cargo bilinker-cli 0.1.0 project_root().
+link.1: capture 0720364a-fe3e-43a8-99d4-6714566992e0
 
 # Cache
 hash.0: 25b1050bcef546c40dca92933f04ae091a7ffc8e3effc91bc2aab1456fd57943
@@ -8,7 +7,6 @@ commit.0:
 hash.1: 21dda07b5bfd133f951caf3970f4e378db2e95c3deb65cc21e0affba5544bf76
 hash_ast.1: f6322b01beb8ac7c114e7747359f5352e1ecf5bd6f7b49984024f19268b9e0d6
 commit.1: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
-range.1: 316~4406
 state.0: OK
-state.1: OK
-resolved_at: 2026-06-06T12:09:38Z
+state.1: ALTERED
+resolved_at: 2026-08-24T17:35:15Z

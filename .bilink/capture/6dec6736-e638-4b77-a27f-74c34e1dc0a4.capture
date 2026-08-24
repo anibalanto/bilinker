@@ -1,0 +1,7 @@
+file:   editors/vscode/src/extension.ts
+query:  (function_declaration name: (identifier) @n0 (#eq? @n0 "findBinary")) @target
+
+# Cache
+range:       4243~4612
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:04Z

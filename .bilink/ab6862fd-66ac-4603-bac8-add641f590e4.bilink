@@ -1,6 +1,5 @@
 link.0: <
-link.1: crates/bilinker/src/check.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "check_structural")) @target
-subgraph.1: rust-analyzer cargo bilinker 0.1.0 check/check_file().
+link.1: capture 6aa553aa-1ea8-47be-b378-3f831855dd2d
 
 # Cache
 hash.0: 79924f3212b0974db67b97a8b8a3abbe8eda7992135ccbc8782290aef645fe88
@@ -8,7 +7,6 @@ commit.0: f76b7b751180716d3c1ddfb79faeb7511d6b7cb7
 hash.1: d7141f5b48940aa34015c62de8e1dbe14ea42fb08b2cf2e476fa36181c3a9e3e
 hash_ast.1: 9909eed493f69a0732c4a234eeb19c59c694a8e6b844ed5778730b64249e042e
 commit.1: ca76a590d1b5884c6c58530a6af8fba750c7e52c
-range.1: 6725~9405
 state.0: OK
-state.1: OK
-resolved_at: 2026-06-06T12:09:38Z
+state.1: DISPLACED
+resolved_at: 2026-08-24T17:35:15Z

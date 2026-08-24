@@ -1,0 +1,7 @@
+file:   crates/bilinker-cli/tests/integration.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "index_build_creates_index_file")) @target
+
+# Cache
+range:       11995~12770
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:04Z

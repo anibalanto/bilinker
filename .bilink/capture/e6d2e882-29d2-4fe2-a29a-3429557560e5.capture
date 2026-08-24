@@ -1,0 +1,7 @@
+file:   crates/bilinker-cli/tests/integration.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "chain_new_direct_link_creates_single_file")) @target
+
+# Cache
+range:       5732~6423
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:03Z

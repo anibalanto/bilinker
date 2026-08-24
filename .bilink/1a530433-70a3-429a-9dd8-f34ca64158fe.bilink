@@ -1,6 +1,5 @@
 link.0: <
-link.1: crates/bilinker/src/index.rs :: (function_item name: (identifier) @n0 (#eq? @n0 "status")) @target
-subgraph.1: rust-analyzer cargo bilinker 0.1.0 index/tests/gitignore_is_idempotent().
+link.1: capture 85bd00e0-09c3-4597-b839-bbe561285348
 
 # Cache
 hash.0: 935fc6085911a4656291edc5539e4a2c65c165f69a486aecb4fedd22d9c86119
@@ -8,7 +7,6 @@ commit.0: 1caa218b3291debbd069dd5bfc2fc68ebd31c168
 hash.1: 5b920b66a0729aa00c821fba5d37bb74fee3ea67fa7e788fb6c42494b751b8c8
 hash_ast.1: f4caaf5b719a64776f150447b79e75c493d70bcb630b7bf891269c424a40697c
 commit.1: a360786ea98d4c7803b94d4b2b31ff6fe4ccaf92
-range.1: 1318~1873
 state.0: OK
 state.1: OK
-resolved_at: 2026-06-06T12:09:38Z
+resolved_at: 2026-08-24T17:35:16Z

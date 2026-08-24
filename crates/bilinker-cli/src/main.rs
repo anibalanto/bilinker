@@ -547,15 +547,20 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("nada que migrar ({} capa(s) revisada(s))", layers.len());
                 return Ok(());
             }
+            let mut last_repo: Option<&std::path::Path> = None;
             for a in &report.applied {
-                println!("{}{}", a.id, if dry_run { "  [dry-run]" } else { "" });
-                for note in &a.notes {
-                    println!("  {note}");
+                if last_repo != Some(a.repo.as_path()) {
+                    println!("\nrepo {}", a.repo.display());
+                    last_repo = Some(a.repo.as_path());
                 }
-                println!("  {} archivo(s) afectado(s)", a.changed.len());
+                println!("  {}{}", a.id, if dry_run { "  [dry-run]" } else { "" });
+                for note in &a.notes {
+                    println!("    {note}");
+                }
+                println!("    {} archivo(s) afectado(s)", a.changed.len());
             }
             for l in &report.ledgers {
-                println!("ledger: {}", l.display());
+                println!("\nledger: {}", l.display());
             }
             if dry_run {
                 eprintln!("\ndry-run: no se escribió nada");

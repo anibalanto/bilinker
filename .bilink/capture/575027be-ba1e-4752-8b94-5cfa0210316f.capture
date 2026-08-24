@@ -1,0 +1,7 @@
+file:   crates/bilinker/src/chain.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "chain_new")) @target
+
+# Cache
+range:       448~2740
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:02Z

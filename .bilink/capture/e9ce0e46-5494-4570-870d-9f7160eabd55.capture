@@ -1,0 +1,7 @@
+file:   crates/bilinker-cli/tests/integration.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "get_content_matches_sed_selection")) @target
+
+# Cache
+range:       1952~2470
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:04Z

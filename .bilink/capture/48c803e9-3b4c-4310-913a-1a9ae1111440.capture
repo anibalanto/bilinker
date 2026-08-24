@@ -1,0 +1,7 @@
+file:   crates/bilinker/src/check.rs
+query:  (function_item name: (identifier) @n0 (#eq? @n0 "find_in_node")) @target
+
+# Cache
+range:       10603~11462
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:02Z

@@ -1,0 +1,7 @@
+file:   crates/bilinker-cli/src/html_graph.rs
+query:  (source_file) @target
+
+# Cache
+range:       0~33257
+state:       RESOLVED
+resolved_at: 2026-08-24T17:35:03Z
