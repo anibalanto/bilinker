@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
@@ -131,7 +130,7 @@ fn capture_state_for(state: &EndpointState) -> crate::capture::CaptureState {
 }
 
 fn check_endpoint(
-    root: &Path,
+    _root: &Path,
     layer_root: &Path,
     endpoint: &LinkEndpoint,
     uuid: &str,
@@ -189,34 +188,87 @@ fn git_knows_file(layer_root: &Path, file: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Busca un nodo del mismo tipo que el anchor pero con otro nombre, cuyo
-/// contenido hashee a `hash`.
+/// Umbral de similitud para dar por reanclado un fragmento.
 ///
-/// Relaja los predicados de nombre de la query y recorre los candidatos. Si uno
-/// coincide, el anchor se renombró y la query se puede reparar.
+/// Es el mismo 50% que usa `git diff -M` para renames de archivos: la analogía
+/// es exacta —encontrar a dónde se fue algo que cambió de nombre— y usar el
+/// mismo número evita dos criterios distintos para la misma pregunta.
+const REANCHOR_THRESHOLD: f64 = 0.5;
+
+/// Margen mínimo sobre el segundo candidato.
+///
+/// Sin esto, un archivo con varias funciones de forma parecida produciría un
+/// REANCHORED arbitrario. Ante un empate es preferible UNANCHORED: que un humano
+/// mire es mejor que reanclar al nodo equivocado.
+const REANCHOR_MARGIN: f64 = 0.15;
+
+/// Busca a dónde se fue un fragmento cuyo anchor cambió de nombre.
+///
+/// No compara hashes: `hash.N` es exacto, y renombrar un anchor casi siempre
+/// cambia el fragmento —el nombre suele estar *dentro* de lo capturado—, así que
+/// una comparación exacta no dispararía nunca. En su lugar recupera el texto
+/// aceptado desde git (`commit.N` + el range guardado, igual que `get --diff`) y
+/// puntúa cada candidato por similitud.
 pub(crate) fn find_renamed_anchor(
-    language: tree_sitter::Language,
-    source:   &str,
-    query_str: &str,
-    hash:      &str,
-    sref:      &StructuralRef,
-) -> Result<Option<String>> {
+    root:         &Path,
+    language:     tree_sitter::Language,
+    source:       &str,
+    query_str:    &str,
+    sref:         &StructuralRef,
+    stored_range: Option<&ByteRange>,
+    commit:       Option<&str>,
+) -> Result<Option<(String, f64)>> {
+    let Some(old_text) = accepted_text(root, &sref.file, stored_range, commit) else {
+        return Ok(None);
+    };
+
     let relaxed = query::relax_name_predicates(query_str);
     let Ok(matches) = query::find_all_targets(language, source, &relaxed) else {
         return Ok(None); // la query relajada puede no ser válida; no es un error
     };
 
+    let mut scored: Vec<(String, f64)> = Vec::new();
     for m in matches {
+        let Some(name) = m.name.clone() else { continue };
         let (start, end) = match &sref.range {
             Some(r) => (m.start + r.start, (m.start + r.end).min(source.len())),
             None    => (m.start, m.end),
         };
-        if start > source.len() || end > source.len() || start > end { continue; }
-        if hash::sha256(source[start..end].as_bytes()) == hash {
-            return Ok(m.name);
-        }
+        if start > end || end > source.len() { continue; }
+        scored.push((name, hash::similarity(&old_text, &source[start..end])));
     }
-    Ok(None)
+
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let Some((name, best)) = scored.first().cloned() else { return Ok(None) };
+    if best < REANCHOR_THRESHOLD { return Ok(None); }
+
+    let second = scored.get(1).map(|(_, s)| *s).unwrap_or(0.0);
+    if best - second < REANCHOR_MARGIN { return Ok(None); }
+
+    Ok(Some((name, best)))
+}
+
+/// El texto del fragmento tal como quedó aceptado, recuperado de git.
+///
+/// Es la misma reconstrucción que hace `get --diff`: `git show <commit>:<file>`
+/// recortado por el range guardado.
+fn accepted_text(
+    root:   &Path,
+    file:   &str,
+    range:  Option<&ByteRange>,
+    commit: Option<&str>,
+) -> Option<String> {
+    let commit = commit?;
+    let out = std::process::Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "show", &format!("{commit}:{file}")])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8(out.stdout).ok()?;
+
+    Some(match range {
+        Some(r) if r.end <= text.len() => text[r.start.min(r.end)..r.end].to_string(),
+        _ => text,
+    })
 }
 
 /// ¿El fragmento aceptado existió alguna vez en el historial de este archivo?
@@ -301,10 +353,9 @@ pub(crate) fn check_structural(
 
     // 2. La query no matchea: ¿el anchor se renombró, o desapareció?
     let Some((node_start, node_end, sexp)) = node_range else {
-        if let Some(hash) = hash {
-            if find_renamed_anchor(language, &source, query_str, hash, sref)?.is_some() {
-                return Ok((EndpointState::Reanchored, None));
-            }
+        if find_renamed_anchor(root, language, &source, query_str,
+                               sref, stored_range, commit)?.is_some() {
+            return Ok((EndpointState::Reanchored, None));
         }
         // El anchor no está y no se renombró. Si git tiene historial del archivo,
         // el fragmento se fue en algún commit rastreable; si no, la referencia
@@ -604,47 +655,84 @@ mod tests {
                    "el capture es quien sabe que el archivo se movió");
     }
 
-    #[test]
-    fn check_detects_reanchored_when_anchor_is_renamed() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-
-        // El fragmento capturado es el *cuerpo*, no la firma: por eso renombrar
-        // la función deja el hash intacto y el anchor es lo único que cambia.
-        let before = "fn foo() {\n    let x = 1;\n}\n";
-        let brace  = before.find('{').unwrap();
-        let fn_end = before.trim_end().len();
-        let body   = &before[brace..fn_end];
-
+    /// Arma un capture sobre una función entera —con el nombre *dentro* del
+    /// fragmento, que es el caso de los 60 captures reales— y devuelve el commit.
+    fn reanchor_fixture(root: &Path, before: &str) -> std::path::PathBuf {
         git_repo_with(root, "a.rs", before);
+        let commit = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
+                .output().unwrap().stdout).unwrap().trim().to_string();
 
         let query = r#"(function_item name: (identifier) @n0 (#eq? @n0 "foo")) @target"#;
+        let fn_end = before.trim_end().len();
         let cap = crate::capture::CaptureFile {
             uuid: "cap-uuid1".into(),
-            sref: StructuralRef {
-                file:  "a.rs".into(),
-                query: Some(query.into()),
-                range: Some(ByteRange { start: brace, end: fn_end }),
-            },
-            range: None, state: None, resolved_at: None,
+            sref: StructuralRef { file: "a.rs".into(), query: Some(query.into()), range: None },
+            range: Some(ByteRange { start: 0, end: fn_end }),
+            state: None, resolved_at: None,
         };
         cap.write_in(root).unwrap();
 
         let mut bl = BiLinkFile::new("uuid1",
             LinkEndpoint::Capture("cap-uuid1".into()),
             layer_endpoint(".stratum/impl"));
-        bl.hash0   = Some(hash::sha256(body.as_bytes()));
-        bl.commit0 = Some("0000000".into());
+        bl.hash0   = Some(hash::sha256(before[..fn_end].as_bytes()));
+        bl.commit0 = Some(commit);
         let path = root.join(".bilink/uuid1.bilink");
         bl.write(&path).unwrap();
+        path
+    }
 
-        // Mismo largo, así que el cuerpo queda en los mismos offsets.
-        std::fs::write(root.join("a.rs"), "fn bar() {\n    let x = 1;\n}\n").unwrap();
+    #[test]
+    fn check_detects_reanchored_when_anchor_is_renamed() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
+        let path = reanchor_fixture(root, before);
+
+        // El nombre está dentro del fragmento: el hash cambia sí o sí. Lo que
+        // sostiene la detección es la similitud del resto del bloque.
+        std::fs::write(root.join("a.rs"),
+            "fn calcular() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n").unwrap();
 
         check_file(root, &path).unwrap();
         let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored),
-                   "el anchor se renombró pero el fragmento sigue ahí");
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored));
+    }
+
+    #[test]
+    fn reanchored_survives_a_rename_plus_small_edit() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
+        let path = reanchor_fixture(root, before);
+
+        // Renombre + una línea distinta: el hash exacto no serviría de nada.
+        std::fs::write(root.join("a.rs"),
+            "fn calcular() {\n    let x = 1;\n    let y = 99;\n    x + y\n}\n").unwrap();
+
+        check_file(root, &path).unwrap();
+        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored));
+    }
+
+    #[test]
+    fn ambiguous_candidates_stay_unanchored() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
+        let path = reanchor_fixture(root, before);
+
+        // Dos candidatos igual de parecidos: reanclar a cualquiera sería arbitrario.
+        std::fs::write(root.join("a.rs"),
+            "fn a() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n\
+             fn b() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n").unwrap();
+
+        check_file(root, &path).unwrap();
+        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
+        assert_eq!(cap.state, Some(crate::capture::CaptureState::Unanchored),
+                   "ante un empate es preferible que lo mire un humano");
     }
 
     #[test]
