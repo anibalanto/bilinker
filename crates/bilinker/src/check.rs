@@ -210,15 +210,15 @@ const REANCHOR_MARGIN: f64 = 0.15;
 /// aceptado desde git (`commit.N` + el range guardado, igual que `get --diff`) y
 /// puntúa cada candidato por similitud.
 pub(crate) fn find_renamed_anchor(
-    root:         &Path,
-    language:     tree_sitter::Language,
-    source:       &str,
-    query_str:    &str,
-    sref:         &StructuralRef,
-    stored_range: Option<&ByteRange>,
-    commit:       Option<&str>,
+    root:      &Path,
+    language:  tree_sitter::Language,
+    source:    &str,
+    query_str: &str,
+    sref:      &StructuralRef,
+    hash:      Option<&str>,
+    commit:    Option<&str>,
 ) -> Result<Option<(String, f64)>> {
-    let Some(old_text) = accepted_text(root, &sref.file, stored_range, commit) else {
+    let Some(old_text) = accepted_text(root, &language, sref, hash, commit) else {
         return Ok(None);
     };
 
@@ -250,25 +250,44 @@ pub(crate) fn find_renamed_anchor(
 
 /// El texto del fragmento tal como quedó aceptado, recuperado de git.
 ///
-/// Es la misma reconstrucción que hace `get --diff`: `git show <commit>:<file>`
-/// recortado por el range guardado.
+/// **No recorta por el `range` guardado**: `check` lo reescribe en cada corrida,
+/// así que apunta a dónde está el fragmento *ahora*, no a dónde estaba en
+/// `commit.N`. Recortar el contenido viejo con una posición nueva da basura.
+///
+/// En su lugar resuelve la query contra el contenido de `commit.N` y verifica
+/// que el resultado hashee a `hash.N`. Si no verifica, devuelve `None`: es
+/// preferible no detectar nada que razonar sobre el texto equivocado.
 fn accepted_text(
-    root:   &Path,
-    file:   &str,
-    range:  Option<&ByteRange>,
-    commit: Option<&str>,
+    root:     &Path,
+    language: &tree_sitter::Language,
+    sref:     &StructuralRef,
+    hash:     Option<&str>,
+    commit:   Option<&str>,
 ) -> Option<String> {
-    let commit = commit?;
+    let (commit, hash) = (commit?, hash?);
+
     let out = std::process::Command::new("git")
-        .args(["-C", &root.to_string_lossy(), "show", &format!("{commit}:{file}")])
+        .args(["-C", &root.to_string_lossy(), "show", &format!("{commit}:{}", sref.file)])
         .output().ok()?;
     if !out.status.success() { return None; }
-    let text = String::from_utf8(out.stdout).ok()?;
+    let old_source = String::from_utf8(out.stdout).ok()?;
 
-    Some(match range {
-        Some(r) if r.end <= text.len() => text[r.start.min(r.end)..r.end].to_string(),
-        _ => text,
-    })
+    let text = match &sref.query {
+        None => old_source.clone(),
+        Some(q) => {
+            let (start, end, _) =
+                query::find_target_with_sexp(language.clone(), &old_source, q).ok()??;
+            let (s, e) = match &sref.range {
+                Some(r) => (start + r.start, (start + r.end).min(old_source.len())),
+                None    => (start, end),
+            };
+            if s > e || e > old_source.len() { return None; }
+            old_source[s..e].to_string()
+        }
+    };
+
+    // La verificación es lo que hace confiable a todo lo que se apoya en esto.
+    (hash::sha256(text.as_bytes()) == hash).then_some(text)
 }
 
 /// ¿El fragmento aceptado existió alguna vez en el historial de este archivo?
@@ -353,8 +372,8 @@ pub(crate) fn check_structural(
 
     // 2. La query no matchea: ¿el anchor se renombró, o desapareció?
     let Some((node_start, node_end, sexp)) = node_range else {
-        if find_renamed_anchor(root, language, &source, query_str,
-                               sref, stored_range, commit)?.is_some() {
+        if find_renamed_anchor(root, language.clone(), &source, query_str,
+                               sref, hash, commit)?.is_some() {
             return Ok((EndpointState::Reanchored, None));
         }
         // El anchor no está y no se renombró. Si git tiene historial del archivo,
@@ -383,11 +402,38 @@ pub(crate) fn check_structural(
         return Ok((EndpointState::Ok, Some(new_range)));
     }
 
+    // El texto aceptado, recuperado y verificado contra `hash.N`. Con él, la
+    // frontera entre EXPANDED y DISPLACED es un test de subcadena y no un umbral:
+    //
+    //   fragmento ⊃ aceptado          → creció alrededor        → EXPANDED
+    //   fragmento ⊅ aceptado, nodo sí → se corrió, sigue igual  → DISPLACED
+    let accepted = accepted_text(root, &language, sref, hash, commit);
+
+    if let Some(t) = accepted.as_deref() {
+        if !t.is_empty() && fragment.len() > t.len() && fragment.contains(t) {
+            // El fragmento contiene lo aceptado verbatim y algo más: nada de lo
+            // aceptado cambió, así que el AST interno tampoco.
+            return Ok((EndpointState::Expanded, Some(new_range)));
+        }
+    }
+
     // Text changed — check if AST is identical (formatting-only change)
     if hash_ast.is_some() && hash_ast == Some(new_hash_ast.as_str()) {
         return Ok((EndpointState::Restyled, Some(new_range)));
     }
 
+    if let Some(t) = accepted.as_deref() {
+        if !t.is_empty() && !fragment.contains(t) {
+            if let Some(pos) = source[node_start..node_end].find(t) {
+                let start = node_start + pos;
+                return Ok((EndpointState::Displaced,
+                           Some(ByteRange { start, end: start + t.len() })));
+            }
+        }
+    }
+
+    // Respaldo por hash para cuando git no pudo entregar el texto aceptado
+    // —sin commit, archivo inexistente en ese commit, query irresoluble ahí—.
     if let (Some(stored_hash), Some(sr)) = (hash, stored_range) {
         let frag_len = sr.end - sr.start;
         if let Some(displaced) = find_in_node(&source, node_start, node_end, stored_hash, frag_len) {
@@ -733,6 +779,63 @@ mod tests {
         let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
         assert_eq!(cap.state, Some(crate::capture::CaptureState::Unanchored),
                    "ante un empate es preferible que lo mire un humano");
+    }
+
+    /// Capture sobre una sección markdown, aceptada contra el commit inicial.
+    fn md_fixture(root: &Path, before: &str) -> std::path::PathBuf {
+        git_repo_with(root, "a.md", before);
+        let commit = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
+                .output().unwrap().stdout).unwrap().trim().to_string();
+
+        let query = r#"(section (atx_heading (inline) @n0 (#eq? @n0 "Titulo"))) @target"#;
+        let lang  = crate::grammar::for_language("markdown").unwrap();
+        let (s0, e0, _) = query::find_target_with_sexp(lang, before, query).unwrap().unwrap();
+
+        let cap = crate::capture::CaptureFile {
+            uuid: "cap-uuid1".into(),
+            sref: StructuralRef { file: "a.md".into(), query: Some(query.into()), range: None },
+            range: Some(ByteRange { start: s0, end: e0 }),
+            state: None, resolved_at: None,
+        };
+        cap.write_in(root).unwrap();
+
+        let mut bl = BiLinkFile::new("uuid1",
+            LinkEndpoint::Capture("cap-uuid1".into()),
+            layer_endpoint(".stratum/impl"));
+        bl.hash0   = Some(hash::sha256(before[s0..e0].as_bytes()));
+        bl.commit0 = Some(commit);
+        let path = root.join(".bilink/uuid1.bilink");
+        bl.write(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn check_detects_expanded_when_fragment_grows_around_accepted_text() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+        let path = md_fixture(root, "## Titulo\n\nUno.\n");
+
+        // La sección gana un párrafo: lo aceptado sigue ahí, verbatim, y hay más.
+        std::fs::write(root.join("a.md"), "## Titulo\n\nUno.\n\nDos.\n").unwrap();
+
+        let result = check_file(root, &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Expanded);
+    }
+
+    #[test]
+    fn check_says_altered_when_accepted_text_changed() {
+        let dir  = tempdir().unwrap();
+        let root = dir.path();
+        let path = md_fixture(root, "## Titulo\n\nUno.\n");
+
+        // Lo aceptado ya no está verbatim: creció no, cambió.
+        std::fs::write(root.join("a.md"), "## Titulo\n\nOtra cosa.\n").unwrap();
+
+        let result = check_file(root, &path).unwrap();
+        assert_eq!(result.state0, EndpointState::Altered,
+                   "si el texto aceptado no sobrevive, no es EXPANDED");
     }
 
     #[test]
