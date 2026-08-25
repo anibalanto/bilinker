@@ -1,4 +1,3 @@
-mod html_graph;
 
 use clap::{ArgAction, Parser, Subcommand};
 use std::collections::HashSet;
@@ -130,27 +129,12 @@ enum Command {
         /// Maximum traversal depth (default: unlimited)
         #[arg(long)]
         depth: Option<usize>,
-        /// Output format: tree, flat, dot
+        /// Output format: tree, flat, json
         #[arg(long, default_value = "tree", value_name = "FORMAT")]
         format: String,
         /// Collect bilinks from all layers under the project root
         #[arg(long)]
         recursive: bool,
-        /// Show intermediate bilink nodes as diamonds (default: direct file-to-file edges)
-        #[arg(long)]
-        bilink_detail: bool,
-        /// URL scheme for node links in dot format: line (default), file, none
-        #[arg(long, default_value = "line", value_name = "SCHEME")]
-        url_scheme: String,
-        /// Show AST query in node labels (dot format)
-        #[arg(long)]
-        show_query: bool,
-        /// Show byte range in node labels (dot format)
-        #[arg(long)]
-        show_range: bool,
-        /// Show first and last line of fragment content in node labels (dot format)
-        #[arg(long)]
-        show_data: bool,
     },
 }
 
@@ -735,10 +719,9 @@ Eliminar? [y/N] ");
         }
 
 
-        Command::Graph { selector, depth, format, recursive, bilink_detail, url_scheme, show_query, show_range, show_data } => {
+        Command::Graph { selector, depth, format, recursive } => {
             let root = project_root(&cwd)?;
-            let detail = DetailOptions { show_query, show_range, show_data };
-            cmd_graph(&root, &cwd, &selector, &format, depth, recursive, bilink_detail, &url_scheme, &detail)?;
+            cmd_graph(&root, &cwd, &selector, &format, depth, recursive)?;
         }
 
         Command::Status { path } => {
@@ -1027,13 +1010,7 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
 
 // ─── graph ────────────────────────────────────────────────────────────────────
 
-struct DetailOptions {
-    show_query: bool,
-    show_range: bool,
-    show_data: bool,
-}
-
-fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: Option<usize>, recursive: bool, bilink_detail: bool, url_scheme: &str, detail: &DetailOptions) -> anyhow::Result<()> {
+fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: Option<usize>, recursive: bool) -> anyhow::Result<()> {
     use std::collections::HashSet;
 
     let starts = find_graph_starts(root, cwd, selector, recursive)?;
@@ -1052,28 +1029,6 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: O
                 visited.insert(visit_key(&bl.uuid, layer_root));
                 graph_flat(root, &bl, layer_root, &mut visited, 0, max_depth)?;
             }
-        }
-        "html" => {
-            let mut hg = html_graph::HtmlGraph::new();
-            for (bilink_path, layer_root) in &starts {
-                let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
-                visited.insert(visit_key(&bl.uuid, layer_root));
-                html_graph::collect(root, &bl, layer_root, &mut visited, &mut hg, url_scheme, 0, max_depth)?;
-            }
-            print!("{}", hg.emit());
-        }
-        "dot" => {
-            let mut dot = DotGraph::new();
-            for (bilink_path, layer_root) in &starts {
-                let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
-                visited.insert(visit_key(&bl.uuid, layer_root));
-                if bilink_detail {
-                    collect_dot(root, &bl, layer_root, &mut visited, &mut dot, detail, url_scheme, 0, max_depth)?;
-                } else {
-                    collect_dot_simple(root, &bl, layer_root, &mut visited, &mut dot, detail, url_scheme, 0, max_depth)?;
-                }
-            }
-            dot.emit();
         }
         _ => {
             println!("{selector}");
@@ -1222,13 +1177,24 @@ fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> anyhow::Result<()> 
 
         out.push(format!(
             r#"  {{"from":"{}","to":"{}","kind":"{}","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"{}","state":["{}","{}"],"commit":["{}","{}"]}}"#,
-            html_graph::esc_json(&a.canonical), html_graph::esc_json(&b.canonical),
+            esc_json(&a.canonical), esc_json(&b.canonical),
             kind, bl.uuid, a.state, b.state, a.commit, b.commit,
         ));
     }
 
     println!("[\n{}\n]", out.join(",\n"));
     Ok(())
+}
+
+fn layer_label(root: &Path, layer_root: &Path) -> String {
+    let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
+    if rel.as_os_str().is_empty() { ".".to_string() } else { rel.display().to_string() }
+}
+
+/// Escapa una cadena para embeberla en JSON.
+fn esc_json(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+     .replace('\n', "\\n").replace('\r', "").replace('\t', "\\t")
 }
 
 fn visit_key(uuid: &str, layer_root: &Path) -> String {
@@ -1339,299 +1305,6 @@ fn graph_flat(
             visited.insert(key);
             let adj_bl = BiLinkFile::load(&adj_bilink_path)?;
             graph_flat(root, &adj_bl, &adj_layer, visited, depth + 1, max_depth)?;
-        }
-    }
-    Ok(())
-}
-
-struct DotGraph {
-    // layer_label -> list of (node_id, node_def)
-    layers: std::collections::BTreeMap<String, Vec<(String, String)>>,
-    edges: Vec<String>,
-    seen_nodes: std::collections::HashSet<String>,
-    seen_edges: std::collections::HashSet<String>,
-}
-
-impl DotGraph {
-    fn new() -> Self {
-        Self {
-            layers: std::collections::BTreeMap::new(),
-            edges: Vec::new(),
-            seen_nodes: std::collections::HashSet::new(),
-            seen_edges: std::collections::HashSet::new(),
-        }
-    }
-
-    fn add_node(&mut self, layer: &str, id: &str, def: &str) {
-        if self.seen_nodes.insert(id.to_string()) {
-            self.layers.entry(layer.to_string()).or_default()
-                .push((id.to_string(), def.to_string()));
-        }
-    }
-
-    fn add_edge(&mut self, from: &str, to: &str, label: &str, style: Option<&str>) {
-        // Deduplicate bidirectional edges using canonical (min, max) key
-        let key = if from <= to {
-            format!("{from}↔{to}↔{label}")
-        } else {
-            format!("{to}↔{from}↔{label}")
-        };
-        if !self.seen_edges.insert(key) { return; }
-        let style_attr = style.map(|s| format!(" style={s}")).unwrap_or_default();
-        self.edges.push(format!(
-            "  \"{from}\" -> \"{to}\" [label=\"{label}\" dir=both{style_attr}];"
-        ));
-    }
-
-    fn emit(&self) {
-        // Group layers by stratum depth
-        let mut by_depth: std::collections::BTreeMap<usize, Vec<&String>> =
-            std::collections::BTreeMap::new();
-        for lbl in self.layers.keys() {
-            let depth = if lbl == "." { 0 } else { lbl.matches(".stratum/").count() };
-            by_depth.entry(depth).or_default().push(lbl);
-        }
-        let max_depth = by_depth.keys().max().copied().unwrap_or(0);
-
-        println!("digraph bilinks {{");
-        println!("  graph [rankdir=LR newrank=true];");
-        println!("  node [fontname=\"monospace\"];");
-        println!("  edge [fontname=\"monospace\" fontsize=10];");
-        println!();
-
-        // Invisible rank anchors to enforce column ordering
-        for d in 0..=max_depth {
-            println!("  __rank_{d} [style=invis width=0 height=0];");
-        }
-        for d in 0..max_depth {
-            println!("  __rank_{d} -> __rank_{} [style=invis];", d + 1);
-        }
-        println!();
-
-        // Clusters per layer
-        for (i, (layer, nodes)) in self.layers.iter().enumerate() {
-            println!("  subgraph cluster_{i} {{");
-            println!("    label=\"{layer}\";");
-            println!("    style=dashed;");
-            println!("    color=gray;");
-            for (_, def) in nodes {
-                println!("    {def}");
-            }
-            println!("  }}");
-            println!();
-        }
-
-        // rank=same groups: same depth → same column
-        for (depth, labels) in &by_depth {
-            let ids: Vec<String> = labels.iter()
-                .flat_map(|lbl| self.layers[*lbl].iter().map(|(id, _)| format!("\"{id}\"")))
-                .collect();
-            println!("  {{ rank=same; __rank_{depth}; {} }}", ids.join("; "));
-        }
-        println!();
-
-        for edge in &self.edges {
-            println!("{edge}");
-        }
-        println!("}}");
-    }
-}
-
-fn layer_label(root: &Path, layer_root: &Path) -> String {
-    let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
-    if rel.as_os_str().is_empty() { ".".to_string() } else { rel.display().to_string() }
-}
-
-fn node_url(layer_root: &Path, file: &str, range: Option<&bilinker::link::ByteRange>, scheme: &str) -> String {
-    if scheme == "none" { return String::new(); }
-    let abs = layer_root.join(file);
-    let abs_str = abs.display().to_string();
-    if scheme == "line" {
-        if let Some(r) = range {
-            if let Ok(content) = std::fs::read_to_string(&abs) {
-                let line = content[..r.start.min(content.len())]
-                    .chars().filter(|&c| c == '\n').count() + 1;
-                return format!("file://{abs_str}#L{line}");
-            }
-        }
-    }
-    format!("file://{abs_str}")
-}
-
-fn add_structural_node(
-    bl: &bilinker::bilink::BiLinkFile,
-    layer_root: &std::path::Path,
-    lbl: &str,
-    dot: &mut DotGraph,
-    detail: &DetailOptions,
-    url_scheme: &str,
-) -> Option<String> {
-    let n    = bl.structural_n()?;
-    let cap  = bl.capture_for(layer_root, n).ok().flatten()?;
-    let sref = &cap.sref;
-    let range = cap.range.as_ref();
-    // Compute start line to differentiate fragments of the same file
-    let start_line = range.and_then(|r| {
-        std::fs::read_to_string(layer_root.join(&sref.file)).ok().map(|c| {
-            c[..r.start.min(c.len())].chars().filter(|&ch| ch == '\n').count() + 1
-        })
-    }).unwrap_or(1);
-    let file_id  = format!("{}@{lbl}#L{start_line}", sref.file);
-    let node_lbl = structural_node_label(layer_root, sref, range, detail);
-    let url      = node_url(layer_root, &sref.file, range, url_scheme);
-    let url_attr = if url.is_empty() { String::new() } else { format!(" URL=\"{url}\" target=\"_blank\"") };
-    let file_def = format!("\"{file_id}\" [label=\"{node_lbl}\" shape=box{url_attr}];");
-    dot.add_node(lbl, &file_id, &file_def);
-    Some(file_id)
-}
-
-fn collect_dot_simple(
-    root: &Path,
-    bl: &bilinker::bilink::BiLinkFile,
-    layer_root: &Path,
-    visited: &mut std::collections::HashSet<String>,
-    dot: &mut DotGraph,
-    detail: &DetailOptions,
-    url_scheme: &str,
-    depth: usize,
-    max_depth: Option<usize>,
-) -> anyhow::Result<()> {
-    use bilinker::bilink::BiLinkFile;
-
-    let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bilinker::state_str(&bl.state0);
-    let s1 = bilinker::state_str(&bl.state1);
-    let lbl = layer_label(root, layer_root);
-
-    let local_id = add_structural_node(bl, layer_root, &lbl, dot, detail, url_scheme);
-
-    if max_depth.map_or(true, |d| depth < d) {
-        for (adj_bilink_path, adj_layer) in layer_children(bl, layer_root) {
-            let key = visit_key(&bl.uuid, &adj_layer);
-            let already = visited.contains(&key);
-            if !already { visited.insert(key); }
-
-            let adj_bl  = BiLinkFile::load(&adj_bilink_path)?;
-            let adj_lbl = layer_label(root, &adj_layer);
-            let adj_id  = add_structural_node(&adj_bl, &adj_layer, &adj_lbl, dot, detail, url_scheme);
-
-            if let (Some(ref lid), Some(ref aid)) = (&local_id, &adj_id) {
-                let edge_lbl = format!("{uuid_short}\\n{s0}↔{s1}");
-                dot.add_edge(lid, aid, &edge_lbl, None);
-            }
-
-            if !already {
-                collect_dot_simple(root, &adj_bl, &adj_layer, visited, dot, detail, url_scheme, depth + 1, max_depth)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn structural_node_label(
-    layer_root: &Path,
-    sref: &bilinker::link::StructuralRef,
-    range: Option<&bilinker::link::ByteRange>,
-    detail: &DetailOptions,
-) -> String {
-    let mut parts = vec![sref.file.clone()];
-
-    if detail.show_query {
-        if let Some(q) = &sref.query {
-            let short = q.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
-            let short = if q.split_whitespace().count() > 6 { format!("{short}…") } else { short };
-            parts.push(short);
-        }
-    }
-
-    if detail.show_range {
-        if let Some(r) = range {
-            parts.push(format!("bytes {}~{}", r.start, r.end));
-        }
-    }
-
-    if detail.show_data {
-        if let Some(r) = range {
-            if let Ok(content) = std::fs::read_to_string(layer_root.join(&sref.file)) {
-                let frag = content.get(r.start..r.end.min(content.len())).unwrap_or("");
-                let mut non_empty = frag.lines().filter(|l| !l.trim().is_empty());
-                if let Some(first) = non_empty.next() {
-                    let first = first.trim();
-                    let last  = frag.lines().filter(|l| !l.trim().is_empty()).last()
-                                    .map(|l| l.trim()).unwrap_or(first);
-                    if first == last {
-                        parts.push(first.to_string());
-                    } else {
-                        parts.push(first.to_string());
-                        parts.push("…".to_string());
-                        parts.push(last.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    parts.join("\\l").replace('"', "'") + "\\l"
-}
-
-fn collect_dot(
-    root: &Path,
-    bl: &bilinker::bilink::BiLinkFile,
-    layer_root: &Path,
-    visited: &mut std::collections::HashSet<String>,
-    dot: &mut DotGraph,
-    detail: &DetailOptions,
-    url_scheme: &str,
-    depth: usize,
-    max_depth: Option<usize>,
-) -> anyhow::Result<()> {
-    use bilinker::bilink::BiLinkFile;
-    use bilinker::link::LinkEndpoint;
-
-    let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bilinker::state_str(&bl.state0);
-    let s1 = bilinker::state_str(&bl.state1);
-    let lbl = layer_label(root, layer_root);
-
-    let bilink_id  = format!("{uuid_short}@{lbl}");
-    let bilink_def = format!("\"{bilink_id}\" [label=\"{uuid_short}\\n{s0} ↔ {s1}\" shape=diamond];");
-    dot.add_node(&lbl, &bilink_id, &bilink_def);
-
-    for (n, endpoint) in [(&bl.link0, "0"), (&bl.link1, "1")] {
-        match n {
-            LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
-                let idx = if endpoint == "0" { 0u8 } else { 1u8 };
-                let Some(cap) = bl.capture_for(layer_root, idx).ok().flatten() else { continue };
-                let sref       = &cap.sref;
-                let range      = cap.range.as_ref();
-                let file_id    = format!("{}@{lbl}", sref.file);
-                let node_label = structural_node_label(layer_root, sref, range, detail);
-                let url        = node_url(layer_root, &sref.file, range, url_scheme);
-                let url_attr   = if url.is_empty() { String::new() } else { format!(" URL=\"{url}\" target=\"_blank\"") };
-                let file_def   = format!("\"{file_id}\" [label=\"{node_label}\" shape=box{url_attr}];");
-                dot.add_node(&lbl, &file_id, &file_def);
-                dot.add_edge(&file_id, &bilink_id, &format!(".{endpoint}"), None);
-            }
-            LinkEndpoint::Layer(_) => {}
-            LinkEndpoint::Task(id) => {
-                let task_id  = format!("task:{id}@{lbl}");
-                let task_def = format!("\"{task_id}\" [label=\"task {id}\" shape=note];");
-                dot.add_node(&lbl, &task_id, &task_def);
-                dot.add_edge(&task_id, &bilink_id, &format!(".{endpoint}"), None);
-            }
-        }
-    }
-
-    if max_depth.map_or(true, |d| depth < d) {
-        for (adj_bilink_path, adj_layer) in layer_children(bl, layer_root) {
-            let key = visit_key(&bl.uuid, &adj_layer);
-            if visited.contains(&key) { continue; }
-            visited.insert(key);
-            let adj_bl = BiLinkFile::load(&adj_bilink_path)?;
-            let adj_lbl = layer_label(root, &adj_layer);
-            let adj_bilink_id = format!("{uuid_short}@{adj_lbl}");
-            collect_dot(root, &adj_bl, &adj_layer, visited, dot, detail, url_scheme, depth + 1, max_depth)?;
-            dot.add_edge(&bilink_id, &adj_bilink_id, "chain", Some("dashed"));
         }
     }
     Ok(())

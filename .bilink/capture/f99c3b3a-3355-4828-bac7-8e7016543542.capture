@@ -1,7 +1,0 @@
-file:   crates/bilinker-cli/src/html_graph.rs
-query:  (struct_item name: (type_identifier) @n0 (#eq? @n0 "HtmlGraph")) @target
-
-# Cache
-range:       2060~2278
-state:       RESOLVED
-resolved_at: 2026-08-24T17:35:02Z
