@@ -69,21 +69,26 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
+// El visor vive en lattice: bilinker recorre cadenas, lattice compone el grafo
+// de todos los proveedores y lo renderiza. La extensión sigue usando
+// bilinker-lsp para hover y code lens, que sí son suyos.
 function openGraph(filePath: string, recursive: boolean) {
-    const bilinker = findBinary('bilinker');
-    if (!bilinker) {
-        vscode.window.showErrorMessage('bilinker not found in PATH');
+    const lattice = findBinary('lattice');
+    if (!lattice) {
+        vscode.window.showErrorMessage(
+            'lattice not found in PATH. Run: cargo install --path crates/lattice-cli'
+        );
         return;
     }
 
     const isDir    = fs.statSync(filePath).isDirectory();
     const cwd      = isDir ? filePath : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.dirname(filePath));
     const selector = isDir ? '.' : path.relative(cwd, filePath);
-    const args = [bilinker, 'graph', selector, '--format', 'html'];
+    const args = [lattice, 'graph', selector, '--format', 'html'];
     if (recursive) args.push('--recursive');
 
     vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Generating bilink graph…' },
+        { location: vscode.ProgressLocation.Notification, title: 'Generando el grafo…' },
         () => new Promise<string>((resolve, reject) => {
             const child = spawn(args[0], args.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
             const chunks: Buffer[] = [];
@@ -92,10 +97,18 @@ function openGraph(filePath: string, recursive: boolean) {
             child.stderr.on('data', (d: Buffer) => errChunks.push(d));
             child.on('error', (err: Error) => reject(err));
             child.on('close', (code: number) => {
-                if (code !== 0) {
+                // 3 = grafo degradado: algún proveedor no respondió. El grafo
+                // es válido, así que se muestra igual con el aviso.
+                if (code !== 0 && code !== 3) {
                     const stderr = Buffer.concat(errChunks).toString().trim();
-                    reject(new Error(`bilinker exited ${code}${stderr ? ': ' + stderr : ''}`));
+                    reject(new Error(`lattice exited ${code}${stderr ? ': ' + stderr : ''}`));
                     return;
+                }
+                if (code === 3) {
+                    vscode.window.showWarningMessage(
+                        'lattice: grafo incompleto — ' +
+                        Buffer.concat(errChunks).toString().trim().split('\n').pop()
+                    );
                 }
                 resolve(Buffer.concat(chunks).toString('utf8'));
             });
@@ -103,13 +116,13 @@ function openGraph(filePath: string, recursive: boolean) {
     ).then((html: string) => {
         const panel = vscode.window.createWebviewPanel(
             'bilinkerGraph',
-            recursive ? 'Bilinker: System Graph' : `Bilinker: ${path.basename(cwd)}`,
+            recursive ? 'Lattice: grafo del sistema' : `Lattice: ${path.basename(cwd)}`,
             vscode.ViewColumn.Beside,
             { enableScripts: true }
         );
         panel.webview.html = html;
     }, (err: Error) => {
-        vscode.window.showErrorMessage(`bilinker graph failed: ${err.message}`);
+        vscode.window.showErrorMessage(`lattice graph falló: ${err.message}`);
     });
 }
 
