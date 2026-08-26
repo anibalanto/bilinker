@@ -93,6 +93,31 @@ pub fn orphans(layer: &Path) -> Result<Vec<CaptureFile>> {
         .collect())
 }
 
+/// Path de un archivo de la capa, relativo a la raíz del repo git.
+///
+/// Los paths de un capture son relativos a su capa, pero `git show <commit>:<p>`
+/// los resuelve contra la raíz del repo. Cuando coinciden da igual; cuando la
+/// capa está anidada dentro de un repo mayor, no.
+fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
+    let top = std::process::Command::new("git")
+        .args(["-C", &layer.to_string_lossy(), "rev-parse", "--show-toplevel"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    match top {
+        Some(t) => {
+            let root = Path::new(t.trim());
+            match layer.strip_prefix(root) {
+                Ok(rel) if !rel.as_os_str().is_empty() =>
+                    format!("{}/{file}", rel.display()),
+                _ => file.to_string(),
+            }
+        }
+        None => file.to_string(),
+    }
+}
+
 /// El texto del fragmento tal como quedó aceptado en `commit`.
 ///
 /// **No recorta el contenido viejo por el `range` guardado.** `check` reescribe
@@ -109,8 +134,12 @@ pub fn accepted_text(
     commit:        &str,
     expected_hash: Option<&str>,
 ) -> Option<String> {
+    // `git show <commit>:<path>` resuelve el path contra la **raíz del repo**, no
+    // contra el `-C`. Cuando la capa no es la raíz —una capa de specs dentro de
+    // un repo mayor— pasar el path relativo a la capa hace fallar el comando.
+    let repo_rel = git_path_from_repo_root(layer, &sref.file);
     let out = std::process::Command::new("git")
-        .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{}", sref.file)])
+        .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{repo_rel}")])
         .output().ok()?;
     if !out.status.success() { return None; }
     let old_source = String::from_utf8(out.stdout).ok()?;
