@@ -59,7 +59,11 @@ pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Re
 
     let target_idx = query.capture_index_for_name("target")
         .context("query has no @target capture")?;
-    let name_idx = query.capture_index_for_name("n0");
+    // El anchor del fragmento es el **último** predicado de nombre, no el
+    // primero: en una query anidada `@n0` identifica al ancestro más externo
+    // —el título de un documento, la clase que contiene al método— y quien
+    // nombra al fragmento es el más profundo.
+    let name_idx = last_name_capture(&query);
 
     let mut cursor  = QueryCursor::new();
     let root        = tree.root_node();
@@ -146,19 +150,31 @@ mod tests {
     }
 }
 
+/// Índice de la última captura `@nK` de la query.
+///
+/// `capture` numera de afuera hacia adentro, así que la de mayor K es la que
+/// nombra al fragmento capturado.
+fn last_name_capture(query: &Query) -> Option<u32> {
+    (0..)
+        .map_while(|k| query.capture_index_for_name(&format!("n{k}")))
+        .last()
+}
+
 /// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
 ///
-/// El anchor es el nodo más externo de la query, cuya captura es `@n0` —así la
-/// arma `capture`— de modo que reescribir ese predicado es exactamente reanclar.
-/// Los predicados internos (`@n1`, `@n2`…) quedan intactos.
+/// Reescribe el **último** predicado `(#eq? @nK "...")`, que es el que nombra al
+/// fragmento. `capture` numera las capturas de afuera hacia adentro: en
+/// `(section (atx_heading (inline) @n0 (#eq? @n0 "Doc")) (section (atx_heading
+/// (inline) @n1 (#eq? @n1 "Sección"))) @target)` el anchor es `@n1`, y tocar
+/// `@n0` reescribiría el título del documento — que no cambió.
 pub fn rewrite_name_predicate(query_str: &str, new_name: &str) -> Option<String> {
-    let at = query_str.find("(#eq? @n0")?;
+    let at = query_str.rfind("(#eq? @n")?;
     let rest = &query_str[at..];
     let open = rest.find('"')?;
     let close = rest[open + 1..].find('"')? + open + 1;
     let escaped = new_name.replace('\\', "\\\\").replace('"', "\\\"");
-    Some(format!("{}{}{}{}",
-        &query_str[..at + open + 1], escaped, &query_str[at + close..], ""))
+    Some(format!("{}{}{}",
+        &query_str[..at + open + 1], escaped, &query_str[at + close..]))
 }
 
 #[cfg(test)]
@@ -174,11 +190,23 @@ mod rewrite_tests {
     }
 
     #[test]
-    fn leaves_inner_predicates_alone() {
+    fn rewrites_the_innermost_predicate() {
+        // `capture` numera de afuera hacia adentro: @n0 es la clase, @n1 el
+        // método. Reanclar un método renombrado tiene que tocar @n1.
         let q = r#"(class_declaration name: (identifier) @n0 (#eq? @n0 "A") body: (class_body (method_declaration name: (identifier) @n1 (#eq? @n1 "b")) @target))"#;
-        let r = rewrite_name_predicate(q, "Z").unwrap();
-        assert!(r.contains(r#"(#eq? @n0 "Z")"#), "{r}");
-        assert!(r.contains(r#"(#eq? @n1 "b")"#), "el predicado interno no debería cambiar: {r}");
+        let r = rewrite_name_predicate(q, "z").unwrap();
+        assert!(r.contains(r#"(#eq? @n1 "z")"#), "{r}");
+        assert!(r.contains(r#"(#eq? @n0 "A")"#), "el ancestro no debería cambiar: {r}");
+    }
+
+    #[test]
+    fn rewrites_a_nested_markdown_section() {
+        // El caso que motivó el arreglo: renombrar una sección tocaba el título
+        // del documento en vez de la sección.
+        let q = r#"(section (atx_heading (inline) @n0 (#eq? @n0 "Doc")) (section (atx_heading (inline) @n1 (#eq? @n1 "Auto-fix staging"))) @target)"#;
+        let r = rewrite_name_predicate(q, "Auto-fix").unwrap();
+        assert!(r.contains(r#"(#eq? @n1 "Auto-fix")"#), "{r}");
+        assert!(r.contains(r#"(#eq? @n0 "Doc")"#), "el título del documento no cambió: {r}");
     }
 
     #[test]
