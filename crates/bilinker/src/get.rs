@@ -155,7 +155,7 @@ fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&ByteR
 }
 
 fn unified_diff(before: &str, after: &str, commit: &str) -> String {
-    use std::io::Write;
+    
 
     let dir = std::env::temp_dir();
     let before_path = dir.join("bilinker_diff_before.tmp");

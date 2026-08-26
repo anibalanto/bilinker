@@ -3,7 +3,6 @@ use std::time::SystemTime;
 use anyhow::Result;
 
 use crate::bilink::BiLinkFile;
-use crate::link::LinkEndpoint;
 
 #[derive(Debug, PartialEq)]
 pub enum IndexStatus {

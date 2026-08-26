@@ -4,6 +4,10 @@
   "description": "Bidirectional structural references across layers — hover, code lens and graph viewer",
   "version": "0.1.0",
   "publisher": "anibalanto",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anibalanto/bilinker.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },

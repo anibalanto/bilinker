@@ -1,6 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item name: (identifier) @n0 (#eq? @n0 "capture_hash_is_valid_sha256_and_stable")) @target
-
-# Cache
-state:       UNANCHORED
-resolved_at: 2026-08-24T23:33:00Z

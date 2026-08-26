@@ -2,6 +2,6 @@ file:   crates/bilinker/src/index.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "status")) @target
 
 # Cache
-range:       1369~1924
+range:       1338~1893
 state:       RESOLVED
-resolved_at: 2026-08-24T17:35:03Z
+resolved_at: 2026-08-26T18:50:30Z

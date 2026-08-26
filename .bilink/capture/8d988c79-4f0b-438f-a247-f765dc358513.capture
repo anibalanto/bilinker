@@ -1,6 +1,6 @@
 file:   crates/bilinker-cli/src/main.rs
 
 # Cache
-range:       0~51584
+range:       0~55353
 state:       RESOLVED
-resolved_at: 2026-08-25T00:30:33Z
+resolved_at: 2026-08-26T19:01:01Z

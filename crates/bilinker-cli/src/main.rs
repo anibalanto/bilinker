@@ -1,6 +1,5 @@
 
 use clap::{ArgAction, Parser, Subcommand};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -45,8 +44,26 @@ enum Command {
         diff: bool,
     },
 
+    /// Repunta un endpoint a otro fragmento
+    ///
+    /// Para endpoints en UNANCHORED o REANCHORED sin fix automático: una sección
+    /// renombrada, un test reescrito. Crea el capture, valida y repunta link.N.
+    /// No acepta — correr `bilinker accept` después de revisar.
+    Recapture {
+        /// Endpoint a repuntar: UUID.N
+        target: String,
+        /// Archivo del fragmento nuevo, relativo a la capa
+        file: String,
+        /// Posición línea:col. Omitir para capturar el archivo completo
+        pos: Option<String>,
+        /// Fin de la selección línea:col. Default: igual que pos
+        end: Option<String>,
+    },
+
     /// Verify bilinks in a .bilink file or directory
     Check {
+        /// Path a un .bilink o a una capa. Default: capa actual.
+        #[arg(default_value = ".")]
         path: PathBuf,
     },
 
@@ -146,6 +163,14 @@ enum CaptureCommand {
         #[arg(short = 'y')]
         yes: bool,
     },
+    /// Elimina un capture puntual
+    Remove {
+        /// UUID o prefijo del capture
+        uuid: String,
+        /// Eliminarlo aunque tenga referentes
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -205,7 +230,7 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 /// Returns `(layer_fs_path, endpoint)` where `layer_fs_path` is relative to
 /// the project root and is used both for bilink placement and as the git root.
 fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bilinker::link::LinkEndpoint)> {
-    use bilinker::link::{LinkEndpoint, StructuralRef};
+    use bilinker::link::LinkEndpoint;
     use stratum::PathToken;
 
     // Extract optional :line:col suffix
@@ -291,6 +316,32 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Capture { sub, file, start, end, dry_run } => {
             match sub {
+                Some(CaptureCommand::Remove { uuid, force }) => {
+                    let dir = bilinker::capture::CaptureFile::dir(&cwd);
+                    let all = bilinker::capture::CaptureFile::all_in(&cwd)?;
+                    let hits: Vec<_> = all.iter().filter(|c| c.uuid.starts_with(&uuid)).collect();
+                    let cap = match hits.as_slice() {
+                        []  => anyhow::bail!("no hay capture que empiece con '{uuid}'"),
+                        [c] => *c,
+                        _   => anyhow::bail!("'{uuid}' es ambiguo: {} captures coinciden", hits.len()),
+                    };
+
+                    // Un capture con referentes deja bilinks apuntando a la nada.
+                    let orphan = bilinker::capture::orphans(&cwd)?.iter().any(|o| o.uuid == cap.uuid);
+                    if !orphan && !force {
+                        anyhow::bail!(
+                            "el capture {} tiene referentes — usar `bilinker recapture` para repuntarlos, o --force",
+                            &cap.uuid[..8.min(cap.uuid.len())]
+                        );
+                    }
+
+                    std::fs::remove_file(dir.join(format!("{}.capture", cap.uuid)))?;
+                    eprintln!("eliminado: {}  {}", &cap.uuid[..8.min(cap.uuid.len())], cap.sref.file);
+                    if !orphan {
+                        eprintln!("warn: tenía referentes — correr `bilinker check .`");
+                    }
+                }
+
                 Some(CaptureCommand::Prune { path, yes }) => {
                     let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                         .unwrap_or_else(|| cwd.clone());
@@ -441,6 +492,35 @@ Eliminar? [y/N] ");
                     println!("{uuid}.{n}  {other}  bytes {}–{}", range.start, range.end);
                 }
             }
+        }
+
+        Command::Recapture { target, file, pos, end } => {
+            let (uuid, n) = target.rsplit_once('.')
+                .and_then(|(u, n)| n.parse::<u8>().ok().map(|n| (u, n)))
+                .ok_or_else(|| anyhow::anyhow!("el target debe ser UUID.N, se recibió '{target}'"))?;
+            if n > 1 { anyhow::bail!("el endpoint debe ser 0 o 1"); }
+
+            let (bilink_path, _) =
+                bilinker::bilink::BiLinkFile::find_by_id(&cwd.join(".bilink"), uuid)?;
+
+            let range = match (pos.as_deref(), end.as_deref()) {
+                (None, _)          => None,
+                (Some(p), None)    => { let p = parse_pos(p)?; Some((p, p)) }
+                (Some(p), Some(e)) => Some((parse_pos(p)?, parse_pos(e)?)),
+            };
+
+            let now = now_iso8601();
+            let r = bilinker::capture::recapture(&cwd, &bilink_path, n, &file, range, &now)?;
+
+            println!("{}", r.new_uuid);
+            eprintln!("link.{n} → capture {}{}",
+                      &r.new_uuid[..8.min(r.new_uuid.len())],
+                      if r.reused { "  (reusado)" } else { "" });
+            if let Some(old) = &r.old_uuid {
+                eprintln!("  antes: {}{}", &old[..8.min(old.len())],
+                          if r.orphaned { "  (quedó sin referentes)" } else { "" });
+            }
+            eprintln!("\nrevisar con `bilinker get {target}` y aceptar con `bilinker accept {target}`");
         }
 
         Command::Check { path } => {
@@ -867,7 +947,7 @@ fn chain_overall_state_for_bl(nodes: &[bilinker::bilink::BiLinkFile]) -> &'stati
 fn watch(root: &Path) -> anyhow::Result<()> {
     use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
     use bilinker::bilink::{walkdir, BiLinkFile};
-    use bilinker::link::LinkEndpoint;
+    
     use std::sync::mpsc;
 
     eprintln!("watching {}  (Ctrl-C to stop)", root.display());
@@ -931,7 +1011,7 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
 fn print_status(layer: &Path) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
     use bilinker::bilink::BiLinkFile;
-    use bilinker::link::LinkEndpoint;
+    
 
     let bilink_dir = layer.join(".bilink");
     if !bilink_dir.exists() {

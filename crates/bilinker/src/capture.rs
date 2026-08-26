@@ -702,3 +702,69 @@ mod capture_file_tests {
         assert!(back.sref.query.as_deref().unwrap().contains("name: (identifier)"));
     }
 }
+
+// ─── recapture ────────────────────────────────────────────────────────────────
+
+pub struct Recaptured {
+    pub old_uuid: Option<String>,
+    pub new_uuid: String,
+    /// El capture nuevo ya existía y se reusó.
+    pub reused: bool,
+    /// El capture anterior quedó sin referentes.
+    pub orphaned: bool,
+}
+
+/// Repunta el endpoint `n` de un bilink a un fragmento nuevo.
+///
+/// Existe porque `UNANCHORED` y `REANCHORED`-sin-fix son estados esperables —una
+/// sección renombrada, un test reescrito— y la única alternativa era editar
+/// `link.N` a mano. Un reemplazo de texto sobre el campo que define a qué apunta
+/// un vínculo no valida nada: ni que el capture exista, ni que esté en la misma
+/// capa, ni que el endpoint sea estructural.
+///
+/// No acepta: dejar el endpoint en su estado real y que un humano confirme el
+/// contenido es la misma separación que entre `apply` y `accept`.
+pub fn recapture(
+    layer:  &Path,
+    bilink: &Path,
+    n:      u8,
+    file:   &str,
+    pos:    Option<((usize, usize), (usize, usize))>,
+    now:    &str,
+) -> Result<Recaptured> {
+    let mut bl = crate::bilink::BiLinkFile::load(bilink)?;
+
+    // Un endpoint layer o task no tiene capture que repuntar.
+    if !bl.link(n).is_structural() {
+        anyhow::bail!(
+            "link.{n} no es un endpoint estructural (es {}) — no tiene capture que repuntar",
+            bl.link(n)
+        );
+    }
+    let old_uuid = bl.link(n).capture_uuid().map(String::from);
+
+    let (new_uuid, _, reused) = match pos {
+        Some((start, end)) => capture_to_file(layer, file, start, end, now)?,
+        None               => capture_file_whole(layer, file, now)?,
+    };
+
+    if old_uuid.as_deref() == Some(new_uuid.as_str()) {
+        anyhow::bail!("link.{n} ya apunta a ese capture — nada que repuntar");
+    }
+
+    *bl.link_mut(n) = crate::link::LinkEndpoint::Capture(new_uuid.clone());
+    // El estado anterior describía el capture viejo: dejarlo mentiría hasta el
+    // próximo `check`.
+    bl.set_state(n, None);
+    bl.resolved_at = Some(now.to_string());
+    bl.write(bilink)?;
+
+    // ¿El capture anterior quedó huérfano? Se informa, no se borra: puede tener
+    // otros referentes, y borrar por si acaso es peor que dejar basura inocua.
+    let orphaned = match &old_uuid {
+        None => false,
+        Some(u) => orphans(layer)?.iter().any(|c| c.uuid == *u),
+    };
+
+    Ok(Recaptured { old_uuid, new_uuid, reused, orphaned })
+}
