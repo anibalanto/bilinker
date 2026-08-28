@@ -269,7 +269,23 @@ Con eso `check` corre en caliente: bilinks y código vivo en el mismo directorio
 
 **El problema real es de bootstrap.** La herramienta que cambia de formato es la que se usa para cambiarlo, y las specs que describen el formato están linkeadas con bilinks al código que lo implementa. Durante la transición conviven tres cosas en tres repos: specs viejas y nuevas, binario viejo y nuevo, y bilinks en los dos formatos. No alcanza con ordenar las migraciones: hace falta que las dos versiones **coexistan** un rato.
 
-**Coexistencia por path.** Los dos formatos no pueden ocupar `.bilink/` a la vez, así que la migración escribe en un path transitorio —`.bilink-migrate/`— y deja `.bilink/` intacto. El binario viejo sigue funcionando contra `.bilink/` sin enterarse; el nuevo se ejerce contra `.bilink-migrate/` con datos reales antes de que nada sea irreversible. El corte es un solo movimiento: borrar `.bilink/` de la rama del proyecto, renombrar `.bilink-migrate/` a `.bilink/` sobre `refs/bilink/<branch>`, y agregar la exclusión a `.git/info/exclude`. Revertir es no cortar.
+**Coexistencia por path.** Los dos formatos no pueden ocupar `.bilink/` a la vez, así que la migración escribe en un path transitorio y deja `.bilink/` intacto. El binario viejo sigue funcionando contra `.bilink/` sin enterarse; el nuevo se ejerce contra el path nuevo con datos reales antes de que nada sea irreversible. Es lo que hace barata la validación: los dos binarios corriendo en el mismo instante sobre el mismo repo. Generar el formato nuevo en una rama y mergearla no lo daría — habría que switchear de rama para pasar de un binario al otro, y se pierde la comparación lado a lado.
+
+**El path lleva el id de la migración: `.bilink-migrate-<id>`.** Sin él, dos migraciones en vuelo colisionan, y una carpeta abandonada de un intento anterior es indistinguible de una en curso. Con él, cada paso es inspeccionable y regenerable por separado, y la secuencia se encadena sola:
+
+```
+.bilink/  →  .bilink-migrate-002-file-partition/  →  .bilink-migrate-003-immutable-captures/
+```
+
+El corte toma la última. El prefijo `bilinker-` del id se omite, que dentro del directorio de bilinker es redundante.
+
+**Es un derivado, no un espacio de trabajo.** No se edita a mano: si se lo edita, deja de poder regenerarse, que es lo único que lo vuelve seguro. Y tiene que poder regenerarse, porque si entre la generación y el corte alguien acepta algo con el binario viejo en `.bilink/`, la copia migrada queda vieja y el corte se comería esa aceptación. La migración es idempotente (`migration.md` inv. 3), así que la regla es **regenerar justo antes de cortar**. Queda en la misma categoría que `cache/state` y `index/`.
+
+**La entrada en el ledger va en el corte, no en la generación.** Si `.accreta/migrations` se escribiera al generar, el repo quedaría marcado como migrado mientras sigue corriendo el formato viejo. Es el mismo principio que `migration.md` ya aplica al exigir que una migración se marque recién cuando corrió sobre todas las capas del repo: se registra cuando el estado es verdadero, no cuando el trabajo empezó.
+
+El corte es un solo movimiento: borrar `.bilink/` de la rama del proyecto, renombrar la última carpeta de migración a `.bilink/` sobre `refs/bilink/<branch>`, agregar la exclusión a `.git/info/exclude`, y escribir el ledger. Revertir es no cortar.
+
+**Y la puesta en escena no es por tamaño.** Son 63 bilinks en cuatro capas: alguien va a preguntar para qué tanta ceremonia. La respuesta es el bootstrap, no el volumen — si bilinker se rompe a mitad de la migración, no queda herramienta con qué diagnosticarlo. Eso vale con 63 bilinks y con 6.000.
 
 Eso corrige el orden que este ADR sostenía antes. El argumento era que la mudanza a la ref debía ir última para que las migraciones operaran sobre archivos del árbol de trabajo — pero la Decisión 6 **materializa los `.bilink/` en el árbol de trabajo** y sólo los excluye del índice del proyecto, así que esa premisa no se cumple y el orden deja de estar forzado. Lo que sí importa es que `002` corra antes que `003`, y que el corte sea lo último.
 

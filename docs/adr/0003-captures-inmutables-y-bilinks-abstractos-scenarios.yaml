@@ -489,11 +489,49 @@ scenarios:
       - bilinker migrate --recursive
       - el binario viejo corre check
     expect:
-      writes_to: .bilink-migrate/
+      writes_to: .bilink-migrate-002-file-partition/
       old_bilink_untouched: true
       old_binary_still_works: true
     notes:
       - los dos formatos no pueden ocupar .bilink/ a la vez; el corte es un movimiento único y revertir es no cortar
+
+  - id: migrate-folders-chain-by-id
+    description: Cada migración escribe su propia carpeta y la siguiente la encadena
+    given:
+      - una capa en formato bilinker-001
+    when:
+      - bilinker migrate --recursive
+    expect:
+      folders:
+        - .bilink-migrate-002-file-partition/
+        - .bilink-migrate-003-immutable-captures/
+      cut_takes: .bilink-migrate-003-immutable-captures/
+    notes:
+      - sin el id, dos migraciones en vuelo colisionan y una carpeta abandonada es indistinguible de una en curso
+
+  - id: migrate-folder-is-regenerable
+    description: Regenerar antes de cortar recupera lo aceptado con el binario viejo
+    given:
+      - la carpeta de migración ya generada
+      - un accept posterior hecho con el binario viejo sobre .bilink/
+    when:
+      - bilinker migrate --recursive
+      - se corta
+    expect:
+      late_accept_preserved: true
+    notes:
+      - es un derivado, no un espacio de trabajo; editarlo a mano rompe justamente lo que lo hace seguro
+
+  - id: ledger-written-at-cutover
+    description: El ledger se escribe al cortar, no al generar
+    given:
+      - la carpeta de migración generada, sin cortar
+    when:
+      - cat .accreta/migrations
+    expect:
+      contains_new_migration: false
+    notes:
+      - si no, el repo quedaría marcado como migrado mientras sigue corriendo el formato viejo
 
   - id: no-op-is-not-a-clean-tree
     description: Los bilinks que quedan NO-OK tras reescribir las specs no se aceptan en bulk
