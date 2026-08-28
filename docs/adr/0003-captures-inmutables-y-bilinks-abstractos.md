@@ -119,8 +119,10 @@ branch = "rc-2.32"
 
 ```
 layer:  resolved = ../<layer-path>/.bilink/<uuid>.bilink
-repo:   resolved = <clon de .{alias}.toml>/.bilink/<uuid>.bilink
+repo:   resolved = <clon de .{alias}.toml @ refs/bilink/{branch}>/.bilink/<uuid>.bilink
 ```
+
+El `.toml` declara la rama **del proyecto**, y la herramienta traduce a su ref de bilinks (Decisión 6): `branch = "rc-2.32"` se busca en `refs/bilink/rc-2.32`. Una sola fuente de verdad, y la traducción es trabajo de bilinker. Como esa ref lleva el árbol del proyecto más `.bilink/`, un solo fetch trae las declaraciones del proveedor y el código al que apuntan, coherentes entre sí.
 
 **Lo que gana la indirección por alias**: el `.bilink` no contiene ninguna URL, sólo un nombre local. Toda la identidad del proveedor —dónde está, qué rama— queda concentrada en un archivo por proveedor, que es el único lugar del consumidor que sabe algo del otro repo. Si `hsi` cambia de host, se edita un archivo y no N bilinks.
 
@@ -198,7 +200,55 @@ Ningún archivo de bilinker se escribe a mano: todos salen de un comando.
 
 `.accept` aparte no es cosmético: con la aceptación votable querés un artefacto que sea exactamente la decisión —para firmarlo, diffearlo y colgarle votos— y no un archivo donde `check` también escribe. Y en la frontera queda como el único archivo con conocimiento del otro lado.
 
-### 6. Migración
+### 6. Los bilinks viven en una ref paralela
+
+Ninguna rama del proyecto contiene `.bilink/`. Los bilinks viven en **`refs/bilink/<branch>`**, una ref por rama del proyecto: los de `rc-2.35` están en `refs/bilink/rc-2.35`.
+
+Lo que compra es adopción. Sin esto, la Decisión 3 le pide a un proyecto como `hsi` —con mucha gente que nunca oyó hablar de bilinker— que acepte carpetas nuevas en su rama principal. Con esto, `hsi` publica abstracciones y su `main` no cambia un byte. El costo de ser proveedor deja de ser una negociación con el equipo entero.
+
+**Fuera de `refs/heads/`.** La ref no es una rama: `git branch -a` no la lista, la UI de la forja tampoco —los listados de ramas muestran `refs/heads/*`— y `git log --branches` la ignora. Es lo que hacen `git notes` con `refs/notes/*` y Gerrit con `refs/changes/*`. Requiere refspecs explícitos para push y fetch, que los pone bilinker; nadie los tipea. Así los bilinks no existen para quien no los busca, que es más fuerte que tenerlos en una rama aparte.
+
+**Contenido: el árbol del proyecto más `.bilink/`.** No una rama huérfana con sólo los bilinks. Cada commit es entonces un snapshot consistente por construcción, y eso es lo que hace simple el caso remoto: el consumidor trae **una sola ref** y obtiene las declaraciones del proveedor junto con exactamente el código al que apuntan, sin tener que traer dos refs y confiar en que se correspondan. El árbol no se duplica: git comparte los objetos con la rama del proyecto, así que el costo marginal de cada snapshot es la carpeta `.bilink/` y nada más.
+
+**Evolución: merge, y en una sola dirección.** Cuando la rama del proyecto avanza, la ref de bilinks la absorbe con un merge. Nunca rebase —reescribiría la historia que el `get --diff` de la Decisión 4 necesita recorrer hacia atrás— y nunca cherry-pick, que copia los commits en vez de referenciarlos: los del proyecto dejarían de ser ancestros, cada ronda siguiente conflictuaría por falta de base común, y se perdería la correspondencia. **El merge nunca se hace al revés.** Si la ref de bilinks se mergeara de vuelta al proyecto, contaminaría justamente lo que este diseño mantiene limpio.
+
+Los merges no conflictúan nunca: la ref de bilinks **no modifica archivos del proyecto** —su único diff es agregar `.bilink/`— y el proyecto no toca `.bilink/`. Los dos lados escriben conjuntos disjuntos.
+
+```
+rc-2.35:              A ── B ── C ─────── D ──── E
+                       \          \        \      \
+refs/bilink/rc-2.35:    ●───────── M1 ───── M2 ─── M3
+                        +.bilink   ↑        ↑      ↑
+                                   merge C  merge D  merge E
+```
+
+**La correspondencia con el proyecto es el segundo padre**, y por lo tanto un hecho de git y no una convención de nombres: se recorre con `git log --parents`, y `git branch --contains` y `git merge-base` la responden solas. No hace falta ningún identificador propio — el hash del commit ya lo es, y el estado anterior es `refs/bilink/rc-2.35~1`.
+
+Y se lee bien: **`git log --first-parent refs/bilink/rc-2.35` muestra sólo la evolución de los bilinks**, ocultando la historia del proyecto absorbida.
+
+**Los `.bilink/` están en el árbol de trabajo, no en un worktree aparte.** Quien usa bilinker o lattice quiere esos archivos a mano, así que se materializan junto al código, y el proyecto los ignora. La exclusión va en **`.git/info/exclude`, no en `.gitignore`**: `.gitignore` está versionado, y agregarlo modificaría la rama del proyecto — justo lo que este diseño evita. `info/exclude` es local, no se commitea y no aparece en ningún MR.
+
+Con eso `check` corre en caliente: bilinks y código vivo en el mismo directorio, con los cambios sin commitear a la vista. Es lo que `check.md` ya exige al comparar contra el árbol de trabajo y no contra HEAD, *"porque los cambios sin commitear quedan invisibles — que es el caso más común mientras alguien trabaja"*. Si se comparara contra la copia de código de la ref, quien rompe un vínculo no se enteraría hasta que alguien sincronice, y la detección de drift llegaría siempre tarde.
+
+**Un índice propio.** Ignorados a secas, los cambios que escribe `accept` no aparecerían en ningún `git status`: para el índice del proyecto son archivos ignorados, y la ref donde cuentan no está checkouteada. Bilinker usa su propio `GIT_INDEX_FILE` sobre el mismo árbol de trabajo, contra `refs/bilink/<branch>`. El mismo `.bilink/` queda ignorado por el índice del proyecto y trackeado por el de bilinker, que así recupera `status` y `diff` reales sin ensuciar los del proyecto. Es el patrón conocido de los dotfiles en repo bare.
+
+**Quién toca la ref, y cuándo absorbe.**
+
+| Operación | Commitea en la ref | Absorbe el proyecto |
+|---|---|---|
+| `check` | no — su salida va a `cache/state`, fuera de git | no |
+| `accept` · `apply` | sí | sí, el commit contra el que se acepta |
+| `sync` | sí | sí |
+
+`check` no produce ningún commit: por la Decisión 5 el estado es derivado y vive fuera de git. Atarlo a un commit reintroduciría el defecto (b) empeorado — un commit por corrida en vez de 16 archivos sucios.
+
+**`accept` y `apply` tienen que absorber, no alcanza con `sync`.** Si commitearan sin hacerlo, la ref quedaría con bilinks nuevos sobre código viejo. Con el proyecto en `E` y la ref en `C`: `commit.N` registra `E` y el hash aceptado es el del contenido en `E`, pero el árbol de la ref tiene `C`. Un consumidor remoto —que sólo tiene la ref— resuelve el capture contra `C`, hashea, no coincide, y **reporta un `ALTERED` falso**. No es una foto vieja: es una foto incoherente. Y el commit que hay que absorber es justamente el que `commit.N` ya registra.
+
+`sync` cubre el otro caso: el proyecto avanzó y nadie aceptó nada. Alinea la ref con el proyecto y **no verifica nada** — de ahí el nombre; `update` sugeriría que recalcula estados, que es lo que no hace.
+
+**La asimetría local/remoto, dicha explícitamente.** Localmente el código sale del árbol de trabajo, así que la foto de la ref puede estar atrasada sin afectar un `check`. Remotamente el consumidor sólo tiene la ref, así que esa foto **es** el código con el que verifica. Por eso el merge no es un requisito para observar, sino para que el snapshot sea cierto para quien no tiene otra cosa.
+
+### 7. Migración
 
 `concepts/migration.md` ya define la maquinaria: ids ordenados, ledger por repo en `.accreta/migrations`, runner idempotente, `--dry-run` que no escribe, y la regla de que una migración se marca aplicada sólo cuando corrió sobre **todas** las capas del repo. Las dos nuevas se registran en `commands/migrate.md` junto a `bilinker-001-capture-split`.
 
@@ -213,19 +263,27 @@ Ningún archivo de bilinker se escribe a mano: todos salen de un comando.
 
 **No hace falta migración para las decisiones 3 y 4.** Los endpoints `abstract` y repo son aditivos: ningún archivo existente los usa, y todos siguen siendo válidos. La frontera se puede adoptar bilink por bilink, sin tocar nada de lo que ya está.
 
+**La Decisión 6 tampoco es una migración, y no puede serlo.** Mover los bilinks a `refs/bilink/<branch>` no transforma ningún archivo: los deja idénticos y cambia dónde viven. Y `migration.md` inv. 5 prohíbe que una migración consulte git, que es todo lo que esta operación hace. Es un paso único y aparte, por repo.
+
+**Va último.** Si la mudanza corriera primero, las dos migraciones tendrían que operar sobre archivos que no están en el árbol de trabajo, con worktree o plumbing. Corriendo al revés —`002`, `003`, y recién después la mudanza— las migraciones siguen siendo lo que son hoy: transformaciones de archivos comunes, en el árbol, verificables con `git diff` antes de commitear.
+
 El corolario práctico de `migration.md` aplica igual: `bilinker migrate --recursive` desde la raíz, nunca invocaciones sueltas por capa, o el repo queda marcado con capas sin migrar.
 
 ---
 
 ## Consecuencias
 
-**Invariantes nuevas.** El nombre de un capture es el hash de su contenido, y un capture es inmutable · `apply` sólo mintea captures de `hash` idéntico · un endpoint `abstract` no tiene ni va a tener contraparte en su propio repo · un endpoint repo se nombra por alias con `|`, y el alias se resuelve por un `.bilink/.{alias}.toml`.
+**Invariantes nuevas.** El nombre de un capture es el hash de su contenido, y un capture es inmutable · `apply` sólo mintea captures de `hash` idéntico · un endpoint `abstract` no tiene ni va a tener contraparte en su propio repo · un endpoint repo se nombra por alias con `|`, y el alias se resuelve por un `.bilink/.{alias}.toml` · los bilinks viven en `refs/bilink/<branch>` y ninguna rama del proyecto los contiene · esa ref nunca modifica archivos del proyecto, y nunca se mergea de vuelta.
 
 **Invariantes enmendadas.** La aridad sigue en dos: `abstract` es un valor, no una ausencia · `hash.N`/`commit.N` juntos sólo para estructural, layer y task · queda la versión de `bilink.md` para el hash del endpoint layer · una cadena tiene exactamente dos terminadores, cada uno un tip estructural, un `abstract` o un endpoint repo, y sigue siendo lineal: la bifurcación ocurre *entre* cadenas, en el UUID del bilink abstracto · **cae "no existe ningún archivo de configuración"**, aunque la raíz y el lenguaje se sigan resolviendo sin ella.
 
 **Se va.** El copy-on-write de `apply` y la regla de fork por tipo de fix.
 
-**Efecto por comando.** `capture` devuelve un hash · `check` compara contra el `hash` del capture y no contra `hash.N`, con rama nueva para el endpoint repo, y escribe a `cache/state` · `accept` mintea y repunta, y escribe `commit.N`/`accepted.N` en `.accept` · `apply` mintea y repunta con la restricción de hash idéntico · `get --diff` cruzando la frontera profundiza el clon a pedido · `graph` emite `abstract` y repo como terminadores · `index` sin cambios · `chain new` acepta un tip `abstract`.
+**Lo que cuesta la Decisión 6.** Bilinker pasa a manejar su propio índice git y sus propios refspecs, y gana un comando: `sync`. Las escrituras siguen siendo I/O de archivos normal sobre el árbol de trabajo —los `.bilink/` están ahí, sólo que excluidos del índice del proyecto— así que no hace falta plumbing ni un worktree aparte. Lo que sí cambia de naturaleza es que la herramienta ahora administra una ref: crearla, absorber, empujar y traer. El ledger `.accreta/migrations` la acompaña, porque es metadata de bilinker sobre archivos de bilinker.
+
+**Hay que reconciliar con "Implementaciones alternativas por branch".** `architecture.md` ya usa el pareo de ramas para otro eje: `specs/feature/X` ↔ `impl/feature/X` es variación entre alternativas, y la Decisión 6 es separación entre bilinks y contenido. Componen —`refs/bilink/feature/X`— pero el documento tiene que decirlo, o los dos usos del mismo mecanismo se leen como uno solo.
+
+**Efecto por comando.** `capture` devuelve un hash · `check` compara contra el `hash` del capture y no contra `hash.N`, con rama nueva para el endpoint repo, escribe a `cache/state` y no commitea nada · `accept` mintea, repunta, escribe `commit.N`/`accepted.N` en `.accept` y absorbe el commit que acepta · `apply` igual, con la restricción de hash idéntico · `get --diff` cruzando la frontera profundiza el clon a pedido · `graph` emite `abstract` y repo como terminadores · `index` sin cambios · `chain new` acepta un tip `abstract` · **`sync` es nuevo**: alinea la ref con el proyecto sin verificar nada.
 
 **Estados nuevos.** `OPEN` (punta `abstract`, constante y sana), `REJECTED` (la otra punta dejó de ser abstracta), `REMOTE_UNREACHABLE` (el proyecto del proveedor no está clonado) y `LAYER_UNREACHABLE` (la subcapa no está clonada). Este último no es de la frontera: desdobla un `UNREACHABLE` que ya estaba sobrecargado, y lo deja significando una sola cosa — el `.bilink` referenciado no está, con el contenedor presente. Tres nombres para tres arreglos distintos: `stratum pull`, clonar el remoto, e investigar.
 
@@ -253,3 +311,12 @@ ADR-0002 sigue vigente en lo estructural —referencias por nodo AST, `@target`,
 - **`hash_ast` en el id en vez de `hash`.** Un reformateo no cambiaría el id, pero tampoco se detectaría nunca, y para lenguajes sin gramática no habría id.
 - **El capture guarda el texto aceptado.** Lo vuelve auto-contenido y sin arqueología de git, pero el consumidor pasaría a tener copia literal del fragmento del proveedor: conocimiento máximo, lo contrario del requisito.
 - **Raíz de ecosistema**, un repo contenedor con los tres proyectos como sub-proyectos. No resuelve los bloqueos 1–3.
+- **Bilinks en las ramas del proyecto**, como hoy. Obliga a cada proveedor a aceptar carpetas `.bilink/` en su rama principal, que para un proyecto con muchos participantes ajenos a bilinker es una negociación y no una decisión técnica.
+- **Rebasear la ref de bilinks sobre la del proyecto.** Reescribe historia de forma permanente: los commits que el consumidor necesita alcanzar para responder "¿qué cambió desde que acepté?" dejan de existir, y cada fetch pasa a ser non-fast-forward.
+- **Cherry-pick de los commits del proyecto.** Los copia en vez de referenciarlos: dejan de ser ancestros, cada ronda conflictúa por falta de base común, y se pierde la correspondencia con el proyecto.
+- **Rama huérfana con sólo `.bilink/`.** Evita el merge, pero obliga al consumidor a traer dos refs —los bilinks de una y el código de otra— y a confiar en que se correspondan. El snapshot completo es coherente por construcción y no cuesta almacenamiento, porque git comparte los objetos.
+- **Una rama por estado**, `bilink/<branch>/<id>` con `<id>` incremental o el hash referenciado. Reinventa el historial de commits con nombres de rama: agrega un problema de búsqueda del estado previo que `~1` ya resolvía, y llena el namespace de refs.
+- **`refs/heads/bilink/*`** en vez de un namespace propio. Las ramas aparecerían en `git branch -a` y en el listado de la forja, que es justo lo que se quería evitar.
+- **Excluir con `.gitignore`** en vez de `.git/info/exclude`. Está versionado, así que modificaría la rama del proyecto — una línea, pero deja de ser cierto que el proyecto no cambia.
+- **Leer los bilinks desde un worktree lincado**, sin materializarlos en el árbol. Obliga a traducir paths entre dos árboles y a que `check` elija entre código vivo y código de la ref; y las herramientas que ya miran `.bilink/`, como la extensión de VS Code, no lo encontrarían donde esperan.
+- **Absorber sólo en `sync`.** Deja la ref con bilinks nuevos sobre código viejo entre sincronizaciones, y un consumidor remoto reporta `ALTERED` falsos.

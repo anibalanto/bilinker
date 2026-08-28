@@ -276,6 +276,164 @@ scenarios:
     notes:
       - la URL vive sólo en .bilink/.hsi.toml; el resto es un alias y un hash opaco
 
+  # ── Ref paralela ───────────────────────────────────────────────────────────
+
+  - id: project-branch-has-no-bilinks
+    description: Ninguna rama del proyecto contiene .bilink/
+    given:
+      - un repo con bilinks en refs/bilink/rc-2.35
+    when:
+      - git checkout rc-2.35
+    expect:
+      bilink_dir_in_worktree: false
+      git_log_rc_unchanged: true
+    notes:
+      - es la propiedad que hace adoptable el rol de proveedor sin negociar con todo el equipo
+
+  - id: bilink-ref-not-listed-as-branch
+    description: La ref no aparece en los listados de ramas
+    given:
+      - refs/bilink/rc-2.35 existente
+    when:
+      - git branch -a
+      - git log --branches
+    expect:
+      listed: false
+    notes:
+      - vive fuera de refs/heads/, como refs/notes/* y refs/changes/*
+
+  - id: merge-absorbs-project-without-conflict
+    description: Absorber avances del proyecto nunca conflictúa
+    given:
+      - refs/bilink/rc-2.35 al día con el commit C
+      - commits D y E en rc-2.35, sin tocar .bilink/
+    when:
+      - bilinker absorbe rc-2.35 en refs/bilink/rc-2.35
+    expect:
+      conflicts: 0
+      second_parent: E
+    notes:
+      - los dos lados escriben conjuntos disjuntos: la ref sólo agrega .bilink/, el proyecto nunca lo toca
+
+  - id: history-is-append-only
+    description: La historia de la ref nunca se reescribe
+    given:
+      - un consumidor que ya fetcheó refs/bilink/rc-2.32 del proveedor
+      - el proveedor absorbe commits nuevos y acepta cambios
+    when:
+      - el consumidor vuelve a fetchear
+    expect:
+      fast_forward: true
+      force_push_required: false
+    notes:
+      - es lo que permite que get --diff recorra hacia atrás hasta el token aceptado
+
+  - id: previous-state-is-one-commit-back
+    description: El estado anterior de los bilinks es ~1, sin buscar nada
+    given:
+      - varios cambios de estado sobre refs/bilink/rc-2.35
+    when:
+      - se pide el estado previo
+    expect:
+      resolves_to: refs/bilink/rc-2.35~1
+    notes:
+      - no hace falta identificador propio: el hash del commit ya lo es
+
+  - id: first-parent-shows-only-bilinks
+    description: --first-parent oculta la historia del proyecto absorbida
+    given:
+      - una ref con tres merges del proyecto y dos cambios de bilinks
+    when:
+      - git log --first-parent refs/bilink/rc-2.35
+    expect:
+      shows_project_commits: false
+
+  - id: never-merged-back
+    description: La ref de bilinks no se mergea hacia el proyecto
+    given:
+      - refs/bilink/rc-2.35 adelantada
+    when:
+      - se intenta mergearla en rc-2.35
+    expect:
+      rejected: true
+    notes:
+      - el merge es unidireccional; al revés contaminaría lo que el diseño mantiene limpio
+
+  - id: bilinks-present-but-excluded
+    description: Los .bilink/ están en el árbol de trabajo y el proyecto no los ve
+    given:
+      - rc-2.35 checkouteada, con .bilink/ materializado
+    when:
+      - git status
+      - git check-ignore .bilink/
+    expect:
+      shown_by_project_status: false
+      excluded_via: .git/info/exclude
+      gitignore_modified: false
+    notes:
+      - .gitignore está versionado y modificarlo tocaría la rama del proyecto; info/exclude es local
+
+  - id: bilinker-has-its-own-status
+    description: Los cambios de bilinker se ven en su propio índice
+    given:
+      - un accept que reescribió un link.N
+    when:
+      - bilinker status --porcelain
+      - git status
+    expect:
+      seen_by_bilinker_index: true
+      seen_by_project_index: false
+    notes:
+      - sin índice propio esos cambios serían invisibles para git: ignorados de un lado, y la ref no está checkouteada
+
+  - id: check-runs-hot
+    description: check ve cambios sin commitear del código
+    given:
+      - un fragmento vinculado, modificado y sin commitear
+    when:
+      - bilinker check .
+    expect:
+      state_0: ALTERED
+      commits_created: 0
+    notes:
+      - si comparara contra la copia de código de la ref, el drift no se vería hasta el próximo sync
+
+  - id: accept-absorbs-before-committing
+    description: accept absorbe el commit contra el que acepta
+    given:
+      - proyecto en E, ref de bilinks en C
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      second_parent: E
+      remote_consumer_sees_false_altered: false
+    notes:
+      - sin absorber, la ref queda con bilinks nuevos sobre código viejo y el consumidor remoto resuelve el capture contra C
+
+  - id: sync-does-not-verify
+    description: sync alinea la ref y no verifica nada
+    given:
+      - proyecto avanzado sin que se aceptara nada
+    when:
+      - bilinker sync
+    expect:
+      merge_created: true
+      states_recomputed: false
+      cache_written: false
+
+  - id: remote-fetch-is-one-ref
+    description: El consumidor trae bilinks y código del proveedor en un solo fetch
+    given:
+      - un vínculo de frontera con branch = "rc-2.32" en el .toml
+    when:
+      - bilinker resuelve el remoto
+    expect:
+      fetched_ref: refs/bilink/rc-2.32
+      refs_fetched: 1
+      snapshot_consistent: true
+    notes:
+      - el .toml declara la rama del proyecto; la traducción a refs/bilink/ es de la herramienta
+
   # ── Migración ──────────────────────────────────────────────────────────────
 
   - id: migrate-order-partition-first
