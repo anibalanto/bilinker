@@ -481,6 +481,32 @@ scenarios:
       files_written: 0
       ledger_written: false
 
+  - id: migrate-coexists-with-old-format
+    description: El binario viejo sigue funcionando mientras la migración construye el nuevo formato
+    given:
+      - una capa con .bilink/ en formato viejo
+    when:
+      - bilinker migrate --recursive
+      - el binario viejo corre check
+    expect:
+      writes_to: .bilink-migrate/
+      old_bilink_untouched: true
+      old_binary_still_works: true
+    notes:
+      - los dos formatos no pueden ocupar .bilink/ a la vez; el corte es un movimiento único y revertir es no cortar
+
+  - id: no-op-is-not-a-clean-tree
+    description: Los bilinks que quedan NO-OK tras reescribir las specs no se aceptan en bulk
+    given:
+      - las specs de bilinker reescritas
+      - 63 bilinks spec↔impl en ALTERED
+    when:
+      - se evalúa el cambio
+    expect:
+      bulk_accept_run: false
+    notes:
+      - cada estado no-OK es un puntero al código que hay que revisar; aceptarlos para dejar el árbol verde tira el inventario del trabajo
+
   - id: migrate-is-idempotent
     description: Correrla dos veces no hace nada la segunda
     given:

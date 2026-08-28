@@ -186,11 +186,13 @@ Un archivo por *quién lo escribe y qué significa*. Las decisiones 1 y 4 lo vue
 | `<uuid>.bilink` | `link.0`, `link.1` — declaración | `chain new` · repunte de `apply`/`accept` | sí |
 | `<hash>.capture` | `file`, `query`, `offset`, `hash`, `hash_ast` — inmutable | `capture` · `apply` | sí |
 | `<uuid>.accept` | `commit.N` · `accepted.N` para endpoints no estructurales — la decisión | `accept` | sí |
-| `cache/state` | `range`, `state`, `state.N`, `resolved_at` — derivado, uno por capa | `check` | no |
+| `cache/state` | `range`, `state`, `state.N` — derivado, uno por capa | `check` | no |
 
 Ningún archivo de bilinker se escribe a mano: todos salen de un comando.
 
 **`kind` y `name.N` salen del formato.** Están especificados pero no implementados —`KEYS` los descarta al reescribir— y ningún archivo real los usa. Este ADR no los necesita: al ser el valor aceptado el `link.0` remoto y no el hash del archivo, ya no influyen en nada. Y para un bilink abstracto son directamente vacíos: `name.1` nombraría una punta que no existe, y `kind` clasificaría una relación declarada a medias. Se quitan hasta que algo los necesite; `kind: governs`, que es su único caso de uso documentado, puede volver con su propia decisión y su propia implementación.
+
+**`resolved_at` desaparece.** No se muda a la cache: se va del formato. Tiene un solo uso funcional, repetido en tres lugares (`consistency.md` §"Fuente del cambio" y `check.md` §194): ser el baseline de `git log --since=<resolved_at>` para atribuir un cambio a un commit. Y ese uso **está dominado por `commit.N`**, que ya existe. Un timestamp es un mal baseline para arqueología en git —las fechas se desordenan con rebases, cherry-picks y skew de reloj— mientras que `git log <commit.N>..HEAD -- <file>` recorre por ancestría y es exacto. El propio `check.md` ya usa `commit.N` para su fast-path, así que hoy el mismo comando tiene dos baselines para la misma pregunta y usa el bueno para una cosa y el malo para la otra. `lattice/integration/bilinker.md` también declara que el baseline es `commit.N`. No es un campo que sobra: es una segunda respuesta, peor, a una pregunta ya contestada. Se cae con él la invariante 13 de `bilink.md`.
 
 **El sufijo `.N` sobrevive sólo donde el dato es de una punta.** `hash` y `hash_ast` lo pierden porque se mudaron adentro del capture, donde hay un único fragmento y no hay qué numerar. `commit.N`, `accepted.N` y `state.N` lo conservan: cada endpoint se acepta en su propio momento y su propio repo, y `check` devuelve una tupla justamente porque un extremo puede estar `OK` y el otro `ALTERED`.
 
@@ -254,7 +256,7 @@ Con eso `check` corre en caliente: bilinks y código vivo en el mismo directorio
 
 **El orden importa y no es el obvio.** La partición va primero: mientras `range`, `state` y `resolved_at` sigan dentro del `.capture`, no se le puede calcular un id estable.
 
-**`bilinker-002-file-partition`** — parte cada `.bilink` en tres archivos. `hash.N`, `hash_ast.N` y `commit.N` van a `<uuid>.accept`; `state.N` y `resolved_at` van a `cache/state`; `range`, `state` y `resolved_at` salen del `.capture` hacia el mismo `cache/state`. El `.bilink` queda con `link.0`, `link.1` y los campos semánticos.
+**`bilinker-002-file-partition`** — parte cada `.bilink` en tres archivos. `hash.N`, `hash_ast.N` y `commit.N` van a `<uuid>.accept`; `state.N` va a `cache/state`, junto con el `range` y el `state` que salen del `.capture`. `resolved_at` **se descarta** en los dos archivos: no se muda, desaparece del formato. El `.bilink` queda sólo con `link.0` y `link.1`, porque `kind` y `name.N` también se van.
 
 **`bilinker-003-immutable-captures`** — renombra cada `.capture` a `H(file, query, offset, hash, hash_ast?)` y repunta los `link.N`. Tiene dos casos que no son un renombre:
 
@@ -265,7 +267,13 @@ Con eso `check` corre en caliente: bilinks y código vivo en el mismo directorio
 
 **La Decisión 6 tampoco es una migración, y no puede serlo.** Mover los bilinks a `refs/bilink/<branch>` no transforma ningún archivo: los deja idénticos y cambia dónde viven. Y `migration.md` inv. 5 prohíbe que una migración consulte git, que es todo lo que esta operación hace. Es un paso único y aparte, por repo.
 
-**Va último.** Si la mudanza corriera primero, las dos migraciones tendrían que operar sobre archivos que no están en el árbol de trabajo, con worktree o plumbing. Corriendo al revés —`002`, `003`, y recién después la mudanza— las migraciones siguen siendo lo que son hoy: transformaciones de archivos comunes, en el árbol, verificables con `git diff` antes de commitear.
+**El problema real es de bootstrap.** La herramienta que cambia de formato es la que se usa para cambiarlo, y las specs que describen el formato están linkeadas con bilinks al código que lo implementa. Durante la transición conviven tres cosas en tres repos: specs viejas y nuevas, binario viejo y nuevo, y bilinks en los dos formatos. No alcanza con ordenar las migraciones: hace falta que las dos versiones **coexistan** un rato.
+
+**Coexistencia por path.** Los dos formatos no pueden ocupar `.bilink/` a la vez, así que la migración escribe en un path transitorio —`.bilink-migrate/`— y deja `.bilink/` intacto. El binario viejo sigue funcionando contra `.bilink/` sin enterarse; el nuevo se ejerce contra `.bilink-migrate/` con datos reales antes de que nada sea irreversible. El corte es un solo movimiento: borrar `.bilink/` de la rama del proyecto, renombrar `.bilink-migrate/` a `.bilink/` sobre `refs/bilink/<branch>`, y agregar la exclusión a `.git/info/exclude`. Revertir es no cortar.
+
+Eso corrige el orden que este ADR sostenía antes. El argumento era que la mudanza a la ref debía ir última para que las migraciones operaran sobre archivos del árbol de trabajo — pero la Decisión 6 **materializa los `.bilink/` en el árbol de trabajo** y sólo los excluye del índice del proyecto, así que esa premisa no se cumple y el orden deja de estar forzado. Lo que sí importa es que `002` corra antes que `003`, y que el corte sea lo último.
+
+**Los bilinks que queden NO-OK no se aceptan a ciegas.** Reescribir las specs de bilinker va a poner en `ALTERED` los 63 bilinks de la raíz de `accreta` que vinculan fragmentos de spec con su implementación. Correr `accept .` para dejar el árbol verde sería tirar justamente la información que hace falta: **cada uno de esos estados es un puntero al código que hay que revisar.** El inventario de trabajo del cambio *es* la lista de no-OK, y se cierra endpoint por endpoint, después de que la implementación efectivamente coincida — no antes para acallar el reporte. Es bilinker aplicado a sí mismo, que es la prueba más exigente de si el mecanismo sirve.
 
 El corolario práctico de `migration.md` aplica igual: `bilinker migrate --recursive` desde la raíz, nunca invocaciones sueltas por capa, o el repo queda marcado con capas sin migrar.
 
@@ -280,6 +288,10 @@ El corolario práctico de `migration.md` aplica igual: `bilinker migrate --recur
 **Se va.** El copy-on-write de `apply` y la regla de fork por tipo de fix.
 
 **Lo que cuesta la Decisión 6.** Bilinker pasa a manejar su propio índice git y sus propios refspecs, y gana un comando: `sync`. Las escrituras siguen siendo I/O de archivos normal sobre el árbol de trabajo —los `.bilink/` están ahí, sólo que excluidos del índice del proyecto— así que no hace falta plumbing ni un worktree aparte. Lo que sí cambia de naturaleza es que la herramienta ahora administra una ref: crearla, absorber, empujar y traer. El ledger `.accreta/migrations` la acompaña, porque es metadata de bilinker sobre archivos de bilinker.
+
+**El skill se reescribe en el mismo cambio, no después.** `ia/skills/bilinker/SKILL.md` documenta en detalle todo lo que este ADR cambia: los hashes en el bilink, los UUID de capture, las dos tablas de estados, la propagación por copia de hash y la estructura de `.bilink/`. Y **se carga solo** cuando alguien trabaja con bilinks, así que un skill viejo no es documentación desactualizada sino una instrucción activa de crear bilinks en el formato anterior. Dato colateral: el skill describe bien el `hash.N` de un endpoint layer, o sea que es un cuarto testigo del lado correcto del defecto (a).
+
+**Lattice pierde la capacidad de armar el grafo desde un clon fresco.** Su nodo canónico es `<layer-root>::<path>#<start>~<end>`, y ese rango sale del `range` del capture; el campo `state` de cada arista sale de `state.N`. Hoy los dos están commiteados, así que un clon basta. Con la Decisión 5 pasan a `cache/state`, fuera de git: **hasta que no corra un `check`, lattice no tiene rangos ni estados.** No es fatal —`check` es offline y barato, y el daemon puede dispararlo— pero es una dependencia nueva que hay que escribir. Lo que **no** lo afecta es la Decisión 6: como los `.bilink/` se materializan en el árbol de trabajo y sólo se excluyen del índice, lattice los sigue encontrando donde los busca.
 
 **Hay que reconciliar con "Implementaciones alternativas por branch".** `architecture.md` ya usa el pareo de ramas para otro eje: `specs/feature/X` ↔ `impl/feature/X` es variación entre alternativas, y la Decisión 6 es separación entre bilinks y contenido. Componen —`refs/bilink/feature/X`— pero el documento tiene que decirlo, o los dos usos del mismo mecanismo se leen como uno solo.
 
