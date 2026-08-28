@@ -1,0 +1,343 @@
+# Escenarios de ADR-0003 — captures inmutables y bilinks abstractos.
+# Viven junto al ADR mientras esté Propuesto; se reparten entre scenarios/*.yaml
+# cuando se escriban las specs.
+spec: docs/adr/0003-captures-inmutables-y-bilinks-abstractos.md
+
+scenarios:
+
+  # ── Captures inmutables ────────────────────────────────────────────────────
+
+  - id: capture-id-is-reproducible
+    description: Capturar dos veces el mismo fragmento da el mismo id
+    given:
+      - un fragmento sin modificar
+    when:
+      - bilinker capture <file> <pos> <pos>, dos veces
+    expect:
+      same_id: true
+    notes:
+      - la deduplicación deja de necesitar un lookup por (file, query, offset); sale del direccionamiento
+
+  - id: accept-mints-and-repoints
+    description: accept crea un capture nuevo y repunta link.N, sin borrar el viejo
+    given:
+      - bilink aceptado, fragmento luego modificado, estado ALTERED
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      link_0_changed: true
+      old_capture_still_exists: true
+      state: [OK, OK]
+
+  - id: divergence-instead-of-shared-hash
+    description: Dos bilinks sobre un capture divergen cuando uno acepta el cambio y el otro no
+    given:
+      - bilinks A y B referenciando el mismo capture
+      - el fragmento modificado
+    when:
+      - bilinker check .
+      - bilinker accept A.0
+      - bilinker check .
+    expect:
+      a_state: [OK, "*"]
+      b_state: [ALTERED, "*"]
+      distinct_captures: 2
+    notes:
+      - es el caso que capture.md daba como imposible con un hash compartido; acá se expresa porque aceptar distinto es tener captures distintos
+      - B no se repunta solo — resolverle el cambio por decreto es lo que el copy-on-write evitaba
+
+  - id: apply-may-not-change-content
+    description: apply mintea sólo si el hash queda idéntico
+    given:
+      - un endpoint en RESTYLED (texto cambiado, AST igual)
+    when:
+      - bilinker apply
+    expect:
+      link_0_changed: false
+      state: [RESTYLED, "*"]
+    notes:
+      - que el AST no cambie describe qué cambió, no que el cambio esté aprobado; lo cierra accept
+      - con la aceptación votable, cualquier cosa que apply cierre sola se saltea el consenso
+
+  - id: apply-moved-repoints-every-referent
+    description: Un rename mintea un capture con el mismo hash y repunta a todos los referentes
+    given:
+      - un capture referenciado por tres bilinks
+      - el archivo renombrado con git mv
+    when:
+      - bilinker check .
+      - bilinker apply -y
+    expect:
+      referents_repointed: 3
+      hash_unchanged: true
+      state: [OK, "*"]
+    notes:
+      - acá el repunte masivo sí corresponde: no hay decisión de aceptación de por medio
+
+  # ── Partición de archivos ──────────────────────────────────────────────────
+
+  - id: check-does-not-dirty-git
+    description: Correr check dos veces no ensucia el árbol de trabajo
+    given:
+      - un repo limpio con bilinks aceptados
+    when:
+      - bilinker check .
+      - bilinker check .
+    expect:
+      git_status_clean: true
+    notes:
+      - hoy 16 .bilink quedan modificados sólo por resolved_at
+
+  - id: cache-is-rebuildable
+    description: Borrar la cache y re-verificar reproduce exactamente los mismos estados
+    given:
+      - una capa verificada
+    when:
+      - rm -rf .bilink/cache/
+      - bilinker check .
+    expect:
+      states_identical: true
+    notes:
+      - un derivado que no se puede regenerar no es un derivado
+
+  # ── Bilink abstracto ───────────────────────────────────────────────────────
+
+  - id: abstract-endpoint-is-open
+    description: La punta abstract reporta OPEN y no pide acción
+    given:
+      - bilink con link.1 abstract, link.0 aceptado
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OPEN]
+      exit_code: 0
+
+  - id: accept-bulk-skips-open
+    description: accept . no toca una punta abstract
+    given:
+      - bilink con link.1 abstract y link.0 en ALTERED
+    when:
+      - bilinker accept .
+    expect:
+      state: [OK, OPEN]
+      accept_file_has_no_entry_for_1: true
+
+  - id: provider-detects-own-drift
+    description: El proveedor ve que lo publicado dejó de coincidir con lo aprobado
+    given:
+      - bilink abstracto aceptado
+      - el fragmento publicado modificado
+    when:
+      - bilinker check .
+    expect:
+      state: [ALTERED, OPEN]
+    notes:
+      - es la razón por la que al proveedor no le alcanza con captures
+
+  # ── Endpoint repo ──────────────────────────────────────────────────────────
+
+  - id: remote-ok-when-link0-unchanged
+    description: El consumidor está OK mientras el link.0 remoto no se mueva
+    given:
+      - consumidor con link.0 "|hsi" aceptado
+      - el repo remoto clonado y sin cambios en el bilink referenciado
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OK]
+
+  - id: remote-drift-after-provider-accepts
+    description: El consumidor detecta drift cuando el proveedor acepta contenido nuevo
+    given:
+      - consumidor OK
+      - el proveedor modifica el fragmento y corre accept, moviendo su link.0
+    when:
+      - bilinker check . (en el consumidor, tras traer el remoto)
+    expect:
+      state_0_non_ok: true
+    notes:
+      - el proveedor no toca ningún archivo del consumidor: la propagación es por lectura, no por escritura
+
+  - id: remote-ignores-cosmetic-changes
+    description: Un cambio cosmético en el .bilink remoto no ensucia a los consumidores
+    given:
+      - consumidor OK
+      - un comentario agregado al .bilink del proveedor, con link.0 intacto
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OK]
+    notes:
+      - es la razón de aceptar el link.0 remoto en vez del hash del archivo
+
+  - id: remote-fan-out-is-independent
+    description: Dos consumidores de la misma abstracción se aceptan por separado
+    given:
+      - consumidores A y B sobre el mismo bilink abstracto
+      - el proveedor acepta contenido nuevo
+    when:
+      - bilinker check . en A y en B
+      - bilinker accept en A
+      - bilinker check . en B
+    expect:
+      b_still_drifted: true
+      provider_files_untouched: true
+      provider_file_count: 1
+    notes:
+      - sumar o quitar un consumidor no toca el repo del proveedor
+
+  - id: remote-unreachable-is-not-an-error
+    description: El proyecto ajeno sin clonar da REMOTE_UNREACHABLE y no rompe el check
+    given:
+      - .bilink/.hsi.toml presente, .bilink/hsi/ ausente
+    when:
+      - bilinker check .
+    expect:
+      state: [REMOTE_UNREACHABLE, OK]
+      exit_code: 0
+    notes:
+      - trabajar sin todo clonado es normal; se arregla clonando y no es una regresión
+
+  - id: unreachable-when-remote-bilink-gone
+    description: Con el remoto presente pero el .bilink ausente, es UNREACHABLE y sí es regresión
+    given:
+      - repo del proveedor clonado
+      - el .bilink del UUID compartido eliminado en el proveedor
+    when:
+      - bilinker check .
+    expect:
+      state: [UNREACHABLE, OK]
+    notes:
+      - distinguirlo de REMOTE_UNREACHABLE es la razón del desdoblamiento: uno se arregla trayendo, el otro investigando
+
+  - id: layer-unreachable-for-uncloned-sublayer
+    description: La subcapa sin clonar da LAYER_UNREACHABLE
+    given:
+      - .stratum/.impl.toml presente, .stratum/impl/ ausente
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, LAYER_UNREACHABLE]
+      exit_code: 0
+    notes:
+      - no es de la frontera; desdobla el UNREACHABLE sobrecargado que sublayer-config.md usa hoy
+
+  - id: rejected-when-remote-stops-being-abstract
+    description: REJECTED cuando el proveedor retira la abstracción
+    given:
+      - consumidor aceptado contra un bilink abstracto
+      - el link.1 remoto ya no es abstract
+    when:
+      - bilinker check .
+    expect:
+      state: [REJECTED, OK]
+    notes:
+      - es un hecho distinto de "el fragmento cambió" y no debe mezclarse en el mismo token
+
+  - id: sparse-set-is-derived-and-incremental
+    description: El sparse-checkout sale de los bilinks y crece al agregar uno
+    given:
+      - un consumidor con dos vínculos de frontera
+    when:
+      - bilinker clona el remoto
+      - se agrega un tercer vínculo hacia otro fragmento del proveedor
+      - bilinker vuelve a resolver
+    expect:
+      sparse_paths_before: 2
+      sparse_paths_after: 3
+      reclone: false
+    notes:
+      - un sparse fijo en el .toml quedaría viejo con el primer bilink nuevo
+
+  - id: diff-deepens-on-demand
+    description: check corre superficial; ver el diff profundiza el clon
+    given:
+      - clon superficial del proveedor
+      - un vínculo de frontera con drift
+    when:
+      - bilinker check .
+      - bilinker get <uuid>.0 --diff
+    expect:
+      check_fetched_history: false
+      diff_fetched_history: true
+    notes:
+      - check es masivo y barato; ver el diff es puntual y caro
+
+  - id: consumer-stores-nothing-about-provider
+    description: Ningún archivo versionado del consumidor contiene path, contenido ni commit del proveedor
+    given:
+      - un consumidor con vínculos de frontera aceptados
+    when:
+      - inspeccionar .bilink/*.bilink y .bilink/*.accept
+    expect:
+      contains_provider_path: false
+      contains_provider_commit: false
+      contains_provider_text: false
+    notes:
+      - la URL vive sólo en .bilink/.hsi.toml; el resto es un alias y un hash opaco
+
+  # ── Migración ──────────────────────────────────────────────────────────────
+
+  - id: migrate-order-partition-first
+    description: immutable-captures exige que file-partition ya haya corrido
+    given:
+      - una capa en formato bilinker-001
+    when:
+      - bilinker migrate --recursive
+    expect:
+      applied_order: [bilinker-002-file-partition, bilinker-003-immutable-captures]
+    notes:
+      - mientras range/state/resolved_at sigan en el .capture no se le puede calcular un id estable
+
+  - id: migrate-fans-out-divergent-hashes
+    description: Un capture con dos hashes aceptados distintos se parte en dos
+    given:
+      - un capture referenciado por dos bilinks con hash.N distinto
+    when:
+      - bilinker migrate --recursive
+    expect:
+      captures_after: 2
+    notes:
+      - es la inversa de bilinker-001, que deduplicaba; acá la duplicación es la respuesta correcta
+
+  - id: migrate-pending-endpoint-without-hash
+    description: Un endpoint PENDING migra sin resolver queries ni consultar git
+    given:
+      - un bilink con hash.N ausente
+    when:
+      - bilinker migrate --recursive
+    expect:
+      id_computed_from_present_fields: true
+      git_invoked: false
+      treesitter_invoked: false
+    notes:
+      - migration.md inv. 5; el primer accept mintea el id definitivo
+
+  - id: migrate-dry-run-writes-nothing
+    description: --dry-run reporta lo mismo sin escribir un solo archivo
+    given:
+      - una capa sin migrar
+    when:
+      - bilinker migrate --recursive --dry-run
+    expect:
+      files_written: 0
+      ledger_written: false
+
+  - id: migrate-is-idempotent
+    description: Correrla dos veces no hace nada la segunda
+    given:
+      - una capa ya migrada
+    when:
+      - bilinker migrate --recursive
+    expect:
+      files_written: 0
+
+  - id: frontier-needs-no-migration
+    description: Los endpoints abstract y repo son aditivos
+    given:
+      - un repo con bilinks en el formato nuevo, sin vínculos de frontera
+    when:
+      - se agrega un bilink abstracto y uno con endpoint repo
+    expect:
+      existing_bilinks_untouched: true
+      migration_required: false
