@@ -1,0 +1,370 @@
+# Escenarios de 0003-formato-captures-y-aceptacion.
+# Viven junto al ADR mientras esté Propuesto; se reparten entre scenarios/*.yaml
+# cuando se escriban las specs.
+spec: docs/adr/0003-formato-captures-y-aceptacion.md
+
+scenarios:
+
+  - id: capture-id-is-reproducible
+    description: Capturar dos veces el mismo fragmento da el mismo id
+    given:
+      - un fragmento sin modificar
+    when:
+      - bilinker capture <file> <pos> <pos>, dos veces
+    expect:
+      same_id: true
+    notes:
+      - la deduplicación deja de necesitar un lookup por (file, query, offset); sale del direccionamiento
+
+  - id: accept-never-touches-a-capture
+    description: accept escribe sólo los _accepted del bilink
+    given:
+      - bilink aceptado, fragmento luego modificado, estado ALTERED
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      captures_written: 0
+      link_0_changed: false
+      accepted_fields_written: [hash_accepted.0, hash_ast_accepted.0, link_accepted.0]
+      state: [OK, OK]
+    notes:
+      - con el hash fuera del id, el capture describe la ubicación y no cambia porque el contenido haya cambiado
+      - capture.md inv. 7 se refuerza: accept nunca toca un capture
+
+  - id: divergence-instead-of-shared-hash
+    description: Dos bilinks sobre un capture divergen cuando uno acepta el cambio y el otro no
+    given:
+      - bilinks A y B referenciando el mismo capture
+      - el fragmento modificado
+    when:
+      - bilinker check .
+      - bilinker accept A.0
+      - bilinker check .
+    expect:
+      a_state: [OK, "*"]
+      b_state: [ALTERED, "*"]
+      distinct_captures: 1
+    notes:
+      - es el caso que capture.md daba como imposible con un hash compartido; se expresa sin duplicar la ubicación porque la divergencia vive en los _accepted
+      - comparten un capture justamente porque el fragmento está en el mismo lugar: lo que difiere es qué aprobó cada uno
+
+  - id: apply-never-approves
+    description: apply puede repuntar cualquier capture, pero nunca escribe un _accepted
+    given:
+      - un endpoint en REANCHORED (anchor renombrado, fragmento distinto)
+    when:
+      - bilinker apply
+    expect:
+      link_0_changed: true
+      accepted_fields_written: 0
+      state_non_ok: true
+    notes:
+      - se cayó la restricción aritmética: apply acuña el capture aunque el texto en la ubicación nueva difiera
+      - lo que impide que cierre solo no es una regla sobre el hash, es que aprobar es escribir un _accepted y eso es de accept
+      - con la aceptación votable, cualquier cosa que apply cerrara sola se saltearía el consenso
+
+  - id: apply-moved-repoints-every-referent
+    description: Un rename mintea un capture con el mismo hash y repunta a todos los referentes
+    given:
+      - un capture referenciado por tres bilinks
+      - el archivo renombrado con git mv
+    when:
+      - bilinker check .
+      - bilinker apply -y
+    expect:
+      referents_repointed: 3
+      hash_unchanged: true
+      state: [RELOCATED, "*"]
+    notes:
+      - el repunte masivo corresponde porque repuntar dejó de ser aceptar: link_accepted.N no se toca
+      - cada uno de los tres queda RELOCATED hasta que su dueño lo apruebe; la decisión sigue siendo una por bilink
+
+  - id: accept-rejects-dirty-fragment
+    description: accept falla si el archivo del fragmento tiene cambios sin commitear
+    given:
+      - un endpoint ALTERED, con el archivo modificado y sin commitear
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      exit_code_non_zero: true
+      accepted_fields_written: 0
+    notes:
+      - commit es el commit del contenido, y no existe si el contenido no está commiteado
+      - es lo que impide que la ref absorba un commit que no contiene lo que se aceptó
+
+  - id: accept-is-deterministic
+    description: Dos personas que aceptan el mismo contenido en HEADs distintos escriben lo mismo
+    given:
+      - el mismo fragmento, el mismo contenido, dos HEAD distintos
+    when:
+      - bilinker accept en cada uno
+    expect:
+      accepted_values_identical: true
+    notes:
+      - commit dejó de ser el HEAD de quien acepta; es el commit en que el contenido quedó establecido
+      - es lo que hace converger un adopt sin conflicto en el caso común
+
+  - id: move-requires-approval
+    description: Un rename se cierra con apply + accept, nunca con apply solo
+    given:
+      - un fragmento renombrado, endpoint en MOVED
+    when:
+      - bilinker apply -y
+      - bilinker check .
+    expect:
+      state_after_apply: RELOCATED
+      exit_code: 1
+    notes:
+      - sin link_accepted.N el endpoint volvería a OK solo, y un movimiento se cerraría sin que nadie lo apruebe
+      - el exit 1 es lo único que convierte "pide acción humana" en algo que un CI puede hacer cumplir
+
+  - id: accept-place-and-content-are-separable
+    description: --place aprueba la ubicación sin aprobar un cambio de contenido
+    given:
+      - un endpoint movido Y con el contenido cambiado
+    when:
+      - bilinker accept <uuid>.0 --place
+    expect:
+      link_accepted_0_written: true
+      hash_accepted_0_written: false
+      state_0_non_ok: true
+    notes:
+      - accept a secas bendice las dos dimensiones, que es lo que se va a querer casi siempre
+
+  - id: check-against-compares-two-bilink-folders
+    description: check toma los _accepted de otra fuente y no escribe cache
+    given:
+      - un .bilink/ en el árbol y otro en .bilink-migrate-003.../
+    when:
+      - bilinker check . --against .bilink-migrate-003.../
+    expect:
+      cache_written: false
+      reports_per_endpoint: true
+    notes:
+      - es la misma comparación de siempre con el lado derecho traído de otra parte
+      - es lo que vuelve comparable la coexistencia de los dos binarios durante la migración
+
+  - id: migrated-corpus-parses
+    description: Todo archivo migrado parsea bajo los tipos de la versión destino
+    given:
+      - los 4 repos con .bilink-migrate-003…/ generado
+    when:
+      - se parsea cada .bilink y cada .capture del directorio migrado
+    expect:
+      parse_failures: 0
+      unknown_fields: 0
+      arity_violations: 0
+    notes:
+      - con deny_unknown_fields y la aridad en el tipo, un campo de más o un endpoint de más falla y dice dónde
+      - hoy la lista blanca KEYS descarta en silencio lo que no reconoce; eso es lo que este escenario cierra
+
+  - id: migration-preserves-acceptances
+    description: La migración verifica ella misma que no perdió aceptaciones
+    given:
+      - .bilink/ en el formato de origen y la carpeta de migración en el destino
+    when:
+      - corre la migración, que depende de los dos crates de formato
+    expect:
+      accepted_endpoints_before: N
+      accepted_endpoints_after: N
+      equivalent_values: true
+    notes:
+      - la comparación la hace la MIGRACIÓN, único componente que linkea los dos formatos; check --against no puede, porque el binario nuevo linkea un solo parser y no lee el formato viejo
+      - y es acotada por definición — resolved_at se descarta y commit.N/state.N se mudan a la cache, así que afirmar "nada cambió" sería falso
+      - lo que sí se afirma - todo endpoint aceptado antes sigue aceptado, con los valores equivalentes bajo el renombre
+
+  - id: serialization-is-stable
+    description: parse → serialize → parse es byte-idéntico, y ningún id de capture se mueve
+    given:
+      - el corpus migrado
+    when:
+      - se reescribe cada archivo con el serializador y se vuelve a leer
+    expect:
+      bytes_identical: true
+      capture_ids_unchanged: true
+    notes:
+      - el id del capture es H(file, query, offset), así que la estabilidad de la serialización ES la estabilidad de la identidad
+      - el caso concreto: un bloque escrito con | en vez de |- agrega un salto final y mueve los 129 ids sin romper nada visible
+
+  - id: endpoint-type-is-explicit
+    description: El tipo de un endpoint sale del prefijo, sin regla de desempate
+    given:
+      - los seis valores posibles de link
+    when:
+      - se parsea cada uno
+    expect:
+      resolved_by_prefix: [capture, path, task, repo, bilink]
+      reserved_word: [abstract]
+      fallback_rules: 0
+    notes:
+      - hoy el endpoint layer es el fallback, y de ahí sale la precedencia que ADR-0005 tenía que enunciar
+      - efecto lateral en YAML - path >impl arranca con letra, así que ningún valor necesita comillas
+
+  - id: pending-is-the-absence-of-accepted
+    description: La invariante de aceptación es el tipo, no una regla que verificar
+    given:
+      - un endpoint sin aceptar y uno aceptado
+    when:
+      - se parsea el bilink
+    expect:
+      pending_has_no_accepted_block: true
+      accepted_without_hash_rejected: true
+      loose_hash_outside_block_rejected: true
+    notes:
+      - accepted está o no está; si está, hash es obligatorio
+      - verificado con serde_yaml - "accepted sin hash" da missing field, y un hash suelto da unknown field
+
+  - id: arity-is-the-type
+    description: Un bilink de tres endpoints no se puede escribir
+    given:
+      - un YAML con endpoint 0, 1 y 2
+    when:
+      - se parsea
+    expect:
+      rejected: true
+      message: unknown field `2`, expected `0` or `1`
+    notes:
+      - bilink.md inv. 2 deja de ser algo que se verifica y pasa a ser algo que no se puede representar
+
+  - id: check-does-not-dirty-git
+    description: Correr check dos veces no ensucia el árbol de trabajo
+    given:
+      - un repo limpio con bilinks aceptados
+    when:
+      - bilinker check .
+      - bilinker check .
+    expect:
+      git_status_clean: true
+    notes:
+      - hoy 16 .bilink quedan modificados sólo por resolved_at
+
+  - id: cache-is-rebuildable
+    description: Borrar la cache y re-verificar reproduce exactamente los mismos estados
+    given:
+      - una capa verificada
+    when:
+      - rm -rf .bilink/cache/
+      - bilinker check .
+    expect:
+      states_identical: true
+      rebuilt_by_check: [state, state.N, range]
+      rederived_on_demand: [commit]
+    notes:
+      - un derivado que no se puede regenerar no es un derivado
+      - son dos clases: check reconstruye state/state.N/range, y sin ellos no hay nada que leer; commit se re-deriva a demanda y su ausencia sólo cuesta velocidad
+
+  - id: migrate-order-partition-first
+    description: immutable-captures exige que file-partition ya haya corrido
+    given:
+      - una capa en formato bilinker-001
+    when:
+      - bilinker migrate --recursive
+    expect:
+      applied_order: [bilinker-002-file-partition, bilinker-003-immutable-captures]
+    notes:
+      - mientras range/state/resolved_at sigan en el .capture no se le puede calcular un id estable
+
+  - id: migrate-does-not-fan-out
+    description: Un capture con dos hashes aceptados distintos sigue siendo uno
+    given:
+      - un capture referenciado por dos bilinks con hash.N distinto
+    when:
+      - bilinker migrate --recursive
+    expect:
+      captures_after: 1
+    notes:
+      - el id nunca dependió del hash, así que aceptar distinto no obliga a duplicar la ubicación
+      - la divergencia queda en los _accepted de cada bilink
+
+  - id: migrate-pending-endpoint-without-hash
+    description: Un endpoint PENDING migra sin resolver queries ni consultar git
+    given:
+      - un bilink con hash.N ausente
+    when:
+      - bilinker migrate --recursive
+    expect:
+      id_computed_from_present_fields: true
+      git_invoked: false
+      treesitter_invoked: false
+      id_is_final: true
+    notes:
+      - migration.md inv. 5
+      - el id nunca dependió del hash, así que un endpoint PENDING no es un caso especial: se computa igual que cualquier otro y ya es el definitivo
+
+  - id: migrate-dry-run-writes-nothing
+    description: --dry-run reporta lo mismo sin escribir un solo archivo
+    given:
+      - una capa sin migrar
+    when:
+      - bilinker migrate --recursive --dry-run
+    expect:
+      files_written: 0
+      ledger_written: false
+
+  - id: migrate-coexists-with-old-format
+    description: El binario viejo sigue funcionando mientras la migración construye el nuevo formato
+    given:
+      - una capa con .bilink/ en formato viejo
+    when:
+      - bilinker migrate --recursive
+      - el binario viejo corre check
+    expect:
+      writes_to: .bilink-migrate-002-file-partition/
+      old_bilink_untouched: true
+      old_binary_still_works: true
+    notes:
+      - los dos formatos no pueden ocupar .bilink/ a la vez; el corte es un movimiento único y revertir es no cortar
+
+  - id: migrate-folders-chain-by-id
+    description: Cada migración escribe su propia carpeta y la siguiente la encadena
+    given:
+      - una capa en formato bilinker-001
+    when:
+      - bilinker migrate --recursive
+    expect:
+      folders:
+        - .bilink-migrate-002-file-partition/
+        - .bilink-migrate-003-immutable-captures/
+      cut_takes: .bilink-migrate-003-immutable-captures/
+    notes:
+      - sin el id, dos migraciones en vuelo colisionan y una carpeta abandonada es indistinguible de una en curso
+
+  - id: migrate-folder-is-regenerable
+    description: Antes del corte, regenerar recupera lo aceptado con el binario viejo
+    given:
+      - régimen PRE-CORTE
+      - la carpeta de migración ya generada
+      - un accept posterior hecho con el binario viejo sobre .bilink/
+    when:
+      - bilinker migrate --recursive
+      - se corta
+    expect:
+      late_accept_preserved: true
+      regenerated: true
+    notes:
+      - es un derivado, no un espacio de trabajo; editarlo a mano rompe justamente lo que lo hace seguro
+      - antes del corte migrate SIEMPRE regenera; el ledger todavía no está escrito y no hay qué volver no-op
+
+  - id: migrate-is-idempotent
+    description: Después del corte, correrla dos veces no hace nada la segunda
+    given:
+      - régimen POST-CORTE
+      - una capa ya migrada, con el id en el ledger
+    when:
+      - bilinker migrate --recursive
+    expect:
+      files_written: 0
+    notes:
+      - es el régimen que migration.md inv. 3 exige; lo que la vuelve no-op es el ledger
+
+  - id: no-op-is-not-a-clean-tree
+    description: Los bilinks que quedan NO-OK tras reescribir las specs no se aceptan en bulk
+    given:
+      - las specs de bilinker reescritas
+      - 63 bilinks de la raíz en ALTERED, y sus 63 contrapartes del lado impl en CHAIN_DIRTY
+    when:
+      - se evalúa el cambio
+    expect:
+      bulk_accept_run: false
+    notes:
+      - cada estado no-OK es un puntero al código que hay que revisar; aceptarlos para dejar el árbol verde tira el inventario del trabajo

@@ -1,0 +1,42 @@
+# Escenarios de 0006-formato-como-crate-versionado.
+# Viven junto al ADR mientras esté Propuesto; se reparten entre scenarios/*.yaml
+# cuando se escriban las specs.
+spec: docs/adr/0006-formato-como-crate-versionado.md
+
+scenarios:
+
+  - id: format-version-cannot-drift
+    description: Cambiar los tipos sin subir la versión falla
+    given:
+      - el esquema generado y su hash registrado para la versión N
+    when:
+      - se cambia un tipo del formato sin tocar la versión
+    expect:
+      test_fails: true
+    notes:
+      - cubre el caso que un campo declarado a mano no cubre - un cambio aditivo, que no deja entrada en el ledger
+      - ADR-0005 agrega abstract y repo sin migración, y un parser viejo leería abstract como path de capa sin fallar
+
+  - id: migration-links-two-formats
+    description: Una migración depende de los dos formatos que puentea
+    given:
+      - la migración que lleva del formato N al N+1
+    when:
+      - se inspeccionan sus dependencias
+    expect:
+      format_crates: 2
+    notes:
+      - es lo único que permite verificar que la migración no perdió nada; check --against linkea un solo parser
+      - y es la razón de que la historia de formatos se acumule en el build, aunque no en el camino de lectura
+
+  - id: migrations-are-append-only
+    description: Sacar una migración vieja deja varado a quien está en ese formato
+    given:
+      - un repo parado dos versiones atrás
+    when:
+      - corre el runner con la cadena completa
+    expect:
+      reaches_current_version: true
+    notes:
+      - migration.md define ids ordenados, ledger e idempotencia, pero no dice que el conjunto sea de sólo-agregar
+      - sin esa regla, "ya nadie está en ese formato" parece una limpieza razonable

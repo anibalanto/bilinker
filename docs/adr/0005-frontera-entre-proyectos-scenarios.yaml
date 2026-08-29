@@ -1,0 +1,212 @@
+# Escenarios de 0005-frontera-entre-proyectos.
+# Viven junto al ADR mientras esté Propuesto; se reparten entre scenarios/*.yaml
+# cuando se escriban las specs.
+spec: docs/adr/0005-frontera-entre-proyectos.md
+
+scenarios:
+
+  - id: abstract-endpoint-is-open
+    description: La punta abstract reporta OPEN y no pide acción
+    given:
+      - bilink con link.1 abstract, link.0 aceptado
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OPEN]
+      exit_code: 0
+
+  - id: accept-bulk-skips-open
+    description: accept . no toca una punta abstract
+    given:
+      - bilink con link.1 abstract y link.0 en ALTERED
+    when:
+      - bilinker accept .
+    expect:
+      state: [OK, OPEN]
+      accept_file_has_no_entry_for_1: true
+
+  - id: provider-detects-own-drift
+    description: El proveedor ve que lo publicado dejó de coincidir con lo aprobado
+    given:
+      - bilink abstracto aceptado
+      - el fragmento publicado modificado
+    when:
+      - bilinker check .
+    expect:
+      state: [ALTERED, OPEN]
+    notes:
+      - es la razón por la que al proveedor no le alcanza con captures
+
+  - id: remote-ok-when-accepted-pair-unchanged
+    description: El consumidor está OK mientras los dos valores aceptados del proveedor no cambien
+    given:
+      - consumidor con link.0 "@hsi" y sus link_accepted.0 / hash_accepted.0 copiados
+      - el repo remoto clonado y sin cambios en el bilink referenciado
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OK]
+
+  - id: remote-drift-after-provider-accepts
+    description: El consumidor detecta drift cuando el proveedor acepta contenido nuevo
+    given:
+      - consumidor OK
+      - el proveedor modifica el fragmento y corre accept, moviendo su hash_accepted.0
+    when:
+      - bilinker check . (en el consumidor, tras traer el remoto)
+    expect:
+      state_0_non_ok: true
+      changed_dimension: contenido
+    notes:
+      - el proveedor no toca ningún archivo del consumidor: la propagación es por lectura, no por escritura
+      - un apply del proveedor sin aceptar no mueve nada: es trabajo en curso y el consumidor no tiene por qué enterarse
+
+  - id: remote-ignores-cosmetic-changes
+    description: Un cambio cosmético en el .bilink remoto no ensucia a los consumidores
+    given:
+      - consumidor OK
+      - un comentario agregado al .bilink del proveedor, con sus _accepted intactos
+    when:
+      - bilinker check .
+    expect:
+      state: [OK, OK]
+    notes:
+      - es la razón de copiar campos del bilink remoto en vez del hash del archivo entero
+      - hashear el archivo obligaría además a definir una forma canónica: el formato admite comentarios y no fija orden de claves
+
+  - id: remote-fan-out-is-independent
+    description: Dos consumidores de la misma abstracción se aceptan por separado
+    given:
+      - consumidores A y B sobre el mismo bilink abstracto
+      - el proveedor acepta contenido nuevo
+    when:
+      - bilinker check . en A y en B
+      - bilinker accept en A
+      - bilinker check . en B
+    expect:
+      b_still_drifted: true
+      provider_files_untouched: true
+      provider_file_count: 1
+    notes:
+      - sumar o quitar un consumidor no toca el repo del proveedor
+
+  - id: remote-unreachable-is-not-an-error
+    description: El proyecto ajeno sin clonar da REMOTE_UNREACHABLE y no rompe el check
+    given:
+      - .bilink/.hsi.toml presente, .bilink/hsi/ ausente
+    when:
+      - bilinker check .
+    expect:
+      state: [REMOTE_UNREACHABLE, OK]
+      exit_code: 0
+    notes:
+      - trabajar sin todo clonado es normal; se arregla clonando y no es una regresión
+
+  - id: broken-when-remote-bilink-gone
+    description: Con el contenedor presente pero el .bilink ausente, es BROKEN y sí es regresión
+    given:
+      - repo del proveedor clonado
+      - el .bilink del UUID compartido eliminado en el proveedor
+    when:
+      - bilinker check .
+    expect:
+      state: [BROKEN, OK]
+    notes:
+      - distinguirlo de REMOTE_UNREACHABLE es la razón del desdoblamiento: uno se arregla trayendo, el otro investigando
+      - UNREACHABLE a secas desaparece del vocabulario; este caso es el que bilink.md ya llamaba BROKEN
+
+  - id: absence-taxonomy-is-five-rows
+    description: Cada forma de ausencia tiene su estado, y cada estado su arreglo
+    given:
+      - caso A - .stratum/.impl.toml presente, .stratum/impl/ ausente
+      - caso B - ni .toml ni directorio, con aceptación previa
+      - caso C - ni .toml ni directorio, sin aceptación previa
+    when:
+      - bilinker check .
+    expect:
+      a_state_1: LAYER_UNREACHABLE
+      b_state_1: LAYER_UNCONFIGURED
+      c_state_1: TODO
+      exit_code: 0
+      clones_attempted: 0
+    notes:
+      - no es de la frontera; desdobla el UNREACHABLE sobrecargado que sublayer-config.md usa hoy
+      - LAYER_UNCONFIGURED sale de BROKEN, no de UNREACHABLE: hoy check_layer devuelve Broken para toda capa ausente con aceptación previa
+      - check no clona nunca; si el clon falla eso es un error de stratum pull, no un estado de bilink
+
+  - id: rejected-when-remote-stops-being-abstract
+    description: REJECTED cuando el proveedor retira la abstracción
+    given:
+      - consumidor aceptado contra un bilink abstracto
+      - el link.1 remoto ya no es abstract
+    when:
+      - bilinker check .
+    expect:
+      state: [REJECTED, OK]
+    notes:
+      - es un hecho distinto de "el fragmento cambió" y no debe mezclarse en el mismo token
+
+  - id: sparse-set-is-derived-and-incremental
+    description: El sparse-checkout sale de los bilinks y crece al agregar uno
+    given:
+      - un consumidor con dos vínculos de frontera
+    when:
+      - bilinker clona el remoto
+      - se agrega un tercer vínculo hacia otro fragmento del proveedor
+      - bilinker vuelve a resolver
+    expect:
+      sparse_paths_before: 2
+      sparse_paths_after: 3
+      reclone: false
+    notes:
+      - un sparse fijo en el .toml quedaría viejo con el primer bilink nuevo
+
+  - id: diff-deepens-on-demand
+    description: check corre superficial; ver el diff profundiza el clon
+    given:
+      - clon superficial del proveedor
+      - un vínculo de frontera con drift
+    when:
+      - bilinker check .
+      - bilinker get <uuid>.0 --diff
+    expect:
+      check_fetched_history: false
+      diff_fetched_history: true
+    notes:
+      - check es masivo y barato; ver el diff es puntual y caro
+
+  - id: consumer-stores-nothing-about-provider
+    description: Ningún archivo versionado del consumidor contiene path, contenido ni commit del proveedor
+    given:
+      - un consumidor con vínculos de frontera aceptados
+    when:
+      - inspeccionar .bilink/*.bilink y .bilink/*.accept
+    expect:
+      contains_provider_path: false
+      contains_provider_commit: false
+      contains_provider_text: false
+    notes:
+      - la URL vive sólo en .bilink/.hsi.toml; el resto es un alias y un hash opaco
+
+  - id: remote-fetch-is-one-ref
+    description: El consumidor trae bilinks y código del proveedor en un solo fetch
+    given:
+      - un vínculo de frontera con branch = "rc-2.32" en el .toml
+    when:
+      - bilinker resuelve el remoto
+    expect:
+      fetched_ref: refs/bilink/rc-2.32
+      refs_fetched: 1
+      snapshot_consistent: true
+    notes:
+      - el .toml declara la rama del proyecto; la traducción a refs/bilink/ es de la herramienta
+
+  - id: frontier-needs-no-migration
+    description: Los endpoints abstract y repo son aditivos
+    given:
+      - un repo con bilinks en el formato nuevo, sin vínculos de frontera
+    when:
+      - se agrega un bilink abstracto y uno con endpoint repo
+    expect:
+      existing_bilinks_untouched: true
+      migration_required: false

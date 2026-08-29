@@ -1,0 +1,355 @@
+# Escenarios de 0004-bilinks-en-ref-paralela.
+# Viven junto al ADR mientras esté Propuesto; se reparten entre scenarios/*.yaml
+# cuando se escriban las specs.
+spec: docs/adr/0004-bilinks-en-ref-paralela.md
+
+scenarios:
+
+  - id: project-branch-has-no-bilinks
+    description: Ninguna rama del proyecto contiene .bilink/
+    given:
+      - un repo con bilinks en refs/bilink/rc-2.35
+    when:
+      - git checkout rc-2.35
+    expect:
+      bilink_dir_in_worktree: false
+      git_log_rc_unchanged: true
+    notes:
+      - es la propiedad que hace adoptable el rol de proveedor sin negociar con todo el equipo
+
+  - id: bilink-ref-not-listed-as-branch
+    description: La ref no aparece en los listados de ramas
+    given:
+      - refs/bilink/rc-2.35 existente
+    when:
+      - git branch -a
+      - git log --branches
+    expect:
+      listed: false
+    notes:
+      - vive fuera de refs/heads/, como refs/notes/* y refs/changes/*
+
+  - id: merge-absorbs-project-without-conflict
+    description: Absorber avances del proyecto nunca conflictúa
+    given:
+      - refs/bilink/rc-2.35 al día con el commit C
+      - commits D y E en rc-2.35, sin tocar .bilink/
+    when:
+      - bilinker absorbe rc-2.35 en refs/bilink/rc-2.35
+    expect:
+      conflicts: 0
+      second_parent: E
+    notes:
+      - los dos lados escriben conjuntos disjuntos: la ref sólo agrega .bilink/, el proyecto nunca lo toca
+
+  - id: history-is-append-only
+    description: La historia de la ref nunca se reescribe
+    given:
+      - un consumidor que ya fetcheó refs/bilink/rc-2.32 del proveedor
+      - el proveedor absorbe commits nuevos y acepta cambios
+    when:
+      - el consumidor vuelve a fetchear
+    expect:
+      fast_forward: true
+      force_push_required: false
+    notes:
+      - es lo que permite que get --diff recorra hacia atrás hasta el token aceptado
+
+  - id: previous-state-is-one-commit-back
+    description: El estado anterior de los bilinks es ~1, sin buscar nada
+    given:
+      - varios cambios de estado sobre refs/bilink/rc-2.35
+    when:
+      - se pide el estado previo
+    expect:
+      resolves_to: refs/bilink/rc-2.35~1
+    notes:
+      - no hace falta identificador propio: el hash del commit ya lo es
+
+  - id: first-parent-shows-only-bilinks
+    description: --first-parent oculta la historia del proyecto absorbida
+    given:
+      - una ref con tres merges del proyecto y dos cambios de bilinks
+    when:
+      - git log --first-parent refs/bilink/rc-2.35
+    expect:
+      shows_project_commits: false
+
+  - id: merge-back-is-detected
+    description: Si .bilink/ aparece en un commit del proyecto, la absorción se aborta
+    given:
+      - alguien mergeó refs/bilink/rc-2.35 en rc-2.35
+    when:
+      - bilinker intenta absorber ese commit
+    expect:
+      aborted: true
+      failed_check: disyuncion
+    notes:
+      - no es exigible como invariante — nadie puede impedir que alguien mergee — pero sí detectable antes de que contamine nada
+      - la verificación va sobre el ÁRBOL del commit, no sobre su diff: el commit que borra .bilink/ tiene un diff que lo toca y un árbol que no
+      - la reparación queda diferida junto con qué hacer con lo que había ahí
+
+  - id: bilinks-present-but-excluded
+    description: Los .bilink/ están en el árbol de trabajo y el proyecto no los ve
+    given:
+      - rc-2.35 checkouteada, con .bilink/ materializado
+    when:
+      - git status
+      - git check-ignore .bilink/
+    expect:
+      shown_by_project_status: false
+      excluded_via: .git/info/exclude
+      gitignore_modified: false
+    notes:
+      - .gitignore está versionado y modificarlo tocaría la rama del proyecto; info/exclude es local
+
+  - id: bilinker-has-its-own-status
+    description: Los cambios de bilinker se ven en su propio índice
+    given:
+      - un accept que reescribió un link.N
+    when:
+      - bilinker status --porcelain
+      - git status
+    expect:
+      seen_by_bilinker_index: true
+      seen_by_project_index: false
+    notes:
+      - sin índice propio esos cambios serían invisibles para git: ignorados de un lado, y la ref no está checkouteada
+
+  - id: check-runs-hot
+    description: check ve cambios sin commitear del código
+    given:
+      - un fragmento vinculado, modificado y sin commitear
+    when:
+      - bilinker check .
+    expect:
+      state_0: ALTERED
+      commits_created: 0
+    notes:
+      - si comparara contra la copia de código de la ref, el drift no se vería hasta el próximo sync
+
+  - id: accept-absorbs-before-committing
+    description: accept absorbe el commit contra el que acepta
+    given:
+      - proyecto en E, ref de bilinks en C
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      second_parent: E
+      code_tree_equals_absorbed_commit: true
+    notes:
+      - la invariante de fidelidad se verifica sola: el árbol de código del commit nuevo es idéntico al del commit del proyecto absorbido
+      - absorber dejó de ser un comportamiento por comando y es precondición de todo commit sobre la ref
+
+  - id: sync-does-not-verify
+    description: sync alinea la ref y no verifica nada
+    given:
+      - proyecto avanzado sin que se aceptara nada
+    when:
+      - bilinker sync
+    expect:
+      merge_created: true
+      states_recomputed: false
+      cache_written: false
+
+  - id: ref-snapshot-is-faithful
+    description: El árbol de código de cada commit de la ref es el del commit absorbido
+    given:
+      - una ref con commits de accept, apply y sync
+    when:
+      - se comparan los tree oids de cada commit contra el del proyecto absorbido más reciente
+    expect:
+      all_identical: true
+    notes:
+      - comparación de tree oids: exacta, sin tree-sitter y sin abrir un blob
+      - es lo que garantiza que el consumidor remoto vea lo que el proveedor tenía, ni una foto vieja ni una incoherente
+
+  - id: ref-may-carry-drift
+    description: Un commit de la ref puede contener bilinks no-OK sin que eso sea corrupción
+    given:
+      - una ref recién creada con bilinker track sobre una rama nueva
+    when:
+      - se verifica la fidelidad de la ref
+    expect:
+      fidelity_ok: true
+      bilinks_all_ok: false
+    notes:
+      - la invariante NO dice que los bilinks estén en OK: el drift es el estado normal que la herramienta existe para reportar
+      - una versión más fuerte haría imposible track, que casi siempre arranca con drift
+
+  - id: act-without-new-code-has-one-parent
+    description: Un accept con el proyecto quieto no produce un merge
+    given:
+      - la ref ya absorbió el tip de la rama
+      - nadie commiteó en el proyecto desde entonces
+    when:
+      - bilinker accept <uuid>.0
+    expect:
+      parents: 1
+      code_tree_unchanged: true
+    notes:
+      - absorber es una precondición, no la forma del acto: el merge aparece sólo cuando hay algo nuevo que traer
+
+  - id: init-is-required-and-explicit
+    description: Sin bilinker init, los comandos no corren
+    given:
+      - un clon fresco, sin exclude ni refspec ni .bilink/ materializado
+    when:
+      - bilinker check .
+    expect:
+      exit_code_non_zero: true
+      git_config_modified: false
+    notes:
+      - bilinker arregla solo lo que es suyo y pide lo que es del repo del usuario
+      - que un comando de lectura configurara el repo de callado sería peor que fallar
+
+  - id: fetch-brings-both-after-init
+    description: Con el refspec puesto, git fetch trae las refs de bilinks junto con las ramas
+    given:
+      - bilinker init corrido
+    when:
+      - git fetch
+    expect:
+      bilink_refs_updated: true
+      listed_in_git_branch_a: false
+    notes:
+      - una rama al día con bilinks viejos es el desajuste silencioso que esto elimina
+      - no compromete la invisibilidad: refs/bilink/* no está bajo refs/heads/ ni refs/remotes/
+
+  - id: branch-switch-rematerializes
+    description: Cambiar de rama corrige el .bilink/ del árbol sin pedir nada
+    given:
+      - .bilink/head diciendo (rama A, commit)
+      - git checkout B
+    when:
+      - bilinker check .
+    expect:
+      rematerialized: true
+      prompted: false
+      states_from_branch: B
+    notes:
+      - git checkout no toca .bilink/ porque para el índice del proyecto son archivos ignorados
+      - head es un hecho sobre el árbol y no se infiere de la cache: un derivado no puede autorizar que se sobrescriba la fuente
+
+  - id: branch-switch-refuses-on-dirty-bilinks
+    description: Con trabajo sin commitear en .bilink/, no se materializa nada
+    given:
+      - .bilink/ con cambios respecto del commit que head nombra
+      - git checkout B
+    when:
+      - bilinker check .
+    expect:
+      rematerialized: false
+      exit_code_non_zero: true
+    notes:
+      - .bilink/ está fuera del git del proyecto, así que ese trabajo no existe en ninguna otra parte
+      - es la misma guarda con que git checkout se niega a pisar cambios
+
+  - id: cache-invalidates-on-branch-change
+    description: check no devuelve estados de la rama anterior
+    given:
+      - cache/state calculada en la rama A
+      - git checkout B
+    when:
+      - bilinker check .
+    expect:
+      stale_states_returned: false
+    notes:
+      - la cache anota a qué commit de la ref corresponde y se invalida sola
+      - protege al derivado; head protege a la fuente, y hacen falta los dos
+
+  - id: cold-cache-check-is-correct
+    description: Con la cache borrada, check da los mismos estados; sólo tarda más
+    given:
+      - una capa verificada
+    when:
+      - rm -rf .bilink/cache/
+      - bilinker check .
+    expect:
+      states_identical: true
+      slower: true
+
+  - id: track-picks-newest-reachable
+    description: Con la ref adelantada respecto del fork, track hereda lo que corresponde al fork
+    given:
+      - refs/bilink/main con segundos padres C, D y E
+      - feature/x sale de D
+    when:
+      - bilinker track feature/x
+    expect:
+      first_parent_second_parent: D
+    notes:
+      - heredar del tip traería bilinks que describen código que la rama no tiene: UNRESOLVED y ALTERED falsos desde el minuto cero
+
+  - id: track-refuses-when-ambiguous
+    description: Si el fork es ancestro de dos refs trackeadas, track exige --from
+    given:
+      - el punto de fork es ancestro de main y de rc-2.35
+    when:
+      - bilinker track feature/x
+    expect:
+      exit_code_non_zero: true
+      requires_flag: --from
+
+  - id: adopt-brings-neighbour-decisions
+    description: Tras un rebase, adopt trae las aceptaciones de la rama base
+    given:
+      - feature/x rebaseada sobre main
+      - refs/bilink/main con aceptaciones que feature/x no tiene
+    when:
+      - bilinker adopt origin/main
+    expect:
+      commits_written: 2
+      absorbed_new_tip: true
+      merge_base: el M heredado por track
+    notes:
+      - son dos actos: absorber el tip rebaseado, y traer las decisiones del vecino
+      - la base del merge a tres puntas sale gratis porque track dejó ese commit como primer padre
+
+  - id: adopt-dry-run-is-inert-and-exact
+    description: --dry-run reporta lo mismo que el comando real, sin escribir ni hacer red
+    given:
+      - una ref de vecino ya traída
+    when:
+      - bilinker adopt origin/main --dry-run
+    expect:
+      files_written: 0
+      network_calls: 0
+      rows: [entra limpio, ya coincidía, conflicto]
+    notes:
+      - por eso el fetch queda afuera: si adopt fetcheara, el dry-run reportaría sobre otros datos que el comando real
+
+  - id: adopt-converges-without-conflict
+    description: Lo que las dos ramas aceptaron igual no conflictúa
+    given:
+      - las dos ramas aceptaron el mismo contenido del mismo fragmento
+    when:
+      - bilinker adopt origin/main --dry-run
+    expect:
+      conflicts: 0
+      row: ya coincidía
+    notes:
+      - los _accepted son campos con nombre por endpoint, así que el merge a tres puntas los compara de a uno
+
+  - id: cutover-first-absorb-is-clean
+    description: El primer sync después del corte no conflictúa
+    given:
+      - la ref creada desde X, el commit del proyecto que borra .bilink/
+    when:
+      - el proyecto avanza y bilinker absorbe
+    expect:
+      conflicts: 0
+      modify_delete: 0
+    notes:
+      - sin ese orden el primer merge produce un modify/delete masivo, o peor, borra en silencio los bilinks que no cambiaron
+
+  - id: ledger-written-at-cutover
+    description: El ledger se escribe al cortar, no al generar
+    given:
+      - la carpeta de migración generada, sin cortar
+    when:
+      - cat .accreta/migrations
+    expect:
+      contains_new_migration: false
+    notes:
+      - si no, el repo quedaría marcado como migrado mientras sigue corriendo el formato viejo
