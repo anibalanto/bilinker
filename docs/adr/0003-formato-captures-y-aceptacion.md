@@ -36,6 +36,8 @@ El nombre de un capture pasa a ser el hash de su propio contenido, y su contenid
   version                  ← la versión de formato
 ```
 
+**La extensión es `.yaml` y nada más.** El tipo lo dice la carpeta que los contiene, así que repetirlo en el nombre sería redundante. Es lo contrario de un ítem de worklist, que es `<id>.<tipo>.md` porque las épicas, las user stories y las tasks comparten directorio y ahí el nombre es lo único que las distingue.
+
 ```yaml
 # .bilink/<uuid>.yaml
 endpoint:

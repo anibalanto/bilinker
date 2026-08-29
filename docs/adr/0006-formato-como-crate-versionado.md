@@ -52,6 +52,8 @@ Ahí rinde de verdad, y es la razón más fuerte de todo el ADR: hoy [ADR-0005](
 
 Eso baja el costo de adopción del lado del proveedor, que es el riesgo que la épica viene tratando de minimizar. Es el mismo movimiento que un `api-model`: publicar la superficie para que otro la consuma sin depender de tu build.
 
+**El parser de YAML es `serde_yaml_ng`.** El más descargado es `serde_yaml` —384M, contra 10M del que le sigue— pero su propia versión se publica como `0.9.34+deprecated` y el repo está archivado desde 2024. Entre los mantenidos con integración serde, `serde_yaml_ng` lidera por descargas recientes (5,6M contra 3,3M de `serde_norway`). No es una decisión de peso: las dos reglas del serializador —bloque `|-` para la query, escalares citados— valen igual con cualquiera, y cambiar de crate no cambia los archivos.
+
 **La dirección es Rust → esquema, no al revés.** Los tipos con serde son la fuente y el esquema sale generado. La alternativa —esquema a mano, tipos generados con `typify`— tiene un argumento fuerte, que el formato deje de estar definido en Rust; pero cuesta codegen en el build y hoy no hay otro proyecto implementando su propio lector. Si aparece, es el momento de darlo vuelta.
 
 ---
