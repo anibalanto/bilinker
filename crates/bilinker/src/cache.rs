@@ -97,6 +97,7 @@ impl Cache {
     pub fn save(&self, layer: &Path) -> Result<()> {
         let path = Self::path_in(layer);
         std::fs::create_dir_all(path.parent().expect("cache/ tiene padre"))?;
+        bilink_format::write_ignore(layer)?;
         let text = serde_yaml_ng::to_string(self).context("serializando la cache")?;
         // Escritura atómica: un `check` interrumpido no deja media cache.
         let tmp = path.with_extension("tmp");

@@ -180,7 +180,7 @@ pub(crate) fn resolve_capture(
 
 // ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
 
-fn compare_content(
+pub(crate) fn compare_content(
     layer: &Path,
     cap: &Capture,
     accepted: &bilink_format::Accepted,

@@ -77,9 +77,29 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
                     Some(c) => (c, "REANCHORED"),
                     None => continue,
                 },
-                (CaptureState::Resolved, Some(s)) if s.has_fix() => {
-                    match compute_offset(layer, &bl, uuid, n, &cap, s)? {
-                        Some(c) => (c, if s == EndpointState::Expanded { "EXPANDED" } else { "DISPLACED" }),
+                (CaptureState::Resolved, Some(cached)) if cached.has_fix() => {
+                    // **Validación de frescura.** El estado cacheado lo escribió el
+                    // último `check`, y el archivo pudo cambiar después: aplicar un
+                    // fix derivado de la cache es corregir contra una foto vieja.
+                    let Some(accepted) = e.accepted.as_ref() else { continue };
+                    let fresh = crate::check::compare_content(
+                        layer, &cap, accepted, cache.capture_range(cap_id).as_ref(),
+                        cache.commit(uuid, n), None)?;
+
+                    if fresh == EndpointState::Ok {
+                        // El fix ya no hace falta. Se omite en silencio: que algo se
+                        // haya arreglado solo no es una anomalía que reportar.
+                        continue;
+                    }
+                    if fresh != cached {
+                        eprintln!(
+                            "warn: {}… endpoint.{n}: la cache dice {cached} y la \
+                             resolución actual da {fresh}\n                                   — fix descartado. Correr `bilinker check`.",
+                            &uuid[..8.min(uuid.len())]);
+                        continue;
+                    }
+                    match compute_offset(layer, &bl, uuid, n, &cap, cached)? {
+                        Some(c) => (c, if cached == EndpointState::Expanded { "EXPANDED" } else { "DISPLACED" }),
                         None => continue,
                     }
                 }
@@ -127,7 +147,6 @@ fn compute_moved(layer: &Path, cap: &Capture) -> Result<Option<Capture>> {
                trackeado, `git add` y volver a correr.", cap.file);
     };
     let moved = Capture { file: new_file, ..cap.clone() };
-    // Verificar que la referencia siga resolviendo en el path nuevo.
     // Verificar que la referencia siga resolviendo en el path nuevo. Sin aceptación:
     // lo que se pregunta es si el anchor está ahí, no si dice lo que se aprobó.
     let (state, _) = crate::check::resolve_capture(layer, &moved, None, None)?;

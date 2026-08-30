@@ -42,7 +42,7 @@ pub fn build(layer_root: &Path) -> Result<usize> {
     let index_dir = bilink_dir.join("index");
     std::fs::create_dir_all(&index_dir)?;
     std::fs::write(index_dir.join("index"), &out)?;
-    ensure_gitignore(&bilink_dir)?;
+    bilink_format::write_ignore(layer_root)?;
 
     Ok(count)
 }
@@ -156,30 +156,6 @@ fn lookup_scan(bilink_dir: &Path, file: &str) -> Result<Vec<(String, u8)>> {
     Ok(results)
 }
 
-fn ensure_gitignore(bilink_dir: &Path) -> Result<()> {
-    let path = bilink_dir.join(".gitignore");
-    let existing = if path.exists() {
-        std::fs::read_to_string(&path)?
-    } else {
-        String::new()
-    };
-
-    let mut out = existing.clone();
-    for entry in ["index/", ".pending/"] {
-        if !existing.lines().any(|l| l.trim() == entry) {
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(entry);
-            out.push('\n');
-        }
-    }
-
-    if out != existing {
-        std::fs::write(&path, out)?;
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

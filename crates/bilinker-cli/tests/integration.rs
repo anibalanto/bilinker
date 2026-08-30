@@ -351,7 +351,7 @@ fn index_build_creates_index_file() {
 }
 
 #[test]
-fn index_gitignore_contains_index_entry() {
+fn the_derived_directories_are_left_out_of_git() {
     let (_tmp, root) = isolated_workspace();
 
     run_in(&root, &[
@@ -362,8 +362,27 @@ fn index_gitignore_contains_index_entry() {
     run_in(&root, &["index", "build"]);
 
     let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-    assert!(gi.contains("index/"), ".gitignore missing index/");
-    assert!(gi.contains(".pending/"), ".gitignore missing .pending/");
+    assert!(gi.contains("cache/"), "falta cache/ en .gitignore:\n{gi}");
+    assert!(gi.contains("index/"), "falta index/ en .gitignore:\n{gi}");
+}
+
+/// La regla no espera a que alguien corra `index`: `check` escribe la cache, y
+/// escribir un derivado sin declararlo ignorado es lo que lo mete en git.
+#[test]
+fn check_alone_leaves_the_cache_out_of_git() {
+    let (_tmp, root) = isolated_workspace();
+
+    run_in(&root, &[
+        "chain", "new",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java",
+    ]);
+    run_in(&root, &["check", "."]);
+
+    assert!(root.join(".bilink/cache/state").exists(), "check no escribió la cache");
+    let gi = std::fs::read_to_string(root.join(".bilink/.gitignore"))
+        .expect("check escribió cache/ sin declararla ignorada");
+    assert!(gi.contains("cache/"), "falta cache/ en .gitignore:\n{gi}");
 }
 
 #[test]
@@ -875,4 +894,44 @@ fn check_exit_code_follows_the_states() {
 
 fn git(root: &Path, args: &[&str]) {
     std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+}
+
+/// `apply` no aplica un fix derivado de la cache: re-resuelve y compara.
+///
+/// El estado cacheado lo escribió el último `check`, y el archivo pudo cambiar
+/// después. Corregir contra esa foto vieja repuntaría a una ubicación que ya no es.
+#[test]
+fn apply_discards_a_fix_when_the_cache_went_stale() {
+    let (_t, root, _u) = accepted_layer();
+
+    // El fragmento crece: check lo deja en EXPANDED, con fix disponible.
+    let original = fs::read_to_string(root.join("docs/spec.md")).unwrap();
+    fs::write(root.join("docs/spec.md"), original + "\nUna línea más.\n").unwrap();
+    assert!(check_states(&root).contains("EXPANDED"));
+
+    // Ahora el contenido cambia de verdad, **sin** volver a correr check: la cache
+    // sigue diciendo EXPANDED y la realidad ya es otra.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nReescrito de cero.\n").unwrap();
+
+    let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(!out.contains("EXPANDED"), "no debe ofrecer un fix contra la cache vieja:\n{out}");
+    assert!(err.contains("cache") || err.contains("check"),
+        "y tiene que decir por qué lo descartó:\n{err}");
+}
+
+/// Un fix que ya no hace falta se omite en silencio.
+#[test]
+fn apply_silently_skips_a_fix_that_is_no_longer_needed() {
+    let (_t, root, _u) = accepted_layer();
+    let original = fs::read_to_string(root.join("docs/spec.md")).unwrap();
+
+    fs::write(root.join("docs/spec.md"), original.clone() + "\nUna línea más.\n").unwrap();
+    assert!(check_states(&root).contains("EXPANDED"));
+
+    // Se revierte: el endpoint vuelve a estar OK aunque la cache diga otra cosa.
+    fs::write(root.join("docs/spec.md"), &original).unwrap();
+
+    let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(!out.contains("EXPANDED"), "el fix ya no hace falta:\n{out}");
+    assert!(!err.contains("warn"), "y que algo se arregle solo no es una anomalía:\n{err}");
 }

@@ -10,12 +10,14 @@
 
 pub mod bilink;
 pub mod capture;
+pub mod ignore;
 pub mod link;
 pub mod schema;
 pub mod version;
 
 pub use bilink::{Accepted, BiLink, Endpoint, Endpoints};
 pub use capture::Capture;
+pub use ignore::write_ignore;
 pub use link::{ByteRange, LinkEndpoint, ENDPOINT_PREFIXES};
 pub use schema::{schema, schema_json};
 pub use version::{read_version, write_version, VERSION_FILE};
