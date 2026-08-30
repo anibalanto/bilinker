@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 
-/// Resuelve el id de un ítem del worklist a su archivo, y devuelve la raíz del proyecto.
+/// Resuelve el id de un issue —un ítem del worklist— a su archivo, y devuelve la raíz
+/// del proyecto.
 ///
 /// Los ítems son archivos sueltos en `<project-root>/.stratum/worklist/`, con nombre
 /// `<id>.<tipo>.md`. El tipo no viaja en el endpoint, así que el archivo se busca por
@@ -14,10 +15,10 @@ use anyhow::{bail, Result};
 /// `Ok(None)` es "no hay ítem con ese id". Dos archivos con el mismo id son un error
 /// del worklist —los ids son únicos— y no una ambigüedad del formato, así que se
 /// reporta en vez de elegir uno.
-pub fn resolve_task_path(layer_root: &Path, task_id: &str) -> Result<(Option<PathBuf>, PathBuf)> {
+pub fn resolve_issue_path(layer_root: &Path, issue_id: &str) -> Result<(Option<PathBuf>, PathBuf)> {
     let project_root = project_root_of(layer_root);
     let dir = project_root.join(".stratum").join("worklist");
-    let prefix = format!("{task_id}.");
+    let prefix = format!("{issue_id}.");
 
     let mut hits: Vec<PathBuf> = std::fs::read_dir(&dir)
         .into_iter()
@@ -42,7 +43,7 @@ pub fn resolve_task_path(layer_root: &Path, task_id: &str) -> Result<(Option<Pat
                 .map(|n| n.to_string_lossy().into_owned())
                 .collect();
             bail!(
-                "el id de worklist '{task_id}' matchea {} archivos en {}: {}",
+                "el id de issue '{issue_id}' matchea {} archivos en {}: {}",
                 names.len(), dir.display(), names.join(", ")
             );
         }

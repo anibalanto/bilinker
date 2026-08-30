@@ -1252,7 +1252,7 @@ fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> anyhow::Result<()> 
 
         // El `kind` sale de la semántica declarada; sin `kind`, es un bilink.
         let kind = match (&bl.link0, &bl.link1) {
-            (LinkEndpoint::Task(_), _) | (_, LinkEndpoint::Task(_)) => "task",
+            (LinkEndpoint::Issue(_), _) | (_, LinkEndpoint::Issue(_)) => "issue",
             _ => "bilink",
         };
 

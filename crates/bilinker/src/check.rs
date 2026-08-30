@@ -8,7 +8,7 @@ use crate::grammar;
 use crate::hash;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
 use crate::query;
-use crate::task::resolve_task_path;
+use crate::issue::resolve_issue_path;
 
 #[derive(Debug)]
 pub struct CheckResult {
@@ -159,7 +159,7 @@ fn check_endpoint(
             check_structural(layer_root, &sref, hash, hash_ast, stored_range, commit, cached_state)
         }
         LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
-        LinkEndpoint::Task(id)         => check_task(layer_root, id, hash),
+        LinkEndpoint::Issue(id)        => check_issue(layer_root, id, hash),
     }
 }
 
@@ -463,28 +463,28 @@ fn check_layer(
     Ok((state, None))
 }
 
-fn check_task(
+fn check_issue(
     layer_root: &Path,
-    task_id: &str,
+    issue_id: &str,
     stored_hash: Option<&str>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
-    let (task_path, _) = resolve_task_path(layer_root, task_id)?;
+    let (issue_path, _) = resolve_issue_path(layer_root, issue_id)?;
     // Mismo criterio que un endpoint layer: sin hash aceptado el ítem todavía no
     // existe (TODO); con hash aceptado, existía y desapareció (BROKEN).
-    let Some(task_path) = task_path else {
+    let Some(issue_path) = issue_path else {
         let absent = if stored_hash.is_none() { EndpointState::Todo } else { EndpointState::Broken };
         return Ok((absent, None));
     };
-    let task_dir = match task_path.parent() {
+    let issue_dir = match issue_path.parent() {
         Some(d) => d.to_path_buf(),
         None => return Ok((EndpointState::Broken, None)),
     };
-    let filename = match task_path.file_name().and_then(|n| n.to_str()) {
+    let filename = match issue_path.file_name().and_then(|n| n.to_str()) {
         Some(f) => f.to_string(),
         None => return Ok((EndpointState::Broken, None)),
     };
     let sref = StructuralRef { file: filename, query: None, range: None };
-    check_structural(&task_dir, &sref, stored_hash, None, None, None, None)
+    check_structural(&issue_dir, &sref, stored_hash, None, None, None, None)
 }
 
 fn find_in_node(

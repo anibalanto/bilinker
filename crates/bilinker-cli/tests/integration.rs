@@ -605,16 +605,16 @@ fn capture_refuses_an_anchor_it_cannot_identify() {
     assert_eq!(written, 0, "no se debe escribir ningún capture cuando la query es ambigua");
 }
 
-// ─── 10. el endpoint task ──────────────────────────────────────────────────
+// ─── 10. el endpoint issue ─────────────────────────────────────────────────
 
-/// `task <id>` encuentra el ítem sin que el endpoint lleve el tipo.
+/// `issue <id>` encuentra el ítem sin que el endpoint lleve el tipo.
 ///
 /// Los ítems del worklist son archivos sueltos `<id>.<tipo>.md` en un solo
 /// directorio, así que se busca por prefijo. Dejar el tipo afuera es lo que hace
 /// que el vínculo sobreviva a recolgar el ítem de otro padre: eso cambia un campo
 /// del ítem, no el nombre de su archivo.
 #[test]
-fn a_task_endpoint_resolves_by_id_whatever_the_item_type() {
+fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
     let (_tmp, root) = isolated_git_workspace();
     fs::create_dir_all(root.join(".stratum/worklist")).unwrap();
     write_and_commit(&root, ".stratum/worklist/3a.user-story.md",
@@ -626,7 +626,7 @@ fn a_task_endpoint_resolves_by_id_whatever_the_item_type() {
 
     let uuid = "aaaaaaaa-0000-4000-8000-000000000001";
     fs::write(root.join(format!(".bilink/{uuid}.bilink")),
-        format!("link.0: capture {cap}\nlink.1: task 3a\n")).unwrap();
+        format!("link.0: capture {cap}\nlink.1: issue 3a\n")).unwrap();
 
     let (stdout, _, _) = run_in(&root, &["check", "."]);
     assert!(stdout.contains("aaaaaaaa"), "el bilink tiene que aparecer:\n{stdout}");
@@ -638,7 +638,7 @@ fn a_task_endpoint_resolves_by_id_whatever_the_item_type() {
 
 /// Un id que no existe es TODO, no un panic ni un OK silencioso.
 #[test]
-fn an_unknown_task_id_is_todo() {
+fn an_unknown_issue_id_is_todo() {
     let (_tmp, root) = isolated_git_workspace();
     fs::create_dir_all(root.join(".stratum/worklist")).unwrap();
 
@@ -648,7 +648,7 @@ fn an_unknown_task_id_is_todo() {
 
     let uuid = "bbbbbbbb-0000-4000-8000-000000000001";
     fs::write(root.join(format!(".bilink/{uuid}.bilink")),
-        format!("link.0: capture {cap}\nlink.1: task zz9\n")).unwrap();
+        format!("link.0: capture {cap}\nlink.1: issue zz9\n")).unwrap();
 
     let (stdout, _, _) = run_in(&root, &["check", "."]);
     assert!(stdout.contains("TODO"), "un id inexistente tiene que dar TODO:\n{stdout}");

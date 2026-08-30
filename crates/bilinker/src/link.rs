@@ -82,7 +82,7 @@ pub fn state_str(state: &Option<EndpointState>) -> String {
 /// Un endpoint estructural no describe el fragmento: referencia un capture de la
 /// misma capa, que es quien guarda `file`, `query` y `offset`.
 ///
-/// Disambiguation: `capture <uuid>` y `task <id>` se reconocen por prefijo. El
+/// Disambiguation: `capture <uuid>` y `issue <id>` se reconocen por prefijo. El
 /// resto se interpreta como path Stratum, salvo que tenga `::` o extensión de
 /// archivo — en cuyo caso es formato anterior al split y se parsea como
 /// `LegacyStructural` para que `bilinker migrate` pueda convertirlo.
@@ -91,8 +91,11 @@ pub enum LinkEndpoint {
     /// `capture <uuid>` — referencia a un `.capture` de esta misma capa.
     Capture(String),
     Layer(StratumPath),
-    /// `task <id>` — references a worklist task at `<project-root>/.stratum/worklist/<id>.task`.
-    Task(String),
+    /// `issue <id>` — un ítem del worklist, en `<project-root>/.stratum/worklist/<id>.<tipo>.md`.
+    ///
+    /// Se llama issue y no task porque apunta a cualquier tipo de ítem —épica, user
+    /// story o task—, y `task` es además el nombre del tipo hoja del worklist.
+    Issue(String),
     /// Formato anterior al split capture/bilink. Solo lo produce el parser al leer
     /// archivos sin migrar; `bilinker migrate` lo convierte en `Capture`.
     LegacyStructural(StructuralRef),
@@ -159,11 +162,11 @@ impl FromStr for LinkEndpoint {
             }
         }
 
-        // `task <id>` — worklist task reference
-        if let Some(id) = trimmed.strip_prefix("task ") {
+        // `issue <id>` — ítem del worklist
+        if let Some(id) = trimmed.strip_prefix("issue ") {
             let id = id.trim();
             if !id.is_empty() {
-                return Ok(LinkEndpoint::Task(id.to_string()));
+                return Ok(LinkEndpoint::Issue(id.to_string()));
             }
         }
 
@@ -222,7 +225,7 @@ impl fmt::Display for LinkEndpoint {
             LinkEndpoint::Layer(tokens) => {
                 write!(f, "{}", stratum::format_path(tokens))
             }
-            LinkEndpoint::Task(id) => write!(f, "task {id}"),
+            LinkEndpoint::Issue(id) => write!(f, "issue {id}"),
             LinkEndpoint::LegacyStructural(r) => write!(f, "{r}"),
         }
     }
@@ -332,16 +335,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_task_endpoint() {
-        let ep: LinkEndpoint = "task 3a".parse().unwrap();
-        assert_eq!(ep, LinkEndpoint::Task("3a".into()));
-        assert_eq!(ep.to_string(), "task 3a");
+    fn parse_issue_endpoint() {
+        let ep: LinkEndpoint = "issue 3a".parse().unwrap();
+        assert_eq!(ep, LinkEndpoint::Issue("3a".into()));
+        assert_eq!(ep.to_string(), "issue 3a");
     }
 
     #[test]
-    fn parse_task_endpoint_longer_id() {
-        let ep: LinkEndpoint = "task 1f".parse().unwrap();
-        assert_eq!(ep, LinkEndpoint::Task("1f".into()));
+    fn parse_issue_endpoint_longer_id() {
+        let ep: LinkEndpoint = "issue 1f".parse().unwrap();
+        assert_eq!(ep, LinkEndpoint::Issue("1f".into()));
+    }
+
+    /// `task` fue el nombre anterior del prefijo y no se reconoce más.
+    ///
+    /// Cae a path Stratum como cualquier valor sin prefijo conocido: no hay
+    /// compatibilidad hacia atrás porque nunca se escribió un `task <id>` en disco.
+    #[test]
+    fn the_old_task_prefix_is_not_an_issue() {
+        let ep: LinkEndpoint = "task 3a".parse().unwrap();
+        assert!(!matches!(ep, LinkEndpoint::Issue(_)));
     }
 
     #[test]

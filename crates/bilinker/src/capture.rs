@@ -767,7 +767,7 @@ mod capture_file_tests {
 
         crate::bilink::BiLinkFile::new("uuid1",
             crate::link::LinkEndpoint::Capture("cap-usado".into()),
-            crate::link::LinkEndpoint::Task("3a".into()))
+            crate::link::LinkEndpoint::Issue("3a".into()))
             .write(&layer.join(".bilink/uuid1.bilink")).unwrap();
 
         let o = orphans(layer).unwrap();

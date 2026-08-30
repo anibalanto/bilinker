@@ -49,8 +49,8 @@ pub fn get(
         LinkEndpoint::Layer(layer_path) => {
             traverse_layer(root, layer_path.clone(), &bl.uuid, before, after)
         }
-        LinkEndpoint::Task(id) => bail!(
-            "link.{endpoint} is a task reference ({id}) — use worklist to view it"
+        LinkEndpoint::Issue(id) => bail!(
+            "link.{endpoint} es un issue ({id}) — se mira con worklist"
         ),
     }
 }
@@ -86,8 +86,8 @@ pub fn get_diff(
                             adj_commit.as_deref().unwrap_or(commit),
                             adj_range.as_ref(), adj_hash.as_deref())
         }
-        LinkEndpoint::Task(id) => bail!(
-            "link.{endpoint} is a task reference ({id})"
+        LinkEndpoint::Issue(id) => bail!(
+            "link.{endpoint} es un issue ({id})"
         ),
     }
 }
