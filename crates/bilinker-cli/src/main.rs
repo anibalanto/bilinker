@@ -699,6 +699,16 @@ Eliminar? [y/N] ");
                 }
                 for c in &cuts {
                     bilink_migrate::cut::execute(c)?;
+                    // La cache se siembra después de mover: es de la herramienta, no
+                    // del formato, así que la migración la devuelve y la escribe quien
+                    // la entiende.
+                    if !c.commits.is_empty() {
+                        let mut cache = bilinker::cache::Cache::load(&c.layer);
+                        for (uuid, n, commit) in &c.commits {
+                            cache.set_commit(uuid, *n, commit);
+                        }
+                        cache.save(&c.layer)?;
+                    }
                 }
                 // El ledger va acá: el estado recién ahora es verdadero.
                 let written = accreta_migrate::record(&layers, &bilink_migrate::all())?;

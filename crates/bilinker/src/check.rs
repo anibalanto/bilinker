@@ -81,10 +81,16 @@ fn check_endpoint(
                 Err(_) => return Ok(EndpointState::Unresolved),
             };
 
+            // La resolución se cachea por capture, pero la aceptación es por
+            // endpoint: dos endpoints sobre el mismo capture pueden haber aprobado
+            // contenidos distintos, y el que resuelva primero es el que aporta el
+            // texto para puntuar un reanclaje. Es una aproximación consciente —
+            // resolver una vez por capture es lo que la spec pide— y sólo afecta a
+            // qué candidato gana en un caso ya ambiguo.
             let (state, range) = match resolved.get(cap_id) {
                 Some(v) => v.clone(),
                 None => {
-                    let v = resolve_capture(layer, &cap)?;
+                    let v = resolve_capture(layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
                     resolved.insert(cap_id.clone(), v.clone());
                     v
                 }
@@ -112,8 +118,21 @@ fn check_endpoint(
 
 // ─── dimensión 1: ¿dónde está? ────────────────────────────────────────────────
 
-/// Resuelve un capture contra el árbol actual. No mira ninguna aceptación.
-pub(crate) fn resolve_capture(layer: &Path, cap: &Capture) -> Result<(CaptureState, Option<ByteRange>)> {
+/// Resuelve un capture contra el árbol actual.
+///
+/// Recibe `accepted` porque **REANCHORED lo necesita**: para decidir si un nodo con
+/// otro nombre es el mismo fragmento hay que compararlo contra el texto aceptado, y
+/// ese texto se recupera de git con `(hash, commit)`. Sin eso el anchor renombrado
+/// se reporta como UNANCHORED —"no está"— en vez de "está, con otro nombre".
+///
+/// Es la única cosa de la aceptación que la dimensión de ubicación mira, y sólo para
+/// puntuar: el estado que devuelve sigue siendo sobre dónde está el fragmento.
+pub(crate) fn resolve_capture(
+    layer: &Path,
+    cap: &Capture,
+    accepted: Option<&bilink_format::Accepted>,
+    commit: Option<&str>,
+) -> Result<(CaptureState, Option<ByteRange>)> {
     let path = layer.join(&cap.file);
 
     if !path.exists() {
@@ -142,10 +161,11 @@ pub(crate) fn resolve_capture(layer: &Path, cap: &Capture) -> Result<(CaptureSta
         query::find_target_with_sexp(language.clone(), &source, query_str)?
     else {
         // La query no matchea: ¿el anchor se renombró, o el fragmento desapareció?
-        if find_renamed_anchor(layer, language, &source, query_str, cap, None, None)?.is_some() {
+        let hash = accepted.map(|a| a.hash.as_str());
+        if find_renamed_anchor(layer, language, &source, query_str, cap, hash, commit)?.is_some() {
             return Ok((CaptureState::Reanchored, None));
         }
-        if git_fragment_vanished(layer, &cap.file, None) {
+        if git_fragment_vanished(layer, &cap.file, hash) {
             return Ok((CaptureState::Deleted, None));
         }
         return Ok((CaptureState::Unanchored, None));

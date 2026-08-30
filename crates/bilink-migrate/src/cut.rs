@@ -22,6 +22,8 @@ pub struct CutPlan {
     pub backup: PathBuf,
     pub bilinks: usize,
     pub captures: usize,
+    /// Los `commit` rescatados del formato 1, para sembrar la cache tras el corte.
+    pub commits: Vec<(String, u8, String)>,
 }
 
 /// Prepara el corte de una capa: regenera, verifica, y devuelve qué haría.
@@ -52,6 +54,7 @@ pub fn plan_cut(layer: &Path) -> Result<CutPlan> {
         backup:   layer.join(".bilink-formato-1"),
         bilinks:  plan.bilinks.len(),
         captures: plan.captures.len(),
+        commits:  plan.commits,
     })
 }
 

@@ -64,7 +64,8 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
             let Some(cap_id) = e.link.capture_id() else { continue };
             let Ok(cap) = Capture::load_in(layer, cap_id) else { continue };
 
-            let (state, _) = crate::check::resolve_capture(layer, &cap)?;
+            let (state, _) = crate::check::resolve_capture(
+                layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
             let endpoint_state = cache.endpoint_state(uuid, n);
 
             let (to, reason) = match (state, endpoint_state) {
@@ -72,7 +73,7 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
                     Some(c) => (c, "MOVED"),
                     None => continue,
                 },
-                (CaptureState::Reanchored, _) => match compute_reanchored(layer, &bl, n, &cap)? {
+                (CaptureState::Reanchored, _) => match compute_reanchored(layer, &bl, uuid, n, &cap)? {
                     Some(c) => (c, "REANCHORED"),
                     None => continue,
                 },
@@ -127,7 +128,9 @@ fn compute_moved(layer: &Path, cap: &Capture) -> Result<Option<Capture>> {
     };
     let moved = Capture { file: new_file, ..cap.clone() };
     // Verificar que la referencia siga resolviendo en el path nuevo.
-    let (state, _) = crate::check::resolve_capture(layer, &moved)?;
+    // Verificar que la referencia siga resolviendo en el path nuevo. Sin aceptación:
+    // lo que se pregunta es si el anchor está ahí, no si dice lo que se aprobó.
+    let (state, _) = crate::check::resolve_capture(layer, &moved, None, None)?;
     if !state.is_resolved() {
         bail!("MOVED: el archivo se movió a '{}', pero el anchor ya no está ahí ({state}). \
                Repuntar con `bilinker recapture`.", moved.file);
@@ -136,7 +139,9 @@ fn compute_moved(layer: &Path, cap: &Capture) -> Result<Option<Capture>> {
 }
 
 /// REANCHORED: la query relajada, con el nombre nuevo.
-fn compute_reanchored(layer: &Path, bl: &BiLink, n: u8, cap: &Capture) -> Result<Option<Capture>> {
+fn compute_reanchored(
+    layer: &Path, bl: &BiLink, uuid: &str, n: u8, cap: &Capture,
+) -> Result<Option<Capture>> {
     let Some(query_str) = &cap.query else { return Ok(None) };
     let path = layer.join(&cap.file);
     if !path.exists() { return Ok(None); }
@@ -145,9 +150,14 @@ fn compute_reanchored(layer: &Path, bl: &BiLink, n: u8, cap: &Capture) -> Result
     let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
     let accepted = bl.endpoint.get(n).accepted.as_ref();
 
+    // Los **dos** hacen falta: el hash dice qué texto buscar y el commit dice de
+    // dónde sacarlo. Con uno solo, `accepted_text` no devuelve nada y no hay contra
+    // qué puntuar los candidatos.
+    let commit = Cache::load(layer);
+    let commit = commit.commit(uuid, n);
     let Some((new_name, score)) = crate::check::find_renamed_anchor(
         layer, language, &source, query_str, cap,
-        accepted.map(|a| a.hash.as_str()), None)?
+        accepted.map(|a| a.hash.as_str()), commit)?
     else {
         bail!("REANCHORED: el anchor ya no se localiza — correr `bilinker check`");
     };

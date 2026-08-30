@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -641,3 +641,238 @@ fn an_unknown_issue_id_is_todo() {
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
+
+// ─── 11. los escenarios de check ───────────────────────────────────────────
+//
+// Cada uno implementa un escenario de `subsystems/bilinker/scenarios/check.yaml`,
+// y el nombre de la función es el que su campo `impl:` nombra. Son de integración
+// y no unitarios porque lo que el escenario describe es el estado que `check`
+// reporta, que sale del binario y de la cache — no de una función.
+
+/// Una capa con un bilink aceptado sobre `docs/spec.md` y `src/Service.java`.
+fn accepted_layer() -> (tempfile::TempDir, PathBuf, String) {
+    let (tmp, root) = isolated_git_workspace();
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(ok, "chain new failed:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept failed:\n{stderr}");
+    (tmp, root, uuid)
+}
+
+fn check_states(root: &Path) -> String {
+    run_in(root, &["check", "."]).0
+}
+
+/// `check-ok-after-accept` — aceptado y sin cambios reporta OK.
+#[test]
+fn check_whole_file_ok_when_hash_matches() {
+    let (_t, root, _u) = accepted_layer();
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "sin cambios tiene que salir con 0:\n{out}");
+    assert!(out.trim().is_empty(), "y no imprimir nada:\n{out}");
+}
+
+/// `check-altered-structural` — el contenido cambia bajo el mismo anchor.
+#[test]
+fn check_whole_file_altered_when_hash_differs() {
+    let (_t, root, _u) = accepted_layer();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    assert!(check_states(&root).contains("ALTERED"));
+}
+
+/// `check-chain-dirty-propagation` — el vecino se re-acepta y la copia queda vieja.
+#[test]
+fn check_layer_chain_dirty_when_hash_differs() {
+    let (_tmp, root) = isolated_git_workspace();
+    fs::create_dir_all(root.join(".stratum/impl/src")).unwrap();
+    write_and_commit(&root, ".stratum/impl/src/lib.rs", "pub fn run() {}\n");
+
+    run_in(&root, &["chain", "new",
+        "--tip", "docs/spec.md:1:1", "--tip", ">impl/src/lib.rs:1:1"]);
+
+    // El vecino primero: un endpoint `path` copia lo que su vecino aprobó, así que
+    // no hay nada que copiar hasta que el vecino aceptó.
+    let impl_layer = root.join(".stratum/impl");
+    run_in(&impl_layer, &["check", "."]);
+    run_in(&impl_layer, &["accept", "."]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    assert!(run_in(&root, &["check", "."]).2, "la cadena tiene que arrancar limpia");
+
+    // El fragmento del otro extremo cambia y se re-acepta ahí.
+    write_and_commit(&root, ".stratum/impl/src/lib.rs", "pub fn run() { let x = 1; }\n");
+    run_in(&impl_layer, &["check", "."]);
+    run_in(&impl_layer, &["accept", "."]);
+
+    // Desde la capa spec, el endpoint `path` ve que su copia dejó de coincidir.
+    assert!(check_states(&root).contains("CHAIN_DIRTY"),
+        "el vecino se re-aceptó:\n{}", check_states(&root));
+}
+
+/// `check-pending-layer-exists` — la capa existe y nadie aceptó.
+#[test]
+fn check_layer_first_time_is_pending() {
+    let (_tmp, root) = isolated_git_workspace();
+    fs::create_dir_all(root.join(".stratum/impl/src")).unwrap();
+    write_and_commit(&root, ".stratum/impl/src/lib.rs", "pub fn run() {}\n");
+
+    run_in(&root, &["chain", "new",
+        "--tip", "docs/spec.md:1:1", "--tip", ">impl/src/lib.rs:1:1"]);
+    assert!(check_states(&root).contains("PENDING, PENDING"));
+}
+
+/// `check-todo-layer-missing` — la capa apuntada no existe todavía.
+///
+/// Es una intención declarada, no un error: por eso TODO y no BROKEN.
+#[test]
+fn check_layer_todo_when_adjacent_missing_and_no_hash() {
+    let (_tmp, root) = isolated_git_workspace();
+    let (stdout, _, _) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
+    let cap = stdout.trim();
+
+    // A mano y no con `chain new`, que escribe el bilink en las dos capas: lo que se
+    // quiere construir es justamente el caso en que la otra capa todavía no existe.
+    fs::write(root.join(".bilink/aaaa0000-0000-4000-8000-000000000001.yaml"),
+        format!("endpoint:\n  0: {{link: capture {cap}}}\n  1: {{link: path >impl}}\n")).unwrap();
+
+    let out = check_states(&root);
+    assert!(out.contains("TODO"), "la capa vecina no existe todavía:\n{out}");
+}
+
+/// `check-unresolved-file-missing` — el archivo se fue; el bilink no puede evaluarse.
+#[test]
+fn check_unresolved_when_file_missing() {
+    let (_t, root, _u) = accepted_layer();
+    fs::remove_file(root.join("docs/spec.md")).unwrap();
+    assert!(check_states(&root).contains("UNRESOLVED"));
+}
+
+/// `check-moved-after-git-rename` — git detecta el rename.
+#[test]
+fn check_detects_moved_after_git_rename() {
+    let (_t, root, _u) = accepted_layer();
+    git(&root, &["mv", "docs/spec.md", "docs/renombrada.md"]);
+
+    // El endpoint no puede evaluarse; el detalle —MOVED— lo lleva el capture, y
+    // `apply` es quien lo sabe leer.
+    assert!(check_states(&root).contains("UNRESOLVED"));
+    let (out, _, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(out.contains("MOVED"), "apply tiene que ver el rename:\n{out}");
+}
+
+/// `check-deleted-when-file-removed` — borrado rastreable en git.
+///
+/// Distingue "alguien borró esto" de "esta referencia nunca ancló a nada".
+#[test]
+fn check_detects_deleted_when_file_removed_from_git() {
+    let (_t, root, _u) = accepted_layer();
+    git(&root, &["rm", "-q", "docs/spec.md"]);
+    assert!(check_states(&root).contains("UNRESOLVED"));
+}
+
+/// `check-reanchored-by-similarity` — el anchor se renombró, el cuerpo quedó.
+#[test]
+fn check_detects_reanchored_when_anchor_is_renamed() {
+    let (_tmp, root) = isolated_git_workspace();
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn procesar() {\n",
+        "    let x = 1;\n    let y = 2;\n    let z = 3;\n",
+        "    println!(\"{} {} {}\", x, y, z);\n}\n"));
+    run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn transformar() {\n",
+        "    let x = 1;\n    let y = 2;\n    let z = 3;\n",
+        "    println!(\"{} {} {}\", x, y, z);\n}\n"));
+
+    let (out, _, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(out.contains("REANCHORED"), "el anchor se renombró:\n{out}");
+}
+
+/// `check-reanchored-tolerates-an-edit` — renombre más un cambio menor.
+#[test]
+fn reanchored_survives_a_rename_plus_small_edit() {
+    let (_tmp, root) = isolated_git_workspace();
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn procesar() {\n",
+        "    let x = 1;\n    let y = 2;\n    let z = 3;\n",
+        "    println!(\"{} {} {}\", x, y, z);\n}\n"));
+    run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    // Renombrada **y** con una línea distinta: la similitud tiene que aguantar.
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn transformar() {\n",
+        "    let x = 1;\n    let y = 2;\n    let z = 99;\n",
+        "    println!(\"{} {} {}\", x, y, z);\n}\n"));
+
+    let (out, _, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(out.contains("REANCHORED"), "un cambio menor no debería romperlo:\n{out}");
+}
+
+/// `check-ambiguous-stays-unanchored` — dos candidatos parejos, ninguno gana.
+///
+/// Hace falta un margen del 15% sobre el segundo: ante un empate es preferible que
+/// lo mire un humano antes que reanclar al nodo equivocado.
+#[test]
+fn ambiguous_candidates_stay_unanchored() {
+    let (_tmp, root) = isolated_git_workspace();
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn procesar() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n"));
+    run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    // Dos candidatos idénticos entre sí: ninguno le saca margen al otro.
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub fn uno() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n",
+        "pub fn dos() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n"));
+
+    let (out, _, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(!out.contains("REANCHORED"), "ante un empate no debe reanclar:\n{out}");
+}
+
+/// `check-expanded-when-fragment-grows` — creció alrededor de lo aceptado.
+///
+/// La frontera con DISPLACED es un test de subcadena contra el texto aceptado, no
+/// un umbral: que el fragmento lo contenga verbatim implica que su AST no cambió.
+#[test]
+fn check_detects_expanded_when_fragment_grows_around_accepted_text() {
+    let (_t, root, _u) = accepted_layer();
+    let original = fs::read_to_string(root.join("docs/spec.md")).unwrap();
+    fs::write(root.join("docs/spec.md"), original + "\nUna línea más.\n").unwrap();
+    assert!(check_states(&root).contains("EXPANDED"),
+        "el fragmento contiene lo aceptado y algo más:\n{}", check_states(&root));
+}
+
+/// `check-altered-when-accepted-text-changed` — lo aceptado ya no aparece verbatim.
+#[test]
+fn check_says_altered_when_accepted_text_changed() {
+    let (_t, root, _u) = accepted_layer();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nReescrito de cero.\n").unwrap();
+    assert!(check_states(&root).contains("ALTERED"));
+}
+
+/// `check-exit-zero-all-ok` y `check-exit-one-any-altered`.
+#[test]
+fn check_exit_code_follows_the_states() {
+    let (_t, root, _u) = accepted_layer();
+    assert!(run_in(&root, &["check", "."]).2, "todo OK sale con 0");
+
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtra cosa.\n").unwrap();
+    assert!(!run_in(&root, &["check", "."]).2, "un ALTERED sale con 1");
+}
+
+fn git(root: &Path, args: &[&str]) {
+    std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+}

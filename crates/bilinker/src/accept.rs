@@ -79,7 +79,7 @@ fn compute(
     match &e.link {
         LinkEndpoint::Capture(id) => {
             let cap = Capture::load_in(layer, id)?;
-            let (state, range) = crate::check::resolve_capture(layer, &cap)?;
+            let (state, range) = crate::check::resolve_capture(layer, &cap, previous, cache.commit(uuid, n))?;
             if !state.is_resolved() {
                 bail!("el capture no resuelve ({state}): no se puede aprobar contenido \
                        que no se pudo localizar");

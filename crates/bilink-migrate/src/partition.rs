@@ -71,6 +71,20 @@ pub struct Plan {
     pub collapsed: usize,
     /// Endpoints `path` cuyo vecino no se pudo leer: quedan sin `accepted.link`.
     pub unresolved_neighbours: usize,
+    /// Los `commit.N` rescatados, por `(uuid, n)`.
+    ///
+    /// **No se descartan**: sin ellos `accepted.hash` es un hash que no se puede
+    /// resolver a texto, y `check` pierde las distinciones que dependen de él.
+    ///
+    /// La migración los **devuelve** en vez de escribirlos: el destino es la cache,
+    /// que es de la herramienta y no del formato. Escribirla desde acá obligaría a
+    /// que una transformación sintáctica dependa del crate que la interpreta.
+    ///
+    /// El `commit.N` del formato 1 era el HEAD de quien aceptaba, no el commit del
+    /// contenido. Es impreciso y sirve igual: quien lo usa **verifica el hash** antes
+    /// de creerle, así que un valor que no corresponde degrada como una cache fría en
+    /// vez de mentir, y se corrige solo en la próxima aceptación.
+    pub commits: Vec<(String, u8, String)>,
 }
 
 pub fn plan(layer: &Path) -> Result<Plan> {
@@ -97,6 +111,15 @@ pub fn plan(layer: &Path) -> Result<Plan> {
 
         let zero = endpoint(layer, &old, 0, &mut p)?;
         let one  = endpoint(layer, &old, 1, &mut p)?;
+
+        // `commit.N` sale del formato pero **no se descarta**: es un derivado, y su
+        // lugar es la cache. Perderlo dejaría a cada endpoint sin cómo recuperar su
+        // texto aceptado hasta que alguien vuelva a aceptar.
+        for (n, c) in [(0u8, &old.commit0), (1u8, &old.commit1)] {
+            if let Some(c) = c {
+                p.commits.push((old.uuid.clone(), n, c.clone()));
+            }
+        }
 
         p.bilinks.insert(old.uuid.clone(), v2::BiLink {
             kind: None,
@@ -282,6 +305,7 @@ impl Plan {
         }
         // La versión de formato viaja con los archivos que describe.
         std::fs::write(out.join(v2::VERSION_FILE), format!("{}\n", v2::VERSION))?;
+
         Ok(())
     }
 }
@@ -430,6 +454,30 @@ mod tests {
         let p = plan(d.path()).unwrap();
         assert_eq!(p.captures.len(), 1, "c0 y c1 describen la misma ubicación");
         assert_eq!(p.collapsed, 1);
+    }
+
+    /// `commit.N` **sí** se muda: es un derivado, y su lugar es la cache.
+    ///
+    /// Es la distinción que `cache.md` hace entre las dos clases de derivado. `state`
+    /// y `range` se recalculan corriendo `check`; `commit` no —hace falta caminar la
+    /// historia— así que tirarlo deja a cada endpoint sin cómo recuperar su texto
+    /// aceptado hasta que alguien vuelva a aceptar.
+    #[test]
+    fn the_accepted_commit_is_carried_not_dropped() {
+        let d = layer_v1();
+        let p = plan(d.path()).unwrap();
+
+        let mine: Vec<_> = p.commits.iter()
+            .filter(|(u, _, _)| u.starts_with("aaaa1111")).collect();
+        assert_eq!(mine.len(), 2, "los dos endpoints tenían commit");
+        assert!(mine.iter().any(|(_, n, c)| *n == 0 && c == "deadbeef"));
+        assert!(mine.iter().any(|(_, n, c)| *n == 1 && c == "cafebabe"));
+
+        // Y no vuelve al formato: sale de los archivos versionados.
+        run(d.path(), false).unwrap();
+        for (name, text) in snapshot(&d.path().join(OUT_DIR)) {
+            assert!(!text.contains("deadbeef"), "{name} todavía lleva el commit:\n{text}");
+        }
     }
 
     /// `resolved_at` no se muda a ninguna parte: desaparece, y se reporta.
