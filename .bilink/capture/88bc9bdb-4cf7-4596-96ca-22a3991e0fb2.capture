@@ -2,6 +2,6 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_layer")) @target
 
 # Cache
-range:       15892~17211
+range:       16939~18258
 state:       RESOLVED
-resolved_at: 2026-08-24T23:32:58Z
+resolved_at: 2026-08-30T00:27:19Z

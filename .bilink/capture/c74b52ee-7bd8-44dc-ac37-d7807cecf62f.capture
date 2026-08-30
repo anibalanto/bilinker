@@ -2,6 +2,6 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_unresolved_when_file_missing")) @target
 
 # Cache
-range:       21992~22569
+range:       23039~23616
 state:       RESOLVED
-resolved_at: 2026-08-24T23:34:44Z
+resolved_at: 2026-08-30T00:27:19Z

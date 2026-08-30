@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/capture.rs
+query:  (struct_item
+  name: (type_identifier) @n0 (#eq? @n0 "CaptureFile")) @target
+
+# Cache
+range:       22327~22720
+state:       RESOLVED
+resolved_at: 2026-08-30T00:33:20Z

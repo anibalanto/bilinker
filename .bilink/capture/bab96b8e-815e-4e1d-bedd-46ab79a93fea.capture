@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/git.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "head_commit_for_file")) @target
+
+# Cache
+range:       222~739
+state:       RESOLVED
+resolved_at: 2026-08-29T23:41:11Z

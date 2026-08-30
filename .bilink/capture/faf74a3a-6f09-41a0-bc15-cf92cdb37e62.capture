@@ -1,0 +1,10 @@
+file:   crates/bilinker/src/config.rs
+query:  (impl_item
+  body: (declaration_list
+  (function_item
+  name: (identifier) @n0 (#eq? @n0 "load_from")) @target))
+
+# Cache
+range:       251~637
+state:       RESOLVED
+resolved_at: 2026-08-29T23:41:11Z

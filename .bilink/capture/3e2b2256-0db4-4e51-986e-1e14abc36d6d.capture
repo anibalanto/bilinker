@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/hash.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "sha256")) @target
+
+# Cache
+range:       29~171
+state:       RESOLVED
+resolved_at: 2026-08-29T23:41:11Z

@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/capture.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "recapture")) @target
+
+# Cache
+range:       31977~33528
+state:       RESOLVED
+resolved_at: 2026-08-30T00:33:20Z

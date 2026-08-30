@@ -1,0 +1,12 @@
+link.0: <
+link.1: capture 6afc96e2-848e-4e72-9b6f-dd5cd0218040
+
+# Cache
+hash.0: 9b7f051202c4093e4377dfa064b55a197bbc3d2d7d590cb5adb4a5a1f4a9cd82
+commit.0: 20c5c63e795651278dd615bb2144aa0c102cfab6
+hash.1: df880186cdfb4731716e12419e2116a44741fa9db585fe85567d4dc2eb96a12b
+hash_ast.1: 4ceeb87b0cfac6c3df3f3ee0cda19c04e81cc99355886155f4bc0f8a46645551
+commit.1: cf09e398f5b2dcb6366a0a4839b5837a73ec6f9f
+state.0: OK
+state.1: OK
+resolved_at: 2026-08-30T00:37:06Z

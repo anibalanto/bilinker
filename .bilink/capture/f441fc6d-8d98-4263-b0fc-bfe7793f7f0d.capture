@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/apply.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "compute_fix")) @target
+
+# Cache
+range:       6703~8721
+state:       RESOLVED
+resolved_at: 2026-08-29T23:41:11Z

@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/grammar.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "language_for_file")) @target
+
+# Cache
+range:       56~483
+state:       RESOLVED
+resolved_at: 2026-08-30T00:20:26Z

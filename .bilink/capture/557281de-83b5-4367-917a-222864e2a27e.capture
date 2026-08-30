@@ -1,0 +1,8 @@
+file:   crates/bilinker/src/capture.rs
+query:  (enum_item
+  name: (type_identifier) @n0 (#eq? @n0 "CaptureState")) @target
+
+# Cache
+range:       20461~20905
+state:       RESOLVED
+resolved_at: 2026-08-30T00:33:20Z

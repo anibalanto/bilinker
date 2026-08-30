@@ -1,0 +1,10 @@
+file:   crates/bilinker/src/apply.rs
+query:  (impl_item
+  body: (declaration_list
+  (function_item
+  name: (identifier) @n0 (#eq? @n0 "needs_fork")) @target))
+
+# Cache
+range:       1913~2020
+state:       RESOLVED
+resolved_at: 2026-08-29T23:36:37Z
