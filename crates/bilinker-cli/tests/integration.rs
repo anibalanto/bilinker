@@ -1201,3 +1201,32 @@ fn the_approximate_diff_works_from_a_nested_layer() {
     assert!(out.contains("Contenido original"),
             "no recuperó de git el fragmento de antes:\n{out}{err}");
 }
+
+// ─── task `18`: el rango no depende de lo que viene después ─────────────────
+
+/// Agregar un item de secuencia más abajo no toca al que ya estaba.
+///
+/// `block_sequence_item` empieza en el `-` cuando es el último y en la
+/// indentación de su línea cuando lo sigue otro, así que sin recortar los bordes
+/// un item que nadie editó cambiaba de bytes —y de hash— por lo que pasó abajo.
+#[test]
+fn appending_a_yaml_item_does_not_move_the_one_above() {
+    let (_t, root) = isolated_git_workspace();
+    fs::write(root.join("docs/spec.yaml"),
+        "scenarios:\n\n  - id: uno\n    description: primero\n\n  - id: dos\n    description: segundo\n").unwrap();
+    commit(&root, "dos items");
+
+    // El **último** item: es el que cambia de forma cuando aparece otro abajo.
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.yaml:6:3", "--tip", "src/Service.java:2:5"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    let spec = fs::read_to_string(root.join("docs/spec.yaml")).unwrap();
+    fs::write(root.join("docs/spec.yaml"),
+              format!("{spec}\n  - id: tres\n    description: tercero\n")).unwrap();
+    commit(&root, "un item más");
+
+    let states = check_states(&root);
+    assert!(!states.contains("RESTYLED") && !states.contains("ALTERED"),
+            "un item que nadie tocó cambió de identidad:\n{states}");
+}

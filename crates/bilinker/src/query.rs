@@ -7,6 +7,26 @@ pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<
     Ok(find_target_with_sexp(language, source, query_str)?.map(|(s, e, _)| (s, e)))
 }
 
+/// El rango de un fragmento **sin el espacio que lo rodea**.
+///
+/// Dónde empieza un nodo depende de qué hay alrededor, y no debería: en YAML el
+/// mismo item de secuencia empieza en el `-` cuando es el último y en la
+/// indentación de su línea cuando lo sigue otro. Agregar un item más abajo le
+/// cambiaba los bytes —y con ellos el hash— a un item que nadie tocó, que es
+/// exactamente lo que una referencia tiene que sobrevivir.
+///
+/// Recortar los bordes lo vuelve independiente del contexto: el fragmento es su
+/// contenido, y el espacio que lo separa de sus vecinos es de los dos. Va en el
+/// único lugar donde un nodo se convierte en rango, así que no hay forma de
+/// obtener uno sin recortar.
+fn trim_edges(source: &str, start: usize, end: usize) -> (usize, usize) {
+    let b = source.as_bytes();
+    let (mut s, mut e) = (start.min(source.len()), end.min(source.len()));
+    while s < e && b[s].is_ascii_whitespace() { s += 1; }
+    while e > s && b[e - 1].is_ascii_whitespace() { e -= 1; }
+    (s, e)
+}
+
 /// La forma del árbol **más el texto de cada token hoja**.
 ///
 /// `Node::to_sexp` da sólo la forma: dice `(identifier)`, no *qué* identificador.
@@ -76,7 +96,8 @@ pub fn find_target_with_sexp(language: Language, source: &str, query_str: &str) 
         for cap in m.captures {
             if cap.index == target_idx {
                 let sexp = shape_and_tokens(cap.node, source);
-                return Ok(Some((cap.node.start_byte(), cap.node.end_byte(), sexp)));
+                let (s, e) = trim_edges(source, cap.node.start_byte(), cap.node.end_byte());
+                return Ok(Some((s, e, sexp)));
             }
         }
     }
@@ -301,3 +322,5 @@ mod rewrite_tests {
         assert_ne!(fingerprint("// antes\nfn f() {}"), fingerprint("// después\nfn f() {}"));
     }
 }
+
+
