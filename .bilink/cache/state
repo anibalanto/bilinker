@@ -44,7 +44,7 @@ captures:
   29cda55e9c7d8b2e43d779e7c5d57ee8:
     state: UNANCHORED
   2af20ad390f23e76ad0fa26117b471a2:
-    range: 0~8115
+    range: 0~11423
     state: RESOLVED
   2c38e600d3a6dfa2d509f855b7c1316b:
     range: 7899~8351
@@ -84,7 +84,7 @@ captures:
   571a8bde06abd974cd9d6eb5999f4981:
     state: UNANCHORED
   5b2e47d58d04556c26ac502be192c925:
-    range: 2062~2198
+    range: 2300~2436
     state: RESOLVED
   5bf462691e16bfc479cf99894fc3ba3a:
     range: 1093~1920
@@ -108,7 +108,7 @@ captures:
   747f54684c0ccfa0fae60692a6e840d8:
     state: DELETED
   776718e63e2313d6d25bd6680e20c54a:
-    range: 1929~2060
+    range: 2167~2298
     state: RESOLVED
   78b3804ad88f5bfb574ab0f6ad6a0557:
     range: 2940~3014

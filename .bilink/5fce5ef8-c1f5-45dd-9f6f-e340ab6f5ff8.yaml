@@ -1,10 +1,10 @@
 endpoint:
-  '0':
+  0:
     link: path <
     accepted:
       link: capture 50e81a051976ff005a4653b0fc5d2686
       hash: 384e5a22c3fc634f630b61c14a6f3d9e1a5169463525504f191e3aab7a589ff0
-  '1':
+  1:
     link: capture d957e417a2e9082b1d4834e18834713b
     accepted:
       link: capture d957e417a2e9082b1d4834e18834713b
