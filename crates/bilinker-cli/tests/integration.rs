@@ -527,5 +527,83 @@ fn check_clears_a_stale_state_when_the_edit_is_reverted() {
     assert!(ok);
 }
 
+// ─── 9. la query tiene que identificar el fragmento ────────────────────────
+
+fn write_and_commit(root: &std::path::Path, rel: &str, content: &str) {
+    fs::write(root.join(rel), content).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "fixture"]] {
+        std::process::Command::new("git")
+            .current_dir(root).args(&args).output().unwrap();
+    }
+}
+
+/// Un `impl` de Rust no tiene campo `name`: lo distinguen el tipo y el trait.
+///
+/// Sin los dos, `impl Foo` y `impl Default for Foo` producen la misma query
+/// —`(impl_item type: … "Foo")`— y `capture` devolvería el primero.
+#[test]
+fn capture_disambiguates_a_rust_impl_block() {
+    let (_tmp, root) = isolated_git_workspace();
+    write_and_commit(&root, "src/lib.rs", concat!(
+        "pub struct Foo;\n",
+        "\n",
+        "impl Foo {\n",
+        "    pub fn inherent(&self) {}\n",
+        "}\n",
+        "\n",
+        "impl Default for Foo {\n",
+        "    fn default() -> Self { Foo }\n",
+        "}\n",
+    ));
+
+    let (stdout, stderr, ok) = run_in(&root, &["capture", "src/lib.rs", "7:1", "7:1"]);
+    assert!(ok, "capture del impl de trait falló:\n{stderr}");
+
+    let uuid = stdout.trim();
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.capture"))).unwrap();
+    assert!(cap.contains("trait:"), "la query tiene que discriminar por trait:\n{cap}");
+    assert!(cap.contains("\"Default\""), "falta el trait en la query:\n{cap}");
+
+    // Y resuelve al impl del trait, no al inherente.
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--tip", "src/lib.rs:7:1", "--tip", "docs/spec.md",
+    ]);
+    assert!(ok, "chain new failed:\n{stderr}");
+    let chain = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    let (shown, stderr, ok) = run_in(&root, &["get", &format!("{}.0", &chain[..8])]);
+    assert!(ok, "get failed:\n{stderr}");
+    assert!(shown.contains("impl Default for Foo"),
+        "el capture tiene que apuntar al impl del trait:\n{shown}");
+    assert!(!shown.contains("pub fn inherent"),
+        "apuntó al impl inherente:\n{shown}");
+}
+
+/// Un ancla sin nada que la distinga no se escribe: se falla.
+///
+/// `(line_comment) @target` matchea el primer comentario del archivo. Escribirlo
+/// daría un capture que apunta a otra cosa y que `check` reporta en OK.
+#[test]
+fn capture_refuses_an_anchor_it_cannot_identify() {
+    let (_tmp, root) = isolated_git_workspace();
+    write_and_commit(&root, "src/notes.rs", concat!(
+        "// primero\n",
+        "pub fn a() {}\n",
+        "// segundo\n",
+        "pub fn b() {}\n",
+    ));
+
+    let (_stdout, stderr, ok) = run_in(&root, &["capture", "src/notes.rs", "3:1", "3:1"]);
+    assert!(!ok, "capturar un comentario ambiguo tiene que fallar");
+    assert!(stderr.contains("line_comment"),
+        "el error tiene que nombrar el ancla que no se puede distinguir:\n{stderr}");
+
+    let cap_dir = root.join(".bilink/capture");
+    let written = fs::read_dir(&cap_dir).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(written, 0, "no se debe escribir ningún capture cuando la query es ambigua");
+}
+
 // ─── helpers ───────────────────────────────────────────────────────────────
 

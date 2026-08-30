@@ -1,7 +1,0 @@
-file:   crates/bilinker/src/grammar.rs
-query:  (use_declaration) @target
-
-# Cache
-range:       0~27
-state:       RESOLVED
-resolved_at: 2026-08-24T17:35:04Z

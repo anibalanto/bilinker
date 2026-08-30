@@ -1,13 +1,14 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use tree_sitter::{Node, Parser, Point};
 
 use crate::git;
 use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
 use crate::link::{ByteRange, StructuralRef};
+use crate::query;
 
 /// Busca un capture de la capa con la misma referencia exacta.
 ///
@@ -241,13 +242,20 @@ pub fn capture(
     };
 
     let query = match anchor {
-        None => query_for_node(target, &source, &mut 0),
-        Some(a) if a.id() == target.id() => query_for_node(target, &source, &mut 0),
+        None => query_for_node(target, &source, &mut 0, lang),
+        Some(a) if a.id() == target.id() => query_for_node(target, &source, &mut 0, lang),
         Some(a) => {
             let path = build_path(a, target);
-            query_from_path(&path, &source, &mut 0)
+            query_from_path(&path, &source, &mut 0, lang)
         }
     };
+
+    // La query tiene que identificar al nodo seleccionado y a ninguno otro. Un
+    // ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`—
+    // matchea el primer nodo de ese tipo del archivo, y el capture apuntaría a
+    // otra cosa sin fallar. Un capture mal anclado es peor que uno roto: reporta
+    // OK sobre una correspondencia que no existe.
+    verify_query_identifies(language.clone(), &source, &query, target, file)?;
 
     let start_byte = byte_for_point(&source, start_point);
     let end_byte   = byte_for_point(&source, end_point);
@@ -305,15 +313,47 @@ fn node_contains(node: Node, target_id: usize) -> bool {
     false
 }
 
-fn query_for_node(node: Node, source: &str, counter: &mut usize) -> String {
-    let name_pred = real_name_predicate(node, source, counter);
+/// La query resuelve al nodo capturado, exactamente una vez.
+///
+/// Se verifica acá y no en `check` porque acá todavía se puede no escribir: un
+/// capture que apunta al nodo equivocado se acepta en OK y no vuelve a mirarse.
+fn verify_query_identifies(
+    language: tree_sitter::Language,
+    source:   &str,
+    query_str: &str,
+    target:   Node,
+    file:     &str,
+) -> Result<()> {
+    let hits = query::find_all_targets(language, source, query_str)?;
+    match hits.as_slice() {
+        [m] if m.start == target.start_byte() && m.end == target.end_byte() => Ok(()),
+        [] => bail!(
+            "la query generada no matchea ningún nodo en {file}:\n{query_str}"
+        ),
+        [m] => bail!(
+            "la query generada apunta a otro nodo: bytes {}~{} en vez de {}~{}. \
+             El ancla `{}` no tiene con qué distinguirse en {file}:\n{query_str}",
+            m.start, m.end, target.start_byte(), target.end_byte(), target.kind()
+        ),
+        hits => bail!(
+            "la query generada matchea {} nodos. El ancla `{}` no tiene con qué \
+             distinguirse en {file}:\n{query_str}\n\n\
+             Seleccionar un nodo con nombre propio adentro —una función, un método— \
+             da un ancla única sin inventar un criterio.",
+            hits.len(), target.kind()
+        ),
+    }
+}
+
+fn query_for_node(node: Node, source: &str, counter: &mut usize, lang: &str) -> String {
+    let name_pred = real_name_predicate(node, source, counter, lang);
     format!("({}{}) @target", node.kind(), name_pred)
 }
 
-fn query_from_path(path: &[Node], source: &str, counter: &mut usize) -> String {
+fn query_from_path(path: &[Node], source: &str, counter: &mut usize, lang: &str) -> String {
     assert!(!path.is_empty());
     let node = path[0];
-    let name_pred = real_name_predicate(node, source, counter);
+    let name_pred = real_name_predicate(node, source, counter, lang);
 
     if path.len() == 1 {
         return format!("({}{}) @target", node.kind(), name_pred);
@@ -324,11 +364,11 @@ fn query_from_path(path: &[Node], source: &str, counter: &mut usize) -> String {
         .map(|f| format!("{f}: "))
         .unwrap_or_default();
 
-    let inner = query_from_path(&path[1..], source, counter);
+    let inner = query_from_path(&path[1..], source, counter, lang);
     format!("({}{}\n  {field}{inner})", node.kind(), name_pred)
 }
 
-fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String {
+fn real_name_predicate(node: Node, source: &str, counter: &mut usize, lang: &str) -> String {
     // Special case: markdown section — use heading text as predicate
     if node.kind() == "section" {
         if let Some(pred) = markdown_section_predicate(node, source, counter) {
@@ -347,14 +387,41 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize) -> String 
             return pred;
         }
     }
-    let Some(name_child) = node.child_by_field_name("name") else {
+    // Special case: Rust impl_item — no tiene campo `name`; lo identifica el tipo
+    // y, si es la implementación de un trait, el trait.
+    if lang == "rust" && node.kind() == "impl_item" {
+        if let Some(pred) = rust_impl_predicate(node, source, counter) {
+            return pred;
+        }
+    }
+    // El campo que lleva el nombre depende del lenguaje y del tipo de nodo; la
+    // tabla vive en `grammar`. `name` es el caso mayoritario y el default.
+    let field = grammar::name_field(lang, node.kind()).unwrap_or("name");
+    let Some(name_child) = node.child_by_field_name(field) else {
         return String::new();
     };
     let name_type = name_child.kind();
     let name_text = &source[name_child.byte_range()];
     let cap = format!("@n{counter}");
     *counter += 1;
-    format!("\n  name: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
+    format!("\n  {field}: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
+}
+
+/// Predicado de un `impl` de Rust: el tipo implementado y, si lo hay, el trait.
+///
+/// Con `type:` solo, `impl Foo` y `impl Bar for Foo` producen la misma query y
+/// matchean el primero de los dos que aparezca en el archivo.
+fn rust_impl_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    let mut out = String::new();
+    for field in ["trait", "type"] {
+        let Some(child) = node.child_by_field_name(field) else { continue };
+        let text = &source[child.byte_range()];
+        if text.contains('"') { continue; }
+        let cap = format!("@n{counter}");
+        *counter += 1;
+        out.push_str(&format!("\n  {field}: ({}) {cap} (#eq? {cap} \"{text}\")", child.kind()));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// For a YAML `block_sequence_item`, find the `id:` pair inside and use its value as predicate.
