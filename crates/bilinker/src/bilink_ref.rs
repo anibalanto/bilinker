@@ -751,6 +751,17 @@ fn run(cmd: &mut Command, args: &[String]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Los `.bilink/` de **este** repo, recorriendo desde su raíz.
+///
+/// **Se para en la frontera del repo.** Un subdirectorio que tiene su propio `.git`
+/// es otro repositorio, y sus bilinks son suyos: la ref es por repo, y absorberlos
+/// acá los metería en un snapshot que no los describe — el árbol de código del
+/// commit absorbido no los contiene, así que ni la disyunción ni la fidelidad
+/// hablarían de ellos.
+///
+/// No es hipotético: en accreta cada subsistema tiene su capa de implementación en
+/// un repo propio, gitignoreado por el padre, y sin este freno el corte del padre se
+/// tragaba los bilinks de los tres.
 fn walk_for_bilink(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let candidate = dir.join(".bilink");
     if candidate.is_dir() {
@@ -764,6 +775,11 @@ fn walk_for_bilink(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name == ".git" || name == ".bilink" || name == "target" || name.starts_with(".bilink-migrate-") {
+            continue;
+        }
+        // La frontera del repo. `.git` es un directorio en un clon normal y un
+        // archivo en un worktree lincado; las dos formas cuentan.
+        if path.join(".git").exists() {
             continue;
         }
         walk_for_bilink(&path, out)?;

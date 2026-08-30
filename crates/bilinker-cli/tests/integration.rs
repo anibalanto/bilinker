@@ -2217,3 +2217,41 @@ fn without_the_ref_the_same_rebase_loses_the_accepted_text() {
     assert!(!out.contains("int x = 1"),
             "sin la ref el texto aceptado no se puede recuperar — y acá se recuperó:\n{out}");
 }
+
+/// La ref es **por repo**, y el recorrido se para en la frontera.
+///
+/// En accreta cada subsistema tiene su capa de implementación en un repo propio,
+/// gitignoreado por el padre. Sin este freno el corte del padre se traga los bilinks
+/// de los hijos: quedan en un snapshot cuyo árbol de código no los contiene, así que
+/// ni la disyunción ni la fidelidad hablan de ellos.
+#[test]
+fn the_cut_does_not_swallow_the_bilinks_of_a_nested_repo() {
+    let (_t, root, _uuid, _x) = cut_over();
+
+    // Un subsistema con su propio repo adentro, como los `.stratum/impl` de accreta.
+    let nested = root.join("subsystems/otro");
+    fs::create_dir_all(nested.join("src")).unwrap();
+    fs::write(nested.join("src/Lib.java"), "public class Lib {\n    public void go() {}\n}\n").unwrap();
+    for args in [
+        vec!["init", "-q"], vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"], vec!["add", "-A"], vec!["commit", "-qm", "init"],
+    ] {
+        std::process::Command::new("git").current_dir(&nested).args(&args).output().unwrap();
+    }
+    let (_, stderr, ok) = run_in(&nested, &["chain", "new",
+        "--tip", "src/Lib.java:1:1", "--tip", "src/Lib.java:2:5"]);
+    assert!(ok, "chain new en el repo anidado falló:\n{stderr}");
+    assert!(nested.join(".bilink").is_dir(), "el anidado tiene sus propios bilinks");
+
+    // El padre avanza y absorbe. Sus bilinks son los suyos, no los del hijo.
+    fs::write(root.join("docs/otro.md"), "# Otro\n").unwrap();
+    commit(&root, "el padre avanza");
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+
+    let files = git_out(&root, &["ls-tree", "-r", "--name-only",
+                                 &format!("refs/bilink/{}", branch_of(&root))]);
+    assert!(!files.contains("subsystems/otro/.bilink"),
+            "la ref del padre se tragó los bilinks de otro repo:\n{files}");
+    assert!(files.contains(".bilink/"), "y sí lleva los propios:\n{files}");
+}
