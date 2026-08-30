@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::capture::CaptureFile;
 use crate::link::{ByteRange, EndpointState, LinkEndpoint};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BiLinkFile {
     pub uuid: String,
     pub link0: LinkEndpoint,

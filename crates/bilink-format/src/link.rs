@@ -1,5 +1,8 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use anyhow::{bail, Context};
 use stratum::StratumPath;
 
@@ -8,23 +11,37 @@ use stratum::StratumPath;
 /// Los estados de *resolución* —¿dónde está el fragmento?— viven en el capture
 /// (ver `capture::CaptureState`). `Unresolved` es el puente: el capture no
 /// resolvió, así que este endpoint no puede evaluarse.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum EndpointState {
+    #[serde(rename = "PENDING")]
     Pending,
+    #[serde(rename = "OK")]
     Ok,
+    #[serde(rename = "TODO")]
     Todo,
+    #[serde(rename = "DISPLACED")]
     Displaced,
+    #[serde(rename = "EXPANDED")]
     Expanded,
+    #[serde(rename = "ALTERED")]
     Altered,
+    #[serde(rename = "RESTYLED")]
     Restyled,
+    #[serde(rename = "UNRESOLVED")]
     Unresolved,
+    #[serde(rename = "CHAIN_DIRTY")]
     ChainDirty,
     // — solo para endpoints layer y bilink —
+    #[serde(rename = "BROKEN")]
     Broken,
     // — legacy: producidos por el formato anterior, se migran —
+    #[serde(rename = "MOVED")]
     Moved,
+    #[serde(rename = "REANCHORED")]
     Reanchored,
+    #[serde(rename = "UNANCHORED")]
     Unanchored,
+    #[serde(rename = "DELETED")]
     Deleted,
 }
 
@@ -101,7 +118,7 @@ pub enum LinkEndpoint {
     LegacyStructural(StructuralRef),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StructuralRef {
     pub file: String,
     pub query: Option<String>,
@@ -148,25 +165,31 @@ impl LinkEndpoint {
     }
 }
 
+/// Los prefijos que el parser reconoce, y qué endpoint construye cada uno.
+///
+/// **Es la única lista.** El parser la recorre y el esquema JSON la publica, así que
+/// agregar un tipo de endpoint —`repo <alias>`, `abstract`— obliga a tocarla, eso
+/// cambia el esquema, y el guard de versión lo detecta. Sin esto un tipo nuevo sería
+/// **aditivo y silencioso**: un parser viejo leería `abstract` como un path de capa
+/// sin fallar, que es el caso que ADR-0006 pone como motivo del guard.
+pub const ENDPOINT_PREFIXES: &[(&str, fn(String) -> LinkEndpoint)] = &[
+    ("capture", LinkEndpoint::Capture),
+    ("issue",   LinkEndpoint::Issue),
+];
+
 impl FromStr for LinkEndpoint {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
 
-        // `capture <uuid>` — referencia a un .capture de esta capa
-        if let Some(id) = trimmed.strip_prefix("capture ") {
-            let id = id.trim();
-            if !id.is_empty() {
-                return Ok(LinkEndpoint::Capture(id.to_string()));
-            }
-        }
-
-        // `issue <id>` — ítem del worklist
-        if let Some(id) = trimmed.strip_prefix("issue ") {
-            let id = id.trim();
-            if !id.is_empty() {
-                return Ok(LinkEndpoint::Issue(id.to_string()));
+        for (prefix, build) in ENDPOINT_PREFIXES {
+            let Some(rest) = trimmed.strip_prefix(*prefix).and_then(|r| r.strip_prefix(' ')) else {
+                continue;
+            };
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return Ok(build(rest.to_string()));
             }
         }
 
@@ -259,6 +282,126 @@ impl FromStr for ByteRange {
 impl fmt::Display for ByteRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}~{}", self.start, self.end)
+    }
+}
+
+// ─── serialización de los tipos que en disco son un string ────────────────────
+//
+// `link` y `offset` son strings en el archivo —`capture <uuid>`, `3226~5109`— y
+// no objetos. Serializarlos como tal mantiene el modelo y el disco diciendo lo
+// mismo, que es lo que hace que el esquema publicado sirva para validar archivos
+// ajenos (ADR-0006, decisión 3) y no sólo para describir el tipo de Rust.
+
+/// Serializa como su forma de disco y parsea con `FromStr`.
+macro_rules! string_repr {
+    ($t:ty, $name:literal, $desc:literal) => {
+        impl Serialize for $t {
+            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $t {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let raw = String::deserialize(d)?;
+                raw.parse().map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl JsonSchema for $t {
+            fn schema_name() -> Cow<'static, str> { $name.into() }
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({ "type": "string", "description": $desc })
+            }
+        }
+    };
+}
+
+impl Serialize for LinkEndpoint {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for LinkEndpoint {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for LinkEndpoint {
+    fn schema_name() -> Cow<'static, str> { "LinkEndpoint".into() }
+
+    /// Publica los prefijos reconocidos, no sólo "es un string".
+    ///
+    /// Es lo que hace que agregar un tipo de endpoint cambie el esquema. Con un
+    /// `{"type": "string"}` a secas, un tipo nuevo pasaría el guard sin que el hash
+    /// se moviera — que es justo el agujero que el guard existe para tapar.
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let prefixes: Vec<&str> = ENDPOINT_PREFIXES.iter().map(|(p, _)| *p).collect();
+        json_schema!({
+            "type": "string",
+            "description": "Un extremo del bilink. Con prefijo cuando el tipo es \
+                            explícito; si no, un path Stratum hacia la capa vecina.",
+            "prefixes": prefixes,
+        })
+    }
+}
+string_repr!(
+    ByteRange, "ByteRange",
+    "Rango de bytes `start~end`. Relativo al nodo cuando es `offset`; absoluto en el archivo cuando es `range`."
+);
+
+#[cfg(test)]
+mod repr_tests {
+    use super::*;
+
+    /// Un endpoint viaja como el string que está en el archivo, no como un objeto.
+    #[test]
+    fn an_endpoint_serializes_to_its_on_disk_form() {
+        let ep = LinkEndpoint::Issue("3a".into());
+        assert_eq!(serde_json::to_string(&ep).unwrap(), "\"issue 3a\"");
+        let back: LinkEndpoint = serde_json::from_str("\"issue 3a\"").unwrap();
+        assert_eq!(back, ep);
+    }
+
+    #[test]
+    fn a_range_serializes_to_start_tilde_end() {
+        let r = ByteRange { start: 3226, end: 5109 };
+        assert_eq!(serde_json::to_string(&r).unwrap(), "\"3226~5109\"");
+        let back: ByteRange = serde_json::from_str("\"3226~5109\"").unwrap();
+        assert_eq!(back, r);
+    }
+
+    /// Todo prefijo de la tabla lo reconoce el parser, y el parser no reconoce otros.
+    ///
+    /// Ata las dos puntas: la tabla es lo que el esquema publica, así que si pudiera
+    /// desincronizarse del parser el esquema mentiría sin que nada fallara.
+    #[test]
+    fn every_declared_prefix_is_parsed() {
+        for (prefix, _) in ENDPOINT_PREFIXES {
+            let ep: LinkEndpoint = format!("{prefix} abc").parse().unwrap();
+            assert_eq!(ep.to_string(), format!("{prefix} abc"),
+                "el prefijo `{prefix}` está en la tabla pero no round-trippea");
+        }
+    }
+
+    /// Un prefijo que no está en la tabla no produce un endpoint con prefijo.
+    #[test]
+    fn an_undeclared_prefix_is_not_prefixed() {
+        for word in ["repo", "abstract", "bilink", "task"] {
+            let ep: LinkEndpoint = format!("{word} abc").parse().unwrap();
+            assert!(!matches!(ep, LinkEndpoint::Capture(_) | LinkEndpoint::Issue(_)),
+                "`{word}` no está declarado y no debería parsear como endpoint con prefijo");
+        }
+    }
+
+    /// Los estados van con el nombre que tienen en el archivo, no con el de Rust.
+    #[test]
+    fn a_state_serializes_with_its_on_disk_name() {
+        assert_eq!(serde_json::to_string(&EndpointState::ChainDirty).unwrap(), "\"CHAIN_DIRTY\"");
+        assert_eq!(serde_json::to_string(&EndpointState::Ok).unwrap(), "\"OK\"");
     }
 }
 

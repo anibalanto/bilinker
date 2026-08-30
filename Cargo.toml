@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/accreta-migrate",
+    "crates/bilink-format",
     "crates/bilinker",
     "crates/bilinker-cli",
     "crates/bilinker-lsp",

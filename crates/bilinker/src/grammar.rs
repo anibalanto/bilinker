@@ -43,6 +43,11 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             "enum_item",
             "trait_item",
             "impl_item",
+            // Una constante es una declaración con nombre propio como cualquier otra,
+            // y en un crate de formato suele ser el dato que la spec describe: una
+            // tabla de prefijos, un registro de versiones.
+            "const_item",
+            "static_item",
         ],
         "yaml" => &[
             "block_sequence_item",
@@ -80,6 +85,8 @@ pub fn name_field(lang: &str, kind: &str) -> Option<&'static str> {
         ("rust", "trait_item")    => Some("name"),
         ("rust", "mod_item")      => Some("name"),
         ("rust", "impl_item")     => Some("type"),
+        ("rust", "const_item")    => Some("name"),
+        ("rust", "static_item")   => Some("name"),
         ("typescript" | "tsx", "class_declaration")          => Some("name"),
         ("typescript" | "tsx", "abstract_class_declaration") => Some("name"),
         ("typescript" | "tsx", "function_declaration")       => Some("name"),

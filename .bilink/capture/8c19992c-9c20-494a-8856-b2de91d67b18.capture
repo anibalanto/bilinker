@@ -1,0 +1,11 @@
+file:   crates/bilink-format/src/capture.rs
+query:  (impl_item
+  type: (type_identifier) @n0 (#eq? @n0 "CaptureFile")
+  body: (declaration_list
+  (function_item
+  name: (identifier) @n1 (#eq? @n1 "dir")) @target))
+
+# Cache
+range:       3388~3477
+state:       RESOLVED
+resolved_at: 2026-08-30T02:18:21Z

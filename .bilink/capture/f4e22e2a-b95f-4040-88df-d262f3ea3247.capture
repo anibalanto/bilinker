@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "stable_anchor_kinds")) @target
 
 # Cache
-range:       1246~2295
+range:       1246~2580
 state:       RESOLVED
-resolved_at: 2026-08-29T23:41:11Z
+resolved_at: 2026-08-30T02:21:33Z
