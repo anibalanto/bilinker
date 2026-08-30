@@ -1,5 +1,5 @@
 use std::path::{Component, Path, PathBuf};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use uuid::Uuid;
 
 use bilink_format::{BiLink, LinkEndpoint};
@@ -22,6 +22,10 @@ pub struct Declaration {
     pub kind: Option<String>,
     /// El `name` de cada tip, en el orden en que se pasaron.
     pub name: [Option<String>; 2],
+    /// El uuid del bilink remoto, cuando un tip es `repo`. En una cadena local se
+    /// genera; cruzando la frontera se toma del proveedor, porque **el uuid
+    /// compartido es el rendezvous**.
+    pub uuid: Option<String>,
 }
 
 /// Creates a new chain or direct link.
@@ -29,6 +33,7 @@ pub struct Declaration {
 /// `tips`: exactly 2 entries of (layer_path_relative_to_root, structural_endpoint).
 /// `mids`: ordered layer paths between the two tips.
 /// All paths are relative to `root`.
+/// Crea una cadena. Con un tip `repo`, el uuid viene de afuera y no se genera.
 pub fn chain_new(
     root: &Path,
     tips: &[(PathBuf, LinkEndpoint)],
@@ -39,7 +44,16 @@ pub fn chain_new(
         bail!("chain new requires exactly 2 --tip arguments");
     }
 
-    let uuid = Uuid::new_v4().to_string();
+    // **El UUID es el rendezvous.** Del lado del consumidor no se genera: se toma el
+    // del bilink que el proveedor publicó, porque la convención de UUID compartido
+    // es lo que hace que los dos lados se encuentren sin que ninguno escriba en el
+    // repo del otro. Generar uno propio rompería el vínculo antes de crearlo.
+    let uuid = match tips.iter().find_map(|(_, ep)| ep.repo_alias()) {
+        Some(_) => decl.uuid.clone().context(
+            "un tip `repo` necesita el uuid del bilink remoto: `--from-repo <alias>:<uuid>`",
+        )?,
+        None => Uuid::new_v4().to_string(),
+    };
 
     let all_layers: Vec<PathBuf> = {
         let mut v = vec![tips[0].0.clone()];
@@ -105,8 +119,18 @@ pub fn resolve_layer_link(
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/// El path del bilink en una capa, **dejando la capa bien formada**.
+///
+/// Crear un bilink es crear el `.bilink/` si no estaba, y un `.bilink/` sin su
+/// `.gitignore` y sin su `version` está a medias: el primero deja que se commiteen
+/// derivados, y el segundo lo vuelve indistinguible de una capa anterior a que el
+/// campo existiera — que del otro lado de la frontera significa "no puedo
+/// interpretar lo que publica".
 fn bilink_path(root: &Path, layer: &Path, uuid: &str) -> PathBuf {
-    BiLink::path_in(&root.join(layer), uuid)
+    let layer_root = root.join(layer);
+    let _ = bilink_format::write_ignore(&layer_root);
+    let _ = bilink_format::ensure_version(&layer_root);
+    BiLink::path_in(&layer_root, uuid)
 }
 
 /// El endpoint `path` que, parado en `from_layer`, nombra a `to_layer`.

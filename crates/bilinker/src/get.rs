@@ -46,6 +46,13 @@ pub fn get(
             resolve(root, &cap, before, after)
         }
         LinkEndpoint::Path(p) => traverse_layer(root, p.clone(), &uuid, before, after),
+        // Cruzar la frontera: el fragmento vive en el clon del proveedor, que el
+        // sparse-checkout ya trajo entero.
+        LinkEndpoint::Repo(alias) => traverse_repo(root, alias, &uuid, before, after),
+        LinkEndpoint::Abstract => bail!(
+            "el endpoint {endpoint} es `abstract`: es la punta abierta y no apunta a \
+             ningún fragmento de este repo"
+        ),
         LinkEndpoint::Issue(id) => bail!("el endpoint {endpoint} es un issue ({id}) — se mira con worklist"),
     }
 }
@@ -91,8 +98,70 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
                             adj_commit.as_deref().unwrap_or(&commit),
                             adj_range.as_ref(), adj_hash.as_deref())
         }
+        // El diff cruzando la frontera es lo que **profundiza el clon**: `check` es
+        // masivo y corre superficial, y traer historia se paga sólo acá, donde hay
+        // un humano mirando un bilink.
+        LinkEndpoint::Repo(alias) => diff_across_frontier(root, alias, &uuid, accepted),
+        LinkEndpoint::Abstract => bail!(
+            "el endpoint {endpoint} es `abstract`: no hay contra qué diffear"
+        ),
         LinkEndpoint::Issue(id) => bail!("el endpoint {endpoint} es un issue ({id})"),
     }
+}
+
+/// El fragmento del proveedor, leído de su clon.
+///
+/// El clon lleva el árbol del proyecto más `.bilink/`, así que el capture remoto y
+/// el archivo al que apunta vienen del mismo commit por construcción.
+fn traverse_repo(
+    root: &Path, alias: &str, uuid: &str,
+    before: Option<(usize, usize)>, after: Option<(usize, usize)>,
+) -> Result<GetResult> {
+    let clone = crate::frontier::Provider::clone_path(root, alias);
+    if !clone.join(".bilink").is_dir() {
+        bail!("el repo '{alias}' no está clonado. Traerlo primero: `bilinker fetch {alias}`.");
+    }
+    crate::frontier::verify_format_version(&clone, alias)?;
+
+    let remote = BiLink::load(&BiLink::path_in(&clone, uuid))
+        .with_context(|| format!("el bilink {uuid} no está en el repo '{alias}'"))?;
+    let id = [0u8, 1u8]
+        .iter()
+        .find_map(|n| remote.endpoint.get(*n).link.capture_id())
+        .context("el bilink remoto no tiene endpoint estructural")?;
+    let cap = bilink_format::Capture::load_in(&clone, id)?;
+
+    resolve(&clone, &cap, before, after)
+}
+
+/// Qué cambió del lado del proveedor entre lo que este repo aceptó y lo que publica.
+///
+/// **Ningún commit del proveedor se copia**: el de lo aceptado se descubre acá,
+/// recorriendo su ref hacia atrás hasta que su `accepted` coincida con el guardado.
+/// Es lo que hace que el consumidor no guarde nada más que dos hashes opacos.
+fn diff_across_frontier(
+    root: &Path, alias: &str, uuid: &str, accepted: &bilink_format::Accepted,
+) -> Result<DiffResult> {
+    let clone = crate::frontier::Provider::clone_path(root, alias);
+    if !clone.join(".bilink").is_dir() {
+        bail!("el repo '{alias}' no está clonado. Traerlo primero: `bilinker fetch {alias}`.");
+    }
+    crate::frontier::verify_format_version(&clone, alias)?;
+
+    let provider = crate::frontier::Provider::load(root, alias)?;
+    let commit = crate::frontier::deepen_until_accepted(&clone, &provider, uuid, accepted)?
+        .with_context(|| format!(
+            "no se encontró en la historia de '{alias}' la versión que este repo aceptó"
+        ))?;
+
+    let remote = BiLink::load(&BiLink::path_in(&clone, uuid))?;
+    let id = [0u8, 1u8]
+        .iter()
+        .find_map(|n| remote.endpoint.get(*n).link.capture_id())
+        .context("el bilink remoto no tiene endpoint estructural")?;
+    let cap = bilink_format::Capture::load_in(&clone, id)?;
+
+    diff_structural(&clone, &cap, &commit, None, None)
 }
 
 /// El uuid de un bilink es el nombre de su archivo.

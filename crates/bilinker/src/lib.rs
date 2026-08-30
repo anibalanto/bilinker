@@ -15,6 +15,7 @@ pub mod capture;
 pub mod chain;
 pub mod check;
 pub mod config;
+pub mod frontier;
 pub mod get;
 pub mod git;
 pub mod grammar;

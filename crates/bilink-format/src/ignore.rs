@@ -10,7 +10,9 @@
 //! la hereda— y el `.gitignore` del repo obligaría a una entrada por capa.
 //!
 //! La escriben los mismos comandos que crean `cache/` e `index/`: el directorio no
-//! puede existir sin su regla.
+//! puede existir sin su regla. Y va de la mano de `ensure_version`, por lo mismo:
+//! un `.bilink/` recién creado tiene que declarar qué formato son sus archivos, o
+//! del otro lado de la frontera es indistinguible de uno anterior al campo.
 
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};

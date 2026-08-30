@@ -154,6 +154,41 @@ fn compute(
             Ok((adj_accepted.clone(), None))
         }
 
+        // Un endpoint repo copia los mismos **dos** valores que un `path`, sólo que
+        // del bilink de otro proyecto. Son dos SHA-256 opacos: se comparan, no se
+        // resuelven, y de ellos no se reconstruye nada del proveedor.
+        LinkEndpoint::Repo(alias) => {
+            use crate::frontier::Resolution;
+            match crate::frontier::resolve(layer, alias, uuid)? {
+                Resolution::Found(view) => {
+                    if !view.still_abstract {
+                        bail!("la otra punta de '{alias}' dejó de ser `abstract`: el vínculo \
+                               no se sostiene, y aceptarlo lo fijaría contra algo que ya no \
+                               admite ser ampliado");
+                    }
+                    let accepted = view.accepted.context(
+                        "el proveedor todavía no aceptó lo que publica; no hay qué copiar",
+                    )?;
+                    Ok((accepted, None))
+                }
+                // Aceptar exige leer al proveedor, así que acá sí falta el clon —a
+                // diferencia de `check`, que lo reporta y sigue.
+                Resolution::NotCloned => bail!(
+                    "el repo '{alias}' no está clonado. Traerlo primero: `bilinker fetch {alias}`."
+                ),
+                Resolution::BilinkGone => bail!(
+                    "el bilink {uuid} no está en el repo '{alias}': el proveedor lo removió"
+                ),
+            }
+        }
+
+        // Una punta `abstract` no se acepta nunca: no hay nada que bendecir del lado
+        // abierto. `accept .` la saltea sola, y pedirla por nombre es un error.
+        LinkEndpoint::Abstract => bail!(
+            "un endpoint `abstract` no se acepta: es la punta abierta, y su estado es \
+             OPEN siempre"
+        ),
+
         // Un `issue` no lleva `accepted.link`: la ubicación de un ítem es su id.
         LinkEndpoint::Issue(id) => {
             let (item, root) = crate::issue::resolve_issue_path(layer, id)?;
@@ -182,6 +217,11 @@ pub fn accept_all(layer: &Path) -> Result<Vec<AcceptResult>> {
         let Ok(bl) = BiLink::load(&path) else { continue };
 
         for n in [0u8, 1u8] {
+            // `accept .` **nunca toca una punta `abstract`.** Su estado es OPEN,
+            // constante y sano: no hay nada que aprobar del lado abierto, y
+            // saltearla acá es lo que evita que un bulk la convierta en otra cosa.
+            if bl.endpoint.get(n).link.is_abstract() { continue; }
+
             let needs = match cache.endpoint_state(uuid, n) {
                 Some(s) => !s.is_ok(),
                 None    => bl.endpoint.get(n).accepted.is_none(),
