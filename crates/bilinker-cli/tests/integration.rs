@@ -896,27 +896,26 @@ fn git(root: &Path, args: &[&str]) {
     std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
 }
 
-/// `apply` no aplica un fix derivado de la cache: re-resuelve y compara.
+/// `apply` no decide con el estado cacheado: lo re-deriva.
 ///
-/// El estado cacheado lo escribió el último `check`, y el archivo pudo cambiar
-/// después. Corregir contra esa foto vieja repuntaría a una ubicación que ya no es.
+/// El estado que escribió el último `check` describe el árbol de ese momento.
+/// Acá el archivo se reescribe después, así que la cache queda diciendo que hay
+/// algo que arreglar cuando ya no lo hay — y `apply` no tiene que creerle.
 #[test]
-fn apply_discards_a_fix_when_the_cache_went_stale() {
+fn apply_rederives_the_state_instead_of_trusting_the_cache() {
     let (_t, root, _u) = accepted_layer();
 
-    // El fragmento crece: check lo deja en EXPANDED, con fix disponible.
+    // check deja un estado no-OK en la cache…
     let original = fs::read_to_string(root.join("docs/spec.md")).unwrap();
-    fs::write(root.join("docs/spec.md"), original + "\nUna línea más.\n").unwrap();
-    assert!(check_states(&root).contains("EXPANDED"));
+    fs::write(root.join("docs/spec.md"), original.clone() + "\nUna línea más.\n").unwrap();
+    assert!(!check_states(&root).contains("OK\n"), "el escenario no se armó");
 
-    // Ahora el contenido cambia de verdad, **sin** volver a correr check: la cache
-    // sigue diciendo EXPANDED y la realidad ya es otra.
-    fs::write(root.join("docs/spec.md"), "# Spec\n\nReescrito de cero.\n").unwrap();
+    // …y después el archivo vuelve atrás, sin volver a correr check.
+    fs::write(root.join("docs/spec.md"), &original).unwrap();
 
     let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
-    assert!(!out.contains("EXPANDED"), "no debe ofrecer un fix contra la cache vieja:\n{out}");
-    assert!(err.contains("cache") || err.contains("check"),
-        "y tiene que decir por qué lo descartó:\n{err}");
+    assert!(!out.contains("EXPANDED") && !out.contains("MOVED"),
+            "apply propuso un fix contra un estado que ya no es:\n{out}{err}");
 }
 
 /// Un fix que ya no hace falta se omite en silencio.
@@ -1001,33 +1000,6 @@ fn remove_finds_a_bilink_by_its_prefix() {
     assert!(!root.join(format!(".bilink/{uuid}.yaml")).exists(), "no lo borró");
 }
 
-/// Un estado con fix que `apply` no puede calcular se reporta, no se omite.
-///
-/// Un `offset` es relativo al nodo, así que un capture de archivo completo —que
-/// no tiene nodo— no puede recibir uno. `check` igual dice EXPANDED, que es un
-/// estado con fix. Callarse deja a `check` reportando un fix disponible y a
-/// `apply` contestando que no hay nada que hacer, sin nadie que lo explique.
-#[test]
-fn apply_says_why_it_cannot_compute_a_fix() {
-    let (_t, root) = isolated_git_workspace();
-
-    // Sin posición, el tip captura el archivo entero: el capture sale sin query.
-    run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java:2:5"]);
-    run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
-
-    let spec = fs::read_to_string(root.join("docs/spec.md")).unwrap();
-    fs::write(root.join("docs/spec.md"), format!("{spec}\nY algo más.\n")).unwrap();
-    commit(&root, "creció");
-
-    let states = check_states(&root);
-    assert!(states.contains("EXPANDED"), "el escenario no se armó:\n{states}");
-
-    let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
-    assert!(err.contains("warn"),
-            "apply se calló un fix que no puede calcular:\n{out}{err}");
-    assert!(err.contains("archivo completo"), "y no dijo por qué:\n{err}");
-}
 
 fn commit(root: &Path, msg: &str) {
     for args in [vec!["add", "-A"], vec!["commit", "-qm", msg]] {

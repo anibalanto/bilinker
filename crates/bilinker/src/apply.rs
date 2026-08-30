@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 
 use bilink_format::bilink::bilink_files;
-use bilink_format::{BiLink, ByteRange, Capture};
+use bilink_format::{BiLink, Capture};
 
 use crate::cache::Cache;
 use crate::state::{CaptureState, EndpointState};
@@ -38,11 +38,8 @@ impl PendingFix {
     pub fn description(&self) -> String {
         if self.from.file != self.to.file {
             format!("{} → {}", self.from.file, self.to.file)
-        } else if self.from.query != self.to.query {
-            format!("query → {}", self.to.query.as_deref().unwrap_or("(archivo entero)"))
         } else {
-            format!("offset → {}", self.to.offset.as_ref()
-                .map(|o| o.to_string()).unwrap_or_else(|| "(nodo entero)".into()))
+            format!("query → {}", self.to.query.as_deref().unwrap_or("(archivo entero)"))
         }
     }
 }
@@ -64,57 +61,32 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
             let Some(cap_id) = e.link.capture_id() else { continue };
             let Ok(cap) = Capture::load_in(layer, cap_id) else { continue };
 
+            // **El estado se re-deriva; la cache no decide nada acá.**
+            //
+            // El estado cacheado lo escribió el último `check`, y el archivo pudo
+            // cambiar después: aplicar un fix derivado de esa foto es corregir
+            // contra algo que ya no está. De la cache sólo sale `commit`, que es
+            // un dato de git y no una conclusión sobre el árbol actual.
             let (state, _) = crate::check::resolve_capture(
                 layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
-            let endpoint_state = cache.endpoint_state(uuid, n);
 
-            let (to, reason) = match (state, endpoint_state) {
-                (CaptureState::Moved, _) => match compute_moved(layer, &cap)? {
-                    Some(c) => (c, "MOVED"),
-                    None => continue,
-                },
-                (CaptureState::Reanchored, _) => match compute_reanchored(layer, &bl, uuid, n, &cap)? {
-                    Some(c) => (c, "REANCHORED"),
-                    None => continue,
-                },
-                (CaptureState::Resolved, Some(cached)) if cached.has_fix() => {
-                    // **Validación de frescura.** El estado cacheado lo escribió el
-                    // último `check`, y el archivo pudo cambiar después: aplicar un
-                    // fix derivado de la cache es corregir contra una foto vieja.
-                    let Some(accepted) = e.accepted.as_ref() else { continue };
-                    let cached_commit = cache.commit(uuid, n).map(str::to_string);
-                    let range = cache.capture_range(cap_id);
-                    let mut derive = || cached_commit.clone().or_else(
-                        || crate::capture::derive_commit(layer, &cap, &accepted.hash));
-                    let mut src = crate::check::CommitSource {
-                        cached: cached_commit.as_deref(),
-                        derive: &mut derive,
-                    };
-                    let fresh = crate::check::compare_content(
-                        layer, &cap, accepted, range.as_ref(), &mut src, None)?;
-
-                    if fresh == EndpointState::Ok {
-                        // El fix ya no hace falta. Se omite en silencio: que algo se
-                        // haya arreglado solo no es una anomalía que reportar.
-                        continue;
-                    }
-                    if fresh != cached {
-                        eprintln!(
-                            "warn: {}… endpoint.{n}: la cache dice {cached} y la \
-                             resolución actual da {fresh}\n                                   — fix descartado. Correr `bilinker check`.",
-                            &uuid[..8.min(uuid.len())]);
-                        continue;
-                    }
-                    match compute_offset(layer, &bl, uuid, n, &cap, cached) {
-                        Ok(c) => (c, if cached == EndpointState::Expanded { "EXPANDED" } else { "DISPLACED" }),
-                        Err(why) => {
-                            eprintln!("warn: {}… endpoint.{n}: {why}",
-                                      &uuid[..8.min(uuid.len())]);
-                            continue;
-                        }
-                    }
-                }
+            let calculado = match state {
+                CaptureState::Moved      => compute_moved(layer, &cap).map(|c| (c, "MOVED")),
+                CaptureState::Reanchored =>
+                    compute_reanchored(layer, &bl, uuid, n, &cap).map(|c| (c, "REANCHORED")),
                 _ => continue,
+            };
+
+            // Un fix que no se puede calcular **se reporta**. Propagarlo con `?`
+            // abortaba el scan entero: un solo endpoint sin arreglo dejaba sin
+            // revisar a todos los demás.
+            let (to, reason) = match calculado {
+                Ok((Some(c), reason)) => (c, reason),
+                Ok((None, _)) => continue,
+                Err(why) => {
+                    eprintln!("warn: {}… endpoint.{n}: {why}", &uuid[..8.min(uuid.len())]);
+                    continue;
+                }
             };
 
             // Un fix que no mueve nada es un no-op.
@@ -198,55 +170,3 @@ fn compute_reanchored(
     Ok(Some(Capture { query: Some(new_query), ..cap.clone() }))
 }
 
-/// DISPLACED y EXPANDED: el offset se corre o se amplía.
-/// La ubicación nueva de un DISPLACED o un EXPANDED, o **por qué no la hay**.
-///
-/// `check` dice que hay un fix disponible; acá se produce, y a veces no se puede.
-/// Devolver `None` en cada uno de esos casos dejaba a `check` reportando un estado
-/// con fix y a `apply` contestando que no hay nada que hacer, sin nadie que
-/// explicara la contradicción. El `Err` es el motivo, y `apply` lo imprime.
-fn compute_offset(
-    layer: &Path, bl: &BiLink, uuid: &str, n: u8, cap: &Capture, state: EndpointState,
-) -> Result<Capture> {
-    let Some(accepted) = bl.endpoint.get(n).accepted.as_ref() else {
-        bail!("{state}, pero el endpoint no tiene nada aprobado que buscar");
-    };
-    let mut cache = Cache::load(layer);
-    let Some(commit) = cache.commit_or_derive(layer, uuid, n, cap, &accepted.hash) else {
-        bail!("{state}, pero el contenido aceptado no se ubica en la historia del \
-               archivo — ni en la cache ni en los últimos commits");
-    };
-    let Some(text) = crate::capture::accepted_text(layer, cap, &commit, Some(&accepted.hash)) else {
-        bail!("{state}, pero git no entrega el texto aceptado en {commit} — sin él no \
-               hay qué buscar");
-    };
-
-    let source = std::fs::read_to_string(layer.join(&cap.file))?;
-    let Some(q) = &cap.query else {
-        bail!("{state} sobre un capture de archivo completo: no hay nodo al que \
-               referir un offset");
-    };
-    let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
-    let Some((node_start, node_end, _)) = query::find_target_with_sexp(language, &source, q)? else {
-        bail!("{state}, pero la query ya no resuelve — repuntar con `bilinker recapture`");
-    };
-    let node = &source[node_start..node_end.min(source.len())];
-
-    let offset = match state {
-        // Creció alrededor de lo aceptado: el offset abarca el nodo entero.
-        EndpointState::Expanded => None,
-        // Se corrió: el offset apunta a donde está ahora.
-        //
-        // `check` busca el texto en todo el archivo y acá se busca dentro del
-        // nodo, que es donde un offset puede nombrarlo. Cuando el texto quedó
-        // fuera del nodo los dos tienen razón y no hay offset que sirva.
-        EndpointState::Displaced => match node.find(&text) {
-            Some(p) => Some(ByteRange { start: p, end: p + text.len() }),
-            None => bail!("DISPLACED, pero el texto aceptado no está dentro del nodo \
-                           — un offset no puede nombrarlo. Repuntar con \
-                           `bilinker recapture`"),
-        },
-        other => bail!("{other} no es un estado con fix de offset"),
-    };
-    Ok(Capture { offset, ..cap.clone() })
-}

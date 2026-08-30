@@ -50,6 +50,10 @@ pub fn schema_json() -> String {
 /// nada. La línea es la publicación, no el número.
 pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     ("2.0.0", "39396775ea75eec5ac760b51a450a4315b2d1a8275860daedf7e4468e5acc21f"),
+    // 3.0.0 saca el `offset` del capture: un fragmento es un nodo entero. Sacar
+    // un campo no es aditivo, así que sube el major — y con él se va `DISPLACED`,
+    // el único estado que hablaba de un sub-rango.
+    ("3.0.0", "faf08a34795e9915d0e9dc7b0c881936e8446f1c027849bb8f9e6ae5702db9e0"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

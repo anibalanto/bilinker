@@ -43,8 +43,6 @@ pub enum EndpointState {
     /// un vínculo a otro fragmento es una decisión, y una decisión sin aprobar es
     /// trabajo pendiente: sale con 1.
     Relocated,
-    /// Lo aceptado está en otro offset del nodo.
-    Displaced,
     /// El fragmento contiene lo aceptado verbatim y algo más.
     Expanded,
     /// El texto difiere pero el AST coincide — sólo formato.
@@ -70,16 +68,11 @@ impl EndpointState {
 
     /// No hace fallar a `check`.
     ///
-    /// **`Relocated` no está acá.** Antes `Moved` y `Displaced` salían con 0 porque
-    /// `apply` los cerraba solo; ahora repuntar no aprueba, y un vínculo apuntando a
-    /// un fragmento que nadie miró es trabajo pendiente.
+    /// **`Relocated` no está acá.** Antes `Moved` salía con 0 porque `apply` lo
+    /// cerraba solo; ahora repuntar no aprueba, y un vínculo apuntando a un
+    /// fragmento que nadie miró es trabajo pendiente.
     pub fn is_clean(&self) -> bool {
-        matches!(self, Self::Ok | Self::Displaced | Self::Expanded | Self::Restyled)
-    }
-
-    /// Tiene una ubicación nueva que `apply` puede proponer.
-    pub fn has_fix(&self) -> bool {
-        matches!(self, Self::Displaced | Self::Expanded)
+        matches!(self, Self::Ok | Self::Expanded | Self::Restyled)
     }
 }
 
@@ -115,7 +108,6 @@ state_str!(EndpointState,
     Pending    => "PENDING",
     Ok         => "OK",
     Relocated  => "RELOCATED",
-    Displaced  => "DISPLACED",
     Expanded   => "EXPANDED",
     Restyled   => "RESTYLED",
     Altered    => "ALTERED",
@@ -141,7 +133,7 @@ mod tests {
     #[test]
     fn every_state_round_trips() {
         use EndpointState::*;
-        for s in [Pending, Ok, Relocated, Displaced, Expanded, Restyled,
+        for s in [Pending, Ok, Relocated, Expanded, Restyled,
                   Altered, Unresolved, Todo, ChainDirty, Broken] {
             assert_eq!(s.to_string().parse::<EndpointState>().unwrap(), s);
         }
@@ -158,12 +150,14 @@ mod tests {
         assert!(!EndpointState::Relocated.is_ok());
     }
 
-    /// Lo que tiene fix se imprime pero no hace fallar.
+    /// Lo que no cierra solo se imprime pero no hace fallar.
+    ///
+    /// `EXPANDED` es "creció alrededor de lo aceptado, sin tocarlo": hay que
+    /// mirarlo, pero lo aceptado sigue intacto y no es un vínculo roto.
     #[test]
-    fn a_fixable_state_prints_but_does_not_fail() {
-        for s in [EndpointState::Displaced, EndpointState::Expanded] {
-            assert!(!s.is_ok(),    "{s} no está OK: hay trabajo");
-            assert!(s.is_clean(),  "{s} tiene fix: no hace fallar");
-        }
+    fn expanded_prints_but_does_not_fail() {
+        let s = EndpointState::Expanded;
+        assert!(!s.is_ok(),   "{s} no está OK: hay trabajo");
+        assert!(s.is_clean(), "{s} no rompe nada: no hace fallar");
     }
 }

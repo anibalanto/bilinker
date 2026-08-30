@@ -69,6 +69,9 @@ pub struct Plan {
     pub dropped_resolved_at: usize,
     /// Captures del formato 1 que colapsaron en uno solo por tener la misma ubicación.
     pub collapsed: usize,
+    /// Sub-rangos descartados: el formato ya no los tiene. El endpoint queda
+    /// apuntando al nodo que lo contenía, y hay que revisarlo a mano.
+    pub ranges_dropped: usize,
     /// Endpoints `path` cuyo vecino no se pudo leer: quedan sin `accepted.link`.
     pub unresolved_neighbours: usize,
     /// Los `commit.N` rescatados, por `(uuid, n)`.
@@ -204,11 +207,8 @@ fn neighbour_capture(
             _ => None,
         };
         if let Some(sref) = sref {
-            let cap = v2::Capture {
-                file:   sref.file.clone(),
-                query:  sref.query.clone(),
-                offset: sref.range.as_ref().map(|r| v2::ByteRange { start: r.start, end: r.end }),
-            };
+            let cap = v2::Capture { file: sref.file.clone(), query: sref.query.clone() };
+            if sref.range.is_some() { p.ranges_dropped += 1; }
             return Ok(Some(format!("capture {}", cap.id()).parse()?));
         }
     }
@@ -255,11 +255,15 @@ fn convert_link(layer: &Path, old: &v1::link::LinkEndpoint, p: &mut Plan) -> Res
 /// Dos ubicaciones idénticas dan el mismo id y por lo tanto el mismo archivo: la
 /// deduplicación es por construcción, y acá se aplica de una vez a lo que ya existía.
 fn mint(sref: &v1::link::StructuralRef, p: &mut Plan) -> Result<v2::LinkEndpoint> {
-    let cap = v2::Capture {
-        file:   sref.file.clone(),
-        query:  sref.query.clone(),
-        offset: sref.range.as_ref().map(|r| v2::ByteRange { start: r.start, end: r.end }),
-    };
+    // **El sub-rango se descarta, y se cuenta.**
+    //
+    // El formato ya no lo tiene: un fragmento es un nodo entero. Reubicarlo
+    // exigiría resolver la query y buscar el nodo correcto, y una migración no
+    // corre tree-sitter (`migration.md` inv. 5). Así que el endpoint queda
+    // apuntando al nodo que lo contenía, y el resumen dice cuántos — la misma
+    // regla que `001` con `subgraph.N`: una pérdida se reporta, no se calla.
+    let cap = v2::Capture { file: sref.file.clone(), query: sref.query.clone() };
+    if sref.range.is_some() { p.ranges_dropped += 1; }
     let id = cap.id();
     if p.captures.insert(id.clone(), cap).is_some() {
         p.collapsed += 1;

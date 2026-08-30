@@ -43,7 +43,7 @@ pub fn capture_to_file(
 /// una cadena hacia una capa que todavía no se creó —el estado `TODO`—, que es una
 /// intención declarada y no un error.
 pub fn capture_file_whole(layer: &Path, file: &str) -> Result<(String, PathBuf, bool)> {
-    Capture { file: file.to_string(), query: None, offset: None }.write_in(layer)
+    Capture { file: file.to_string(), query: None }.write_in(layer)
 }
 
 /// Los captures que no alcanza ningún bilink.
@@ -130,10 +130,7 @@ pub fn accepted_text(
             let language = grammar::for_language(lang).ok()?;
             let (start, end, _) =
                 crate::query::find_target_with_sexp(language, &old_source, q).ok()??;
-            let (s, e) = match &cap.offset {
-                Some(r) => (start + r.start, (start + r.end).min(old_source.len())),
-                None    => (start, end),
-            };
+            let (s, e) = (start, end);
             if s > e || e > old_source.len() { return None; }
             old_source[s..e].to_string()
         }
@@ -193,13 +190,7 @@ pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<ByteRange>> 
         crate::query::find_target_with_sexp(language, &source, query_str)? else {
         return Ok(None);
     };
-    Ok(Some(match &cap.offset {
-        Some(off) => ByteRange {
-            start: node_start + off.start,
-            end:   (node_start + off.end).min(source.len()),
-        },
-        None => ByteRange { start: node_start, end: node_end },
-    }))
+    Ok(Some(ByteRange { start: node_start, end: node_end }))
 }
 
 pub struct CaptureResult {
@@ -280,7 +271,6 @@ pub fn capture(
     // Así que la selección se usa para **encontrar** el nodo y después se
     // descarta. Si hace falta más precisión, la respuesta es una query que
     // nombre algo más chico, no un recorte sobre una que nombra algo más grande.
-    let range = None;
 
     // El mismo recorte que aplica la resolución: el hash tiene que ser el del
     // fragmento que `check` va a comparar, no el del nodo crudo.
@@ -293,7 +283,6 @@ pub fn capture(
         capture: Capture {
             file:   file.to_string(),
             query:  Some(query),
-            offset: range,
         },
         hash,
         commit,
@@ -551,19 +540,6 @@ fn walk_up_to_anchor<'a>(node: Node<'a>, anchors: &[&str]) -> Option<Node<'a>> {
     }
 }
 
-fn byte_for_point(source: &str, point: Point) -> usize {
-    let mut line = 0;
-    for (i, c) in source.char_indices() {
-        if line == point.row {
-            return i + point.column.min(source.len() - i);
-        }
-        if c == '\n' {
-            line += 1;
-        }
-    }
-    source.len()
-}
-
 // ─── recapture ────────────────────────────────────────────────────────────────
 
 pub struct Recaptured {
@@ -630,7 +606,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn write_cap(layer: &Path, file: &str) -> String {
-        Capture { file: file.into(), query: None, offset: None }
+        Capture { file: file.into(), query: None }
             .write_in(layer).unwrap().0
     }
 

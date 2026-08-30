@@ -163,7 +163,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn write_chain(layer: &std::path::Path, uuid: &str, file: &str) {
-        let cap = bilink_format::Capture { file: file.into(), query: None, offset: None };
+        let cap = bilink_format::Capture { file: file.into(), query: None };
         let (id, _, _) = cap.write_in(layer).unwrap();
         BiLink::new(format!("capture {id}").parse().unwrap(), "issue 3a".parse().unwrap())
             .write(&BiLink::path_in(layer, uuid)).unwrap();

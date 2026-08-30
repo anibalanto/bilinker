@@ -184,27 +184,6 @@ fn filesystem_to_stratum_tokens(rel: &Path) -> Result<stratum::StratumPath> {
 }
 
 
-fn diff_paths(to: &Path, from: &Path) -> PathBuf {
-    let to_norm   = normalize(to);
-    let from_norm = normalize(from);
-    let to_parts: Vec<Component>   = to_norm.components().collect();
-    let from_parts: Vec<Component> = from_norm.components().collect();
-
-    let common = to_parts.iter()
-        .zip(from_parts.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let mut result = PathBuf::new();
-    for _ in &from_parts[common..] {
-        result.push("..");
-    }
-    for c in &to_parts[common..] {
-        result.push(c);
-    }
-    result
-}
-
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {

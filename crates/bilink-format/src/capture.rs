@@ -1,7 +1,7 @@
 //! El archivo `capture/<id>.yaml`: una ubicación, y nada más.
 //!
-//! El id es `H(file, query, offset)` — el hash de lo único que contiene. De ahí
-//! salen la inmutabilidad y la deduplicación por construcción.
+//! El id es el hash de lo único que contiene. De ahí salen la inmutabilidad y la
+//! deduplicación por construcción.
 
 use std::path::{Path, PathBuf};
 
@@ -10,12 +10,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::link::ByteRange;
 
-/// Dónde está un fragmento: qué archivo, qué nodo, y qué parte del nodo.
+/// Dónde está un fragmento: qué archivo y qué nodo.
 ///
 /// **Es inmutable.** Cambiarle un campo le cambiaría el id, así que no se cambia:
 /// se acuña otro. Ningún comando modifica un capture existente.
+///
+/// **No hay sub-rango.** Un rango de bytes adentro de un nodo se corre con
+/// cualquier edición encima suya dentro del mismo nodo: su granularidad es
+/// ilusoria, se rompe todo el tiempo y hay que repuntarlo. Si hace falta más
+/// precisión, la respuesta es una query que nombre algo más chico.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Capture {
@@ -24,13 +28,15 @@ pub struct Capture {
     /// Query tree-sitter con captura `@target`. Ausente = el archivo completo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
-    /// Sub-rango relativo al nodo matcheado. Ausente = el nodo entero.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offset: Option<ByteRange>,
 }
 
 impl Capture {
-    /// `H(file, query, offset)` — el id, que es el nombre del archivo.
+    /// El id, que es el nombre del archivo: **cada campo seguido de un `\0`**.
+    ///
+    /// El terminador va después de cada campo y no entre campos, y eso importa:
+    /// así el id no cambia cuando un campo desaparece del formato. Es lo que
+    /// permitió sacar el `offset` sin re-acuñar los 316 captures que existían —
+    /// ninguno lo tenía, y su contribución al hash era la cadena vacía.
     ///
     /// Se calcula sobre los campos y no sobre el texto serializado: dos formas de
     /// escribir el mismo YAML darían dos ids para la misma ubicación.
@@ -40,7 +46,6 @@ impl Capture {
         h.update([0]);
         h.update(self.query.as_deref().unwrap_or("").as_bytes());
         h.update([0]);
-        h.update(self.offset.as_ref().map(|o| o.to_string()).unwrap_or_default().as_bytes());
         hex::encode(h.finalize())[..32].to_string()
     }
 
@@ -105,7 +110,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn cap(file: &str, query: Option<&str>) -> Capture {
-        Capture { file: file.into(), query: query.map(String::from), offset: None }
+        Capture { file: file.into(), query: query.map(String::from) }
     }
 
     /// El id sale de la ubicación, así que la misma ubicación da el mismo id.
@@ -120,9 +125,24 @@ mod tests {
         let base = cap("a.rs", Some("(x) @target"));
         assert_ne!(base.id(), cap("b.rs", Some("(x) @target")).id());
         assert_ne!(base.id(), cap("a.rs", Some("(y) @target")).id());
-        let mut with_offset = base.clone();
-        with_offset.offset = Some(ByteRange { start: 0, end: 10 });
-        assert_ne!(base.id(), with_offset.id());
+        assert_ne!(base.id(), cap("a.rs", None).id());
+    }
+
+    /// El terminador va **después** de cada campo, no entre campos.
+    ///
+    /// Es lo que hace que sacar un campo del formato no cambie ningún id: el que
+    /// desaparece contribuía la cadena vacía, y su `\0` sigue estando. Sin esto,
+    /// quitar el `offset` habría obligado a re-acuñar los 316 captures que había.
+    #[test]
+    fn the_id_terminates_each_field_instead_of_joining_them() {
+        use sha2::{Digest, Sha256};
+        let c = cap("a.rs", Some("(x) @target"));
+        let mut h = Sha256::new();
+        for campo in ["a.rs", "(x) @target"] {
+            h.update(campo.as_bytes());
+            h.update([0]);
+        }
+        assert_eq!(c.id(), hex::encode(h.finalize())[..32].to_string());
     }
 
     /// Escribir dos veces la misma ubicación no duplica: es el mismo archivo.
@@ -139,8 +159,7 @@ mod tests {
     #[test]
     fn a_capture_round_trips_through_yaml() {
         let dir = tempdir().unwrap();
-        let mut c = cap("src/check.rs", Some("(function_item\n  name: (identifier) @n0) @target"));
-        c.offset = Some(ByteRange { start: 42, end: 118 });
+        let c = cap("src/check.rs", Some("(function_item\n  name: (identifier) @n0) @target"));
         let (id, _, _) = c.write_in(dir.path()).unwrap();
         assert_eq!(Capture::load_in(dir.path(), &id).unwrap(), c);
     }

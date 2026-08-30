@@ -198,11 +198,7 @@ pub(crate) fn resolve_capture(
         return Ok((CaptureState::Unanchored, None));
     };
 
-    let range = match &cap.offset {
-        Some(o) => ByteRange { start: node_start + o.start, end: (node_start + o.end).min(source.len()) },
-        None    => ByteRange { start: node_start, end: node_end },
-    };
-    Ok((CaptureState::Resolved, Some(range)))
+    Ok((CaptureState::Resolved, Some(ByteRange { start: node_start, end: node_end })))
 }
 
 // ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
@@ -280,18 +276,6 @@ pub(crate) fn compare_content(
                 }
             }
         }
-    }
-
-    if let Some(t) = text.as_deref() {
-        if !t.is_empty() && !fragment.contains(t) && source.contains(t) {
-            return Ok(EndpointState::Displaced);
-        }
-    }
-
-    // Respaldo por hash, para cuando git no pudo entregar el texto aceptado —sin
-    // commit, archivo inexistente en ese commit, query irresoluble ahí—.
-    if find_in_node(&source, r.start, source.len(), &accepted.hash, r.end - r.start).is_some() {
-        return Ok(EndpointState::Displaced);
     }
 
     Ok(EndpointState::Altered)
@@ -421,12 +405,8 @@ pub(crate) fn find_renamed_anchor(
     let mut scored: Vec<(String, f64)> = Vec::new();
     for m in matches {
         let Some(name) = m.name.clone() else { continue };
-        let (start, end) = match &cap.offset {
-            Some(r) => (m.start + r.start, (m.start + r.end).min(source.len())),
-            None    => (m.start, m.end),
-        };
-        if start > end || end > source.len() { continue; }
-        scored.push((name, hash::similarity(&old_text, &source[start..end])));
+        if m.start > m.end || m.end > source.len() { continue; }
+        scored.push((name, hash::similarity(&old_text, &source[m.start..m.end])));
     }
 
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -469,35 +449,6 @@ fn git_file_changed(layer_root: &Path, file: &str, commit: &str) -> bool {
         .output()
         .map(|o| !o.status.success() || !o.stdout.is_empty())
         .unwrap_or(true)
-}
-
-fn find_in_node(
-    source: &str,
-    node_start: usize,
-    node_end: usize,
-    target_hash: &str,
-    frag_len: usize,
-) -> Option<ByteRange> {
-    if frag_len == 0 || frag_len > node_end.saturating_sub(node_start) {
-        return None;
-    }
-    let node = &source[node_start..node_end];
-    let mut start = 0;
-    while start + frag_len <= node.len() {
-        if source.is_char_boundary(node_start + start) {
-            let end = start + frag_len;
-            if end <= node.len() && source.is_char_boundary(node_start + end) {
-                if hash::sha256(node[start..end].as_bytes()) == target_hash {
-                    return Some(ByteRange {
-                        start: node_start + start,
-                        end: node_start + end,
-                    });
-                }
-            }
-        }
-        start += 1;
-    }
-    None
 }
 
 /// Finds all bilinks referencing `file_path` across all layers under `root`.
@@ -558,7 +509,7 @@ mod tests {
         let after  = "# Spec\n\nOtra cosa completamente distinta.\n";
         std::fs::write(d.path().join(file), after).unwrap();
 
-        let cap = Capture { file: file.into(), query: Some(QUERY.into()), offset: None };
+        let cap = Capture { file: file.into(), query: Some(QUERY.into()) };
         let accepted = Accepted {
             link: None,
             hash: hash::sha256(before.as_bytes()),

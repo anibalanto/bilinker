@@ -353,10 +353,7 @@ fn resolve(
     let (node_start, node_end) = query::find_target(language, &source, query_str)?
         .with_context(|| format!("query matched nothing in {}", cap.file))?;
 
-    let (frag_start, frag_end) = match &cap.offset {
-        Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
-        None    => (node_start, node_end),
-    };
+    let (frag_start, frag_end) = (node_start, node_end);
 
     let line_start = byte_to_line(&source, frag_start);
     let line_end   = byte_to_line(&source, frag_end.saturating_sub(1));
