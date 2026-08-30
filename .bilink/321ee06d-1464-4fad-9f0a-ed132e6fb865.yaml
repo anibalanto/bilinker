@@ -1,0 +1,12 @@
+endpoint:
+  0:
+    link: path <
+    accepted:
+      link: capture b804490e165a8176b0eed116a5cd99e3
+      hash: 5b5aacc930c3b8909b2285c264f9e676a3e012a8e036638d8f39cece97644f32
+  1:
+    link: capture 8ebb3e6aeed9b7087030a745ca5b16a1
+    accepted:
+      link: capture 8ebb3e6aeed9b7087030a745ca5b16a1
+      hash: b1d92b278a13880d134ee613373ae61a41b2dac66945cf01d3fed568c7a64b05
+      hash_ast: 7855ea7de4309c649b4f27f7fe9adb936ad3a1a6061ef751deca9b37787f046d

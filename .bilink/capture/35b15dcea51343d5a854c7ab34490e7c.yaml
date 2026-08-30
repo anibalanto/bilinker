@@ -1,0 +1,4 @@
+file: crates/bilinker-cli/tests/integration.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "a_tip_can_cross_plain_directories_before_a_layer")) @target

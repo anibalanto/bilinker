@@ -1,0 +1,4 @@
+file: crates/bilinker-cli/tests/integration.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "check_layer_chain_dirty_when_hash_differs")) @target
