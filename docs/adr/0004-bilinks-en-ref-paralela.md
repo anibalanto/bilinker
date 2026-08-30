@@ -330,6 +330,10 @@ Sólo cuando el `004` está validado entero.
 
 El paso 1 es `git rm --cached -r .bilink/` más commit: **los archivos se quedan en disco**, así que no hay que restaurarlos para commitearlos a la ref.
 
+> **Enmienda — los pasos 2 y 4 son un solo `bilinker track`.** Al implementar la Decisión 1 quedó claro que el corte no necesita un camino propio: es exactamente el caso *"ningún `P` califica"* de `track`, que crea la ref con el `.bilink/` del árbol y el tip de la rama como padre único. Y el `update-ref` a `X` no sólo sobra, estorba: dejaría `refs/bilink/<branch>` apuntando a un commit del proyecto, y `track` tendría que tratar un commit ajeno como propio para poder seguir. La secuencia queda en tres pasos —`git rm --cached` + commit, `bilinker init`, `bilinker track <branch>`— más el ledger. Ver [`commands/track.md`](../../../../commands/track.md) § "Sin candidato, la ref nace desde cero".
+>
+> `sync` **no** puede escribir el corte, y es correcto que no pueda: sin nada que absorber no escribe ningún commit, porque un merge con el mismo segundo padre y el mismo `.bilink/` no dice nada nuevo. En el corte no hay nada que absorber y sí hay algo que escribir.
+
 #### Orden y regla general
 
 **`refs/bilink/<branch>` se crea desde un commit del proyecto en el que `.bilink/` ya no está en el árbol.** Así la base de merge de todo `sync` futuro es `X` o un descendiente, el proyecto no vuelve a tocar `.bilink/` nunca, y el argumento de conjuntos disjuntos se cumple desde `X`. Sin ese orden, el primer merge después del corte produce un modify/delete masivo — o peor, borra en silencio los bilinks que no cambiaron.

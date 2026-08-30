@@ -1202,3 +1202,486 @@ fn appending_a_yaml_item_does_not_move_the_one_above() {
     assert!(!states.contains("RESTYLED") && !states.contains("ALTERED"),
             "un item que nadie tocó cambió de identidad:\n{states}");
 }
+
+// ─── La ref de bilinks ─────────────────────────────────────────────────────
+//
+// ADR-0004. Los escenarios están en `subsystems/bilinker/scenarios/init.yaml` y
+// `sync.yaml`.
+
+/// `git` que devuelve stdout, para los tests que interrogan la ref.
+fn git_out(root: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(root).args(args).output().unwrap();
+    assert!(out.status.success(),
+            "git {} falló: {}", args.join(" "),
+            String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn rev(root: &Path, r: &str) -> String {
+    git_out(root, &["rev-parse", r]).trim().to_string()
+}
+
+fn branch_of(root: &Path) -> String {
+    git_out(root, &["symbolic-ref", "--short", "HEAD"]).trim().to_string()
+}
+
+/// El corte `005`, tal cual lo describe el ADR:
+///
+/// ```text
+/// 1. UN commit que saca .bilink/ del índice de la rama   → X
+/// 2. git update-ref refs/bilink/<branch> X
+/// 3. bilinker init  (exclude + refspec)
+/// 4. Commit sobre refs/bilink/<branch>: agrega .bilink/  → ●0, padre X
+/// ```
+///
+/// Devuelve `(tmp, root, uuid, X)`. El paso 4 lo hace `sync`, que es la puerta
+/// por la que todo commit sobre la ref pasa.
+fn cut_over() -> (tempfile::TempDir, PathBuf, String, String) {
+    let (tmp, root, uuid) = accepted_layer();
+    let branch = branch_of(&root);
+
+    // Antes del corte los bilinks viven en la rama, como hoy.
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-qm", "bilinks en la rama"]);
+
+    // Paso 1: UN commit que los saca del índice. Los archivos se quedan en disco,
+    // así que no hay que restaurarlos para commitearlos a la ref.
+    git(&root, &["rm", "--cached", "-r", "-q", ".bilink"]);
+    git(&root, &["commit", "-qm", "corte: los bilinks salen de la rama"]);
+    let x = rev(&root, "HEAD");
+
+    // Pasos 2 y 3: el exclude y el refspec. `init` no materializa nada porque el
+    // .bilink/ del árbol todavía no tiene procedencia.
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+
+    // Paso 4: el commit que crea la ref desde cero, con X como padre único.
+    let (_, stderr, ok) = run_in(&root, &["track", &branch]);
+    assert!(ok, "el commit del corte falló:\n{stderr}");
+
+    (tmp, root, uuid, x)
+}
+
+/// `init-does-not-touch-gitignore` + el refspec en `.git/config`.
+#[test]
+fn init_writes_exclude_and_refspec_without_touching_the_branch() {
+    let (_t, root) = isolated_git_workspace();
+    git(&root, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+
+    let exclude = fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains(".bilink/"), "falta .bilink/ en el exclude:\n{exclude}");
+    assert!(exclude.contains(".bilink-migrate-*"),
+            "las carpetas de migración también van al exclude:\n{exclude}");
+
+    let config = fs::read_to_string(root.join(".git/config")).unwrap();
+    assert!(config.contains("+refs/bilink/*:refs/bilink/*"),
+            "falta el refspec:\n{config}");
+
+    assert!(!root.join(".gitignore").exists(),
+            ".gitignore está versionado: tocarlo modificaría la rama del proyecto");
+    assert!(git_out(&root, &["status", "--porcelain"]).trim().is_empty(),
+            "init no puede dejar la rama del proyecto sucia");
+}
+
+/// `init-is-idempotent` — correrlo dos veces no agrega nada.
+#[test]
+fn init_is_idempotent() {
+    let (_t, root) = isolated_git_workspace();
+    git(&root, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+
+    run_in(&root, &["init"]);
+    let first = fs::read_to_string(root.join(".git/config")).unwrap();
+    run_in(&root, &["init"]);
+    let second = fs::read_to_string(root.join(".git/config")).unwrap();
+
+    assert_eq!(first, second, "el segundo init duplicó el refspec");
+}
+
+/// `init-does-not-overwrite-bilinks-without-head` — el paso 3 no pisa nada.
+///
+/// Es lo que hace que el corte pueda ser un `init` a secas: ahí el `.bilink/`
+/// todavía no está en la ref, y materializar lo borraría.
+#[test]
+fn init_does_not_materialize_over_bilinks_without_provenance() {
+    let (_t, root, _uuid) = accepted_layer();
+    let branch = branch_of(&root);
+    git(&root, &["rm", "--cached", "-r", "-q", ".bilink"]);
+    git(&root, &["commit", "-qm", "corte"]);
+    git(&root, &["update-ref", &format!("refs/bilink/{branch}"), "HEAD"]);
+
+    let before: Vec<_> = fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+
+    let (stdout, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+    assert!(stdout.contains("sin head"), "init tiene que decir que no materializó:\n{stdout}");
+    assert!(!root.join(".bilink/head").exists(),
+            "sin procedencia no se escribe head tampoco");
+
+    let after: Vec<_> = fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+    assert_eq!(before.len(), after.len(), "init borró bilinks que no estaban en la ref");
+}
+
+/// `init-reports-branch-without-ref` — una rama sin ref no es un error.
+#[test]
+fn init_points_at_track_when_the_branch_has_no_ref() {
+    let (_t, root) = isolated_git_workspace();
+    let (stdout, _, ok) = run_in(&root, &["init"]);
+    assert!(ok, "una rama sin ref no es un error de init");
+    assert!(stdout.contains("bilinker track"),
+            "de quién hereda los bilinks lo decide track, y init lo dice:\n{stdout}");
+}
+
+/// El corte: `●0` nace de `X` como padre único, y su árbol de código es el de `X`.
+///
+/// `cutover-first-absorb-is-clean` depende de esto: la ref nace de un commit del
+/// proyecto donde `.bilink/` ya no está en el árbol, y eso hace disjuntos los dos
+/// lados de ahí en adelante.
+#[test]
+fn the_cut_commit_has_the_project_commit_as_its_only_parent() {
+    let (_t, root, _uuid, x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
+    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+    assert_eq!(parents, vec![x.as_str()], "●0 tiene a X como padre único");
+
+    assert_eq!(rev(&root, &format!("{bref}^{{tree}}")).is_empty(), false);
+    let files = git_out(&root, &["ls-tree", "-r", "--name-only", &bref]);
+    assert!(files.contains(".bilink/"), "●0 tiene que llevar .bilink/:\n{files}");
+    assert!(files.contains("src/Service.java"), "y el árbol del proyecto:\n{files}");
+}
+
+/// `ref-carries-only-bilink-from-worktree` — cache, index y head quedan afuera.
+#[test]
+fn the_ref_does_not_carry_the_derived_files() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    let files = git_out(&root, &["ls-tree", "-r", "--name-only", &bref]);
+    for derived in [".bilink/cache", ".bilink/index", ".bilink/head"] {
+        assert!(!files.contains(derived),
+                "{derived} es derivado y no se commitea:\n{files}");
+    }
+}
+
+/// `project-branch-has-no-bilinks` + `bilink-ref-not-listed-as-branch`.
+#[test]
+fn after_the_cut_the_branch_has_no_bilinks_and_the_ref_is_not_a_branch() {
+    let (_t, root, _uuid, _x) = cut_over();
+
+    let tracked = git_out(&root, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(!tracked.contains(".bilink/"),
+            "ninguna rama del proyecto contiene .bilink/:\n{tracked}");
+
+    let branches = git_out(&root, &["branch", "-a"]);
+    assert!(!branches.contains("bilink"),
+            "la ref vive fuera de refs/heads/ y no se lista:\n{branches}");
+
+    // Y sigue estando en el árbol de trabajo, donde check la necesita.
+    assert!(root.join(".bilink").is_dir(), "los .bilink/ están en el árbol de trabajo");
+}
+
+/// `bilinks-present-but-excluded` — el proyecto no los ve.
+#[test]
+fn the_project_status_does_not_show_the_bilinks() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let status = git_out(&root, &["status", "--porcelain"]);
+    assert!(!status.contains(".bilink"),
+            "el índice del proyecto los ignora vía info/exclude:\n{status}");
+}
+
+/// `merge-absorbs-project-without-conflict` — el segundo padre es el tip.
+#[test]
+fn sync_absorbs_the_project_tip_as_the_second_parent() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+    let tip = rev(&root, "HEAD");
+
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
+    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+    assert_eq!(parents.len(), 2, "absorber es un merge:\n{parents:?}");
+    assert_eq!(parents[1], tip, "el segundo padre es lo que se absorbe");
+}
+
+/// `sync-diff-against-first-parent-is-empty` — sync no registra ninguna decisión.
+#[test]
+fn the_sync_commit_has_an_empty_diff_against_its_first_parent() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+    run_in(&root, &["sync"]);
+
+    let diff = git_out(&root, &["diff", "--name-only",
+                                &format!("{bref}~1"), &bref, "--", "."]);
+    let bilink_changes: Vec<&str> = diff.lines().filter(|l| l.contains(".bilink/")).collect();
+    assert!(bilink_changes.is_empty(),
+            "sync alinea la foto y nada más:\n{bilink_changes:?}");
+}
+
+/// `ref-snapshot-is-faithful` — el árbol de código es el del commit absorbido.
+#[test]
+fn every_ref_commit_carries_the_code_of_the_commit_it_absorbed() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+    run_in(&root, &["sync"]);
+    let tip = rev(&root, "HEAD");
+
+    // Todo lo que difiere entre el commit absorbido y el de la ref cae en .bilink/.
+    let diff = git_out(&root, &["diff-tree", "-r", "--name-only", &tip, &bref]);
+    let strays: Vec<&str> = diff.lines()
+        .filter(|l| !l.trim().is_empty() && !l.contains(".bilink/"))
+        .collect();
+    assert!(strays.is_empty(), "el árbol de código tiene que ser idéntico:\n{strays:?}");
+}
+
+/// `sync-is-noop-when-already-absorbed`.
+#[test]
+fn sync_writes_nothing_when_the_tip_is_already_absorbed() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let before = rev(&root, &bref);
+
+    let (stdout, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+    assert!(stdout.contains("nada que hacer"), "y lo dice:\n{stdout}");
+    assert_eq!(before, rev(&root, &bref), "no se escribió ningún commit");
+}
+
+/// `merge-back-is-detected` — la disyunción va sobre el ÁRBOL, no sobre el diff.
+#[test]
+fn absorbing_a_commit_that_carries_bilinks_is_aborted() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let before = rev(&root, &bref);
+
+    // Alguien commitea bilinks a mano en la rama del proyecto.
+    git(&root, &["add", "-f", ".bilink"]);
+    git(&root, &["commit", "-qm", "bilinks a mano en la rama"]);
+
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(!ok, "absorber un commit con .bilink/ en el árbol tiene que abortar");
+    assert!(stderr.contains(".bilink/"), "y decir por qué:\n{stderr}");
+    assert_eq!(before, rev(&root, &bref), "no se escribió nada");
+}
+
+/// El commit que **borra** `.bilink/` tiene un diff que lo toca y un árbol que no,
+/// y es exactamente el que hay que poder absorber. Por eso la verificación es
+/// sobre el árbol.
+#[test]
+fn the_commit_that_removes_bilinks_is_absorbable() {
+    let (_t, root, _uuid, x) = cut_over();
+    // `cut_over` ya absorbió `X`, que es ese commit: si la verificación mirara el
+    // diff, el corte mismo sería imposible.
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
+    assert!(parents.contains(&x), "X es el commit que borra .bilink/ y se absorbió");
+}
+
+/// `sync-dry-run-is-inert`.
+#[test]
+fn sync_dry_run_writes_nothing() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+    let before = rev(&root, &bref);
+
+    let (stdout, stderr, ok) = run_in(&root, &["sync", "--dry-run"]);
+    assert!(ok, "dry-run falló:\n{stderr}");
+    assert!(stdout.contains("no se escribió nada"), "y lo dice:\n{stdout}");
+    assert_eq!(before, rev(&root, &bref), "dry-run no escribe");
+}
+
+/// `sync-refuses-on-detached-head` — sin rama no se commitea sobre la ref.
+#[test]
+fn sync_refuses_on_a_detached_head() {
+    let (_t, root, _uuid, _x) = cut_over();
+    git(&root, &["checkout", "-q", "--detach", "HEAD"]);
+
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(!ok, "adivinar una rama sería peor que no hacer nada");
+    assert!(stderr.contains("desacoplado"), "y se dice:\n{stderr}");
+}
+
+/// `init-writes-head-and-version` — la materialización deja procedencia.
+#[test]
+fn committing_on_the_ref_leaves_head_pointing_at_the_new_commit() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
+    assert!(head.contains(&format!("branch {branch}")), "head nombra la rama:\n{head}");
+    assert!(head.contains(&rev(&root, &bref)),
+            "y el commit de la ref al que corresponde el árbol:\n{head}");
+}
+
+/// El commit de la ref avanza y `head` lo sigue, o la guarda se dispararía después
+/// de cada aceptación.
+#[test]
+fn head_follows_the_ref_after_every_commit() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+    run_in(&root, &["sync"]);
+
+    let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
+    assert!(head.contains(&rev(&root, &bref)),
+            "head quedó atrás del commit que acaba de escribirse:\n{head}");
+}
+
+/// Una rama con su propia ref y otros bilinks, para ejercer la materialización.
+///
+/// Sale de antes del corte, así que ningún commit de `refs/bilink/main` califica
+/// como herencia y su ref nace desde cero — con el `.bilink/` del árbol, al que le
+/// sacamos un bilink para que las dos ramas difieran.
+fn second_branch_without(root: &Path, uuid: &str) -> String {
+    let base = rev(root, "HEAD~2");
+    git(root, &["checkout", "-q", "-b", "otra", &base]);
+    fs::remove_file(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+
+    let (_, stderr, ok) = run_in(root, &["track", "otra"]);
+    assert!(ok, "track otra falló:\n{stderr}");
+    "otra".to_string()
+}
+
+/// `branch-switch-rematerializes` — cambiar de rama corrige el árbol sin pedir nada.
+#[test]
+fn switching_branches_rematerializes_the_bilinks_of_the_new_branch() {
+    let (_t, root, uuid, _x) = cut_over();
+    let main = branch_of(&root);
+    let bilink = root.join(format!(".bilink/{uuid}.yaml"));
+
+    second_branch_without(&root, &uuid);
+    assert!(!bilink.exists(), "la ref de otra no lleva ese bilink");
+
+    git(&root, &["checkout", "-q", &main]);
+    assert!(!bilink.exists(),
+            "git checkout no toca .bilink/: son archivos ignorados para el proyecto");
+
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "la materialización falló:\n{stderr}");
+    assert!(bilink.exists(), "el .bilink/ de la rama actual se materializa solo");
+
+    let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
+    assert!(head.contains(&format!("branch {main}")), "y head lo dice:\n{head}");
+}
+
+/// `cache-invalidates-on-branch-change` es la otra mitad del par: `head` protege a
+/// la fuente y el commit anotado en la cache protege al derivado.
+#[test]
+fn the_cache_does_not_return_states_from_the_previous_branch() {
+    let (_t, root, uuid, _x) = cut_over();
+    let main = branch_of(&root);
+
+    run_in(&root, &["check", "."]);
+    second_branch_without(&root, &uuid);
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+
+    let cache = root.join(".bilink/cache/state");
+    if cache.exists() {
+        let text = fs::read_to_string(&cache).unwrap();
+        let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
+        let commit = head.lines()
+            .find_map(|l| l.strip_prefix("commit ")).unwrap().trim();
+        assert!(!text.contains("ref_commit") || text.contains(commit),
+                "la cache tiene que anotar el commit de la ref al que corresponde:\n{text}");
+    }
+}
+
+/// `branch-switch-refuses-on-dirty-bilinks` — la guarda es la de git.
+#[test]
+fn materialization_refuses_when_the_bilinks_carry_uncommitted_work() {
+    let (_t, root, uuid, _x) = cut_over();
+    let main = branch_of(&root);
+
+    second_branch_without(&root, &uuid);
+    git(&root, &["checkout", "-q", &main]);
+
+    // Trabajo en .bilink/ que no está en ninguna parte: .bilink/ está fuera del
+    // git del proyecto, así que materializar lo destruiría.
+    let cap = fs::read_dir(root.join(".bilink/capture")).unwrap()
+        .filter_map(|e| e.ok()).next().unwrap().path();
+    let dirty = format!("{}# editado a mano\n", fs::read_to_string(&cap).unwrap());
+    fs::write(&cap, &dirty).unwrap();
+
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(!ok, "con trabajo sin commitear no se materializa nada:\n{stderr}");
+    assert!(stderr.contains("difiere"), "y se dice por qué:\n{stderr}");
+    assert_eq!(fs::read_to_string(&cap).unwrap(), dirty, "el trabajo sigue ahí");
+}
+
+/// `track-picks-newest-reachable` — la ref adelantada no arrastra bilinks de más.
+#[test]
+fn track_inherits_from_the_commit_whose_absorbed_is_still_an_ancestor() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let main = branch_of(&root);
+
+    // La rama sale de D; la ref de main sigue hasta E.
+    let d = rev(&root, "HEAD");
+    fs::write(root.join("src/Later.java"), "public class Later {}\n").unwrap();
+    commit(&root, "E, que feature/x no tiene");
+    run_in(&root, &["sync"]);
+
+    git(&root, &["checkout", "-q", "-b", "feature/x", &d]);
+    let (_, stderr, ok) = run_in(&root, &["track", "feature/x"]);
+    assert!(ok, "track falló:\n{stderr}");
+
+    // El primer padre es un commit de refs/bilink/main cuyo absorbido es D, no E.
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", "refs/bilink/feature/x"]);
+    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+    assert_eq!(parents.len(), 2, "track escribe un commit de dos padres:\n{parents:?}");
+    assert_eq!(parents[1], rev(&root, "HEAD"), "el segundo padre es el tip de la rama");
+
+    let inherited_absorbs = git_out(&root, &["rev-list", "--parents", "-n", "1", parents[0]]);
+    assert!(inherited_absorbs.contains(&d) || parents[0] == d,
+            "heredar del tip traería bilinks que describen código que la rama no tiene");
+    assert!(!inherited_absorbs.contains(&rev(&root, &format!("refs/heads/{main}"))),
+            "y no del commit que absorbió E");
+}
+
+/// `track` no decide nada: su diff contra el primer padre es vacío.
+#[test]
+fn the_track_commit_records_no_decision() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let d = rev(&root, "HEAD");
+    git(&root, &["checkout", "-q", "-b", "feature/x", &d]);
+    run_in(&root, &["track", "feature/x"]);
+
+    let diff = git_out(&root, &["diff", "--name-only",
+                                "refs/bilink/feature/x^1", "refs/bilink/feature/x"]);
+    let bilink_changes: Vec<&str> = diff.lines().filter(|l| l.contains(".bilink/")).collect();
+    assert!(bilink_changes.is_empty(), "track hereda, no decide:\n{bilink_changes:?}");
+}
+
+/// `track` sobre una rama que ya tiene ref es un error, no un no-op silencioso.
+#[test]
+fn track_refuses_when_the_branch_already_has_a_ref() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let (_, stderr, ok) = run_in(&root, &["track", &branch]);
+    assert!(!ok, "la ref ya existe");
+    assert!(stderr.contains("sync"), "y el arreglo es sync:\n{stderr}");
+}

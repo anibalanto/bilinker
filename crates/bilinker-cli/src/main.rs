@@ -132,6 +132,42 @@ enum Command {
         content: bool,
     },
 
+    /// Pone a punto el clon: exclude, refspec y materialización de .bilink/
+    ///
+    /// Es lo primero que corre cualquiera que vaya a usar bilinker, y sin él ningún
+    /// otro comando corre. Es por repo, no por capa, y es idempotente.
+    Init {
+        /// Mostrar qué haría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Alinea refs/bilink/<branch> con la rama del proyecto, absorbiéndola
+    ///
+    /// Cubre el caso en que el proyecto avanzó y nadie aceptó nada. No verifica
+    /// nada: no corre tree-sitter, no resuelve captures y no escribe la cache.
+    Sync {
+        /// Mostrar qué haría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+        /// Empujar refs/bilink/<branch> al remoto después de commitear
+        #[arg(long)]
+        push: bool,
+    },
+
+    /// Crea refs/bilink/<branch> para una rama que no la tiene
+    ///
+    /// Hereda los bilinks del commit de otra ref cuyo commit absorbido siga siendo
+    /// ancestro de esta rama, y absorbe el tip de la rama como segundo padre. Sin
+    /// candidato, crea la ref desde cero con el .bilink/ del árbol — que es el corte.
+    Track {
+        /// Rama del proyecto a trackear
+        branch: String,
+        /// Heredar de la ref de esta rama, en vez de buscarla
+        #[arg(long, value_name = "RAMA")]
+        from: Option<String>,
+    },
+
     /// Show status of all bilinks in the current layer (like git status)
     Status {
         /// Layer directory to inspect (default: current directory)
@@ -889,6 +925,29 @@ Eliminar? [y/N] ");
             cmd_graph(&root, &cwd, &selector, &format, depth, recursive)?;
         }
 
+        Command::Init { dry_run } => {
+            print_init(bilinker::init::init(&cwd, dry_run)?, dry_run);
+        }
+
+        Command::Sync { dry_run, push } => {
+            print_sync(bilinker::sync::sync(&cwd, dry_run, push)?, dry_run);
+        }
+
+        Command::Track { branch, from } => {
+            let r = bilinker::track::track(&cwd, &branch, from.as_deref())?;
+            match (&r.inherited, &r.base) {
+                (Some(m), Some(p)) => println!(
+                    "hereda:  {} sobre {}\ncommit:  refs/bilink/{} @ {}\nárbol:   {} archivo(s)",
+                    short(m), short(p), r.branch, short(&r.sha), r.files
+                ),
+                _ => println!(
+                    "ningún commit de refs/bilink/* califica: la ref nace desde cero.\n\
+                     commit:  refs/bilink/{} @ {}\nárbol:   {} archivo(s)",
+                    r.branch, short(&r.sha), r.files
+                ),
+            }
+        }
+
         Command::Status { path } => {
             let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
@@ -936,6 +995,78 @@ Eliminar? [y/N] ");
         },
     }
     Ok(())
+}
+
+/// La salida de `init`, que dice qué escribió y qué no.
+fn print_init(r: bilinker::init::InitResult, dry_run: bool) {
+    use bilinker::init::Outcome;
+
+    let line = |label: &str, added: bool, what: String| {
+        println!("{label}: {}", if added { what } else { "ya estaba".into() });
+    };
+    line("exclude", !r.excluded.is_empty(), format!("+ {}", r.excluded.join("  + ")));
+    line("refspec", !r.refspec.is_empty(),
+         format!("+ {}  ({})", bilinker::config::REFSPEC, r.refspec.join(", ")));
+    if r.fetched.is_some() {
+        println!("fetch:   refs/bilink/* traídas");
+    }
+
+    match r.outcome {
+        Outcome::Materialized { commit, files } => println!(
+            "árbol:   .bilink/ materializado desde refs/bilink/{} @ {}\n         {files} archivo(s)",
+            r.branch.unwrap_or_default(), short(&commit)
+        ),
+        Outcome::AlreadyCurrent { commit } => println!(
+            "árbol:   al día · refs/bilink/{} @ {}",
+            r.branch.unwrap_or_default(), short(&commit)
+        ),
+        // Es lo esperado en el paso 3 del corte: ahí el `.bilink/` recién puesto
+        // todavía no está en la ref, y materializar lo borraría.
+        Outcome::SkippedNoProvenance => println!(
+            "\n.bilink/ presente sin head: no se materializa nada.\n  \
+             Es lo esperado en el paso 3 del corte 005; en un clon fresco, revisar\n  \
+             de dónde salió antes de seguir."
+        ),
+        Outcome::NoRef(branch) => println!(
+            "\nrefs/bilink/{branch} no existe.\n  \
+             Correr `bilinker track {branch}` para crearla."
+        ),
+        Outcome::Detached => println!("\nHEAD desacoplado: no se materializa nada."),
+    }
+    if dry_run {
+        println!("\ndry-run: no se escribió nada");
+    }
+}
+
+/// La salida de `sync`. El diff vacío se dice, porque es lo que lo identifica como
+/// el acto que no registra ninguna decisión.
+fn print_sync(r: bilinker::sync::SyncResult, dry_run: bool) {
+    match (&r.absorbed, r.commits) {
+        (None, 0) => println!(
+            "refs/bilink/{} ya absorbió {} @ {} — nada que hacer",
+            r.branch, r.branch, short(&r.from)
+        ),
+        (Some(tip), _) => {
+            println!("absorbe:  {}  → {}", r.branch, short(tip));
+            if dry_run {
+                println!("disyunción: ok — el árbol del commit no trae .bilink/");
+            } else {
+                println!("commit:   refs/bilink/{}  {} → {}", r.branch, short(&r.from), short(&r.to));
+                println!("diff:     vacío — ninguna decisión registrada");
+            }
+        }
+        (None, _) => println!("commit:   refs/bilink/{}  {} → {}", r.branch, short(&r.from), short(&r.to)),
+    }
+    if r.pushed {
+        println!("push:     refs/bilink/{} → origin", r.branch);
+    }
+    if dry_run {
+        println!("\ndry-run: no se escribió nada");
+    }
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
 }
 
 /// El estado de una cadena, recorriendo sus nodos.
