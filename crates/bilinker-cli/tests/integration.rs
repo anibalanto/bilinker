@@ -2088,24 +2088,14 @@ fn accepted_then_changed() -> (tempfile::TempDir, PathBuf, String, String, Strin
     (tmp, root, uuid, b, a)
 }
 
-/// Rebasea `A..<rama>` sobre una línea nueva, reescribiendo `B` y `C`.
-///
-/// Un rebase a secas **preserva el contenido**: `B'` tiene el mismo fragmento que
-/// `B`, así que la derivación lo reencuentra en otro commit. Lo que rompe de verdad
-/// es aplastar `B` y `C` en uno solo, donde el contenido intermedio no queda en
-/// ningún commit de la historia reescrita — que es lo que `squash_over` hace.
-fn rebase_over(root: &Path, branch: &str, a: &str) {
-    git(root, &["checkout", "-q", "-b", "lado", a]);
-    fs::write(root.join("docs/lado.md"), "# Lado\n").unwrap();
-    commit(root, "D — otra línea");
-    git(root, &["checkout", "-q", branch]);
-    git(root, &["rebase", "-q", "--onto", "lado", a, branch]);
-}
-
 /// Aplasta `A..<rama>` en un solo commit sobre `A`.
 ///
-/// El contenido intermedio —el que se aceptó— deja de existir en la historia de la
-/// rama: el archivo salta de lo que tenía en `A` a lo que tiene al final.
+/// **Un rebase a secas no serviría acá, y ésa es media conclusión de la task `16`:**
+/// preserva el contenido, así que el fragmento aceptado aparece igual en el commit
+/// reescrito y la derivación lo reencuentra sin ayuda de nadie. Lo que rompe de
+/// verdad es un squash o un `filter-branch`, donde el contenido intermedio deja de
+/// existir en ningún commit de la rama — y ahí el único lugar donde sigue estando es
+/// la ref.
 fn squash_over(root: &Path, branch: &str, a: &str) {
     git(root, &["reset", "-q", "--soft", a]);
     git(root, &["commit", "-qm", "B+C aplastados"]);
@@ -2254,4 +2244,256 @@ fn the_cut_does_not_swallow_the_bilinks_of_a_nested_repo() {
     assert!(!files.contains("subsystems/otro/.bilink"),
             "la ref del padre se tragó los bilinks de otro repo:\n{files}");
     assert!(files.contains(".bilink/"), "y sí lleva los propios:\n{files}");
+}
+
+// ─── El corte contra la forma real: varios repos ───────────────────────────
+//
+// Task `1a`. Lo multi-capa está cubierto por todos lados; lo multi-repo no lo
+// estaba, y ahí vivía el bug que se escapó de los otros 92. Estos tests arman la
+// forma de accreta —un padre con capas, más repos anidados con la suya, y una
+// cadena que cruza— y corren el script del corte en cada repo.
+
+/// Corre `scripts/corte-005.sh` sobre un repo, que es el runbook de la task `e`.
+///
+/// El script y el test son el mismo artefacto: lo que acá se verifica es lo que
+/// alguien va a correr sobre los repos de verdad.
+fn corte(repo: &Path) -> (String, String, bool) {
+    let out = std::process::Command::new("bash")
+        .arg(workspace().join("scripts/corte-005.sh"))
+        .arg(repo)
+        // El script llama a `bilinker`, y tiene que ser **este** binario.
+        .env("PATH", format!("{}:{}",
+             bilinker().parent().unwrap().display(),
+             std::env::var("PATH").unwrap_or_default()))
+        .output()
+        .expect("failed to run corte-005.sh");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+fn git_init(dir: &Path) {
+    for args in [
+        vec!["init", "-q"], vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        std::process::Command::new("git").current_dir(dir).args(&args).output().unwrap();
+    }
+}
+
+fn git_commit_all(dir: &Path, msg: &str) {
+    std::process::Command::new("git").current_dir(dir).args(["add", "-A"]).output().unwrap();
+    std::process::Command::new("git").current_dir(dir)
+        .args(["commit", "-qm", msg]).output().unwrap();
+}
+
+/// La forma de accreta, en chico:
+///
+/// ```text
+/// padre/                          repo A
+///   docs/spec.md                    capa raíz
+///   subsystems/uno/                 otra capa del MISMO repo
+///   subsystems/uno/.stratum/impl/   repo B, gitignoreado por A
+/// ```
+///
+/// Y una cadena que cruza de la capa `uno` al repo anidado, que es lo que hace
+/// distinta a esta forma de un `.stratum/impl` que vive en el mismo repo.
+fn accreta_shape() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let padre = tmp.path().to_path_buf();
+    let impl_dir = padre.join("subsystems/uno/.stratum/impl");
+
+    fs::create_dir_all(padre.join("docs")).unwrap();
+    fs::create_dir_all(padre.join("subsystems/uno/concepts")).unwrap();
+    fs::create_dir_all(impl_dir.join("src")).unwrap();
+
+    // `subsystems/uno` es una **capa**, no un subdirectorio cualquiera: la raíz se
+    // resuelve caminando hacia arriba hasta el primer `.bilink/` o `.git/`, así que
+    // sin este directorio la capa colapsaría contra la raíz del padre. En accreta ya
+    // existe; acá hay que ponerlo.
+    fs::create_dir_all(padre.join("subsystems/uno/.bilink")).unwrap();
+
+    fs::write(padre.join("docs/spec.md"), "# Spec\n\nLa raíz.\n").unwrap();
+    fs::write(padre.join("subsystems/uno/concepts/cosa.md"), "# Cosa\n\nLa capa uno.\n").unwrap();
+    fs::write(impl_dir.join("src/Service.java"),
+              "public class Service {\n    public void run() {}\n}\n").unwrap();
+
+    // El anidado es un repo propio, y el padre lo ignora.
+    git_init(&impl_dir);
+    git_commit_all(&impl_dir, "init");
+
+    fs::write(padre.join(".gitignore"), "subsystems/*/.stratum/impl/\n").unwrap();
+    git_init(&padre);
+    git_commit_all(&padre, "init");
+
+    // Una cadena que cruza la frontera: capa `uno` del padre ↔ repo anidado.
+    let uno = padre.join("subsystems/uno");
+    let (stdout, stderr, ok) = run_in(&uno, &[
+        "chain", "new",
+        "--tip", "concepts/cosa.md:1:1",
+        "--tip", ">impl/src/Service.java:2:5",
+    ]);
+    assert!(ok, "chain new cruzando repos falló:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    // Dos vueltas: la propagación por la cadena es unidireccional, desde el endpoint
+    // estructural hacia los `path`, así que el lado que acepta primero deja al otro
+    // con algo que copiar recién en la vuelta siguiente.
+    for _ in 0..2 {
+        for r in [&impl_dir, &uno, &padre] {
+            run_in(r, &["check", "."]);
+            run_in(r, &["accept", "."]);
+        }
+    }
+    for r in [&impl_dir, &padre] {
+        git_commit_all(r, "los bilinks, todavía en la rama");
+    }
+
+    (tmp, padre, impl_dir, uuid)
+}
+
+/// El script corta cada repo y sus verificaciones pasan sobre la forma real.
+#[test]
+fn the_cutover_script_runs_clean_on_the_accreta_shape() {
+    let (_t, padre, impl_dir, _uuid) = accreta_shape();
+
+    for repo in [&impl_dir, &padre] {
+        let (out, err, ok) = corte(repo);
+        assert!(ok, "el corte falló en {}:\n{out}\n{err}", repo.display());
+        assert!(out.contains("verif:"), "las verificaciones tienen que correr:\n{out}");
+        assert!(out.contains("cortado."), "y terminar:\n{out}");
+    }
+}
+
+/// Cada ref lleva **sólo lo suyo**, a la profundidad de accreta: el padre tiene dos
+/// capas en su propio árbol y un repo anidado que no es suyo.
+#[test]
+fn each_ref_carries_only_the_bilinks_of_its_own_repo() {
+    let (_t, padre, impl_dir, _uuid) = accreta_shape();
+    corte(&impl_dir);
+    corte(&padre);
+
+    let bref = format!("refs/bilink/{}", branch_of(&padre));
+    let del_padre = git_out(&padre, &["ls-tree", "-r", "--name-only", &bref]);
+    assert!(del_padre.contains("subsystems/uno/.bilink/"),
+            "las capas del padre van en la misma ref:\n{del_padre}");
+    assert!(!del_padre.contains(".stratum/impl/.bilink"),
+            "y ninguna del repo anidado:\n{del_padre}");
+
+    let del_impl = git_out(&impl_dir, &["ls-tree", "-r", "--name-only", &bref]);
+    assert!(del_impl.contains(".bilink/"), "el anidado lleva los suyos:\n{del_impl}");
+    assert!(!del_impl.contains("subsystems/"), "y nada del padre:\n{del_impl}");
+}
+
+/// **Lo que de verdad no estaba probado**: un endpoint `path` cuyo vecino vive en
+/// otro repo, con los dos repos cortados.
+///
+/// El vecino se lee del árbol de trabajo, que está materializado. Que eso siga
+/// valiendo cuando el vecino dejó de estar en ninguna rama es lo que había que ver.
+#[test]
+fn a_path_endpoint_still_resolves_across_a_repo_boundary_after_both_cut_over() {
+    let (_t, padre, impl_dir, _uuid) = accreta_shape();
+    corte(&impl_dir);
+    corte(&padre);
+
+    for (label, dir) in [("el anidado", impl_dir.clone()),
+                         ("la capa que cruza", padre.join("subsystems/uno"))] {
+        let (out, err, ok) = run_in(&dir, &["check", "."]);
+        assert!(!out.contains("BROKEN") && !out.contains("TODO"),
+                "el endpoint path dejó de ver a su vecino en {label}:\n{out}\n{err}");
+        assert!(ok, "check en {label} no quedó limpio tras el corte:\n{out}\n{err}");
+    }
+}
+
+/// `CHAIN_DIRTY` cruzando la frontera del repo, con **dos refs** de por medio.
+///
+/// La propagación se probaba entre capas del mismo repo, donde no hay dos refs ni
+/// dos índices. Con dos repos, aceptar de un lado y del otro son dos actos que caen
+/// en dos historias distintas — y eso es lo que se verifica acá.
+#[test]
+fn chain_dirty_propagates_across_a_repo_boundary_between_two_refs() {
+    let (_t, padre, impl_dir, uuid) = accreta_shape();
+    corte(&impl_dir);
+    corte(&padre);
+
+    let uno = padre.join("subsystems/uno");
+    let bref = format!("refs/bilink/{}", branch_of(&padre));
+    let ref_impl_before = rev(&impl_dir, &bref);
+    let ref_padre_before = rev(&padre, &bref);
+
+    // El fragmento del repo anidado cambia y alguien lo acepta ahí.
+    fs::write(impl_dir.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&impl_dir, "el fragmento del anidado cambia");
+    run_in(&impl_dir, &["check", "."]);
+    let (_, stderr, ok) = run_in(&impl_dir, &["accept", "."]);
+    assert!(ok, "accept en el anidado falló:\n{stderr}");
+
+    assert_ne!(ref_impl_before, rev(&impl_dir, &bref),
+               "el acto quedó en la ref del anidado");
+    assert_eq!(ref_padre_before, rev(&padre, &bref),
+               "y no tocó la del padre: son dos refs y dos actos");
+
+    // Del otro lado de la frontera, el endpoint `path` lo detecta.
+    let states = run_in(&uno, &["check", "."]).0;
+    assert!(states.contains("CHAIN_DIRTY"),
+            "el vecino re-aceptó y este lado tiene que verlo:\n{states}");
+
+    // Y aceptarlo acá escribe en la ref del padre, no en la del anidado.
+    let ref_impl_now = rev(&impl_dir, &bref);
+    // El endpoint que propaga es el `path`, que en esta cadena es el `.1`. Se acepta
+    // la capa entera, que es lo que alguien tipea.
+    let (_, stderr, ok) = run_in(&uno, &["accept", "."]);
+    assert!(ok, "accept del lado del padre falló:\n{stderr}");
+    let _ = &uuid;
+
+    assert_ne!(ref_padre_before, rev(&padre, &bref),
+               "el acto del padre quedó en la ref del padre");
+    assert_eq!(ref_impl_now, rev(&impl_dir, &bref),
+               "y no tocó la del anidado");
+    assert!(!check_states(&uno).contains("CHAIN_DIRTY"), "y quedó sincronizado");
+}
+
+/// El script se niega sobre un repo que ya cortó, en vez de hacer un segundo corte.
+#[test]
+fn the_cutover_script_refuses_a_repo_that_already_cut() {
+    let (_t, _padre, impl_dir, _uuid) = accreta_shape();
+    corte(&impl_dir);
+
+    let (_, err, ok) = corte(&impl_dir);
+    assert!(!ok, "cortar dos veces tiene que fallar");
+    assert!(err.contains("ya cortó"), "y decir por qué:\n{err}");
+}
+
+/// Y sobre un árbol sucio: el corte parte de un árbol limpio, o el commit del paso
+/// 1 se lleva trabajo que nadie revisó.
+#[test]
+fn the_cutover_script_refuses_a_dirty_tree() {
+    let (_t, padre, _impl_dir, _uuid) = accreta_shape();
+    fs::write(padre.join("docs/spec.md"), "# Spec\n\nsin commitear\n").unwrap();
+
+    let (_, err, ok) = corte(&padre);
+    assert!(!ok, "con el árbol sucio el corte tiene que negarse");
+    assert!(err.contains("sin commitear"), "y decir por qué:\n{err}");
+}
+
+/// El ledger registra el corte, y en el commit del paso 1 — el que dice "este repo
+/// movió sus bilinks a la ref".
+#[test]
+fn the_cutover_records_itself_in_the_ledger() {
+    let (_t, _padre, impl_dir, _uuid) = accreta_shape();
+    corte(&impl_dir);
+
+    let ledger = fs::read_to_string(impl_dir.join(".accreta/migrations")).unwrap();
+    assert!(ledger.contains("bilinker-005-ref-cutover"),
+            "el corte tiene que quedar registrado:\n{ledger}");
+
+    let x = git_out(&impl_dir, &["rev-parse", "HEAD"]);
+    let en_x = git_out(&impl_dir, &["show", &format!("{}:.accreta/migrations", x.trim())]);
+    assert!(en_x.contains("bilinker-005-ref-cutover"),
+            "y en el mismo commit que saca .bilink/ del índice:\n{en_x}");
 }

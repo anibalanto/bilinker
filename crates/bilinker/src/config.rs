@@ -44,13 +44,22 @@ impl Config {
 
 /// Si el clon está puesto a punto para bilinker.
 ///
-/// **La detección es por el refspec**, no por el exclude ni por el `.bilink/` del
-/// árbol: es la única pieza que no puede estar por accidente. Un `.bilink/` puede
-/// venir de antes del corte, y el exclude lo pudo escribir alguien a mano.
+/// Las dos piezas que `init` escribe: **el exclude, siempre**, y **el refspec en
+/// cada remoto**. Se piden las dos porque cubren casos distintos.
+///
+/// El refspec es la que no puede estar por accidente —un `.bilink/` en el árbol
+/// puede venir de antes del corte, y el exclude lo pudo escribir alguien a mano—
+/// pero **no existe en un repo sin remoto**, y ahí pedirla dejaría al repo sin forma
+/// de estar nunca inicializado: todo comando se negaría para siempre. Un repo local
+/// sin origen usa la ref igual, sólo que nunca la empuja.
 pub fn is_initialized(repo: &Path) -> bool {
-    remotes(repo)
-        .map(|rs| !rs.is_empty() && rs.iter().all(|r| has_refspec(repo, r)))
-        .unwrap_or(false)
+    let excluded = std::fs::read_to_string(git_dir(repo).unwrap_or_default().join("info/exclude"))
+        .map(|text| {
+            EXCLUDE_PATTERNS.iter().all(|p| text.lines().any(|l| l.trim() == *p))
+        })
+        .unwrap_or(false);
+
+    excluded && remotes(repo).map(|rs| rs.iter().all(|r| has_refspec(repo, r))).unwrap_or(false)
 }
 
 /// El id del corte a la ref en el ledger de migraciones.
