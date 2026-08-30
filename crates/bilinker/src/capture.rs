@@ -140,6 +140,39 @@ pub fn accepted_text(
     }
 }
 
+/// El commit donde el fragmento tenía el contenido aceptado, derivado de git.
+///
+/// `commit` es un derivado y vive en la cache, que no está en git: un clon fresco
+/// no lo tiene. Sin él, `accepted.hash` es un hash que no se puede resolver a
+/// texto, y sin el texto aceptado `check` no puede distinguir EXPANDED de
+/// DISPLACED de ALTERED. Que se re-derive es lo que hace que sacarlo del formato
+/// no le cueste nada a nadie.
+///
+/// **Un walk hacia atrás, no `git log -L`.** Aquél encuentra cuándo esas líneas
+/// quedaron como están *ahora*; lo que se busca es dónde el fragmento tenía el
+/// contenido *aceptado*, que en un endpoint con drift es otro commit y
+/// probablemente otras líneas.
+///
+/// Acotado por dos lados: sólo se pregunta por endpoints ya no-OK, y el walk tiene
+/// techo, porque un hash de algo que nunca existió en esta rama recorrería la
+/// historia entera para contestar que no. Al llegar al techo devuelve `None`, y
+/// quien preguntó degrada en vez de fallar.
+pub fn derive_commit(layer: &Path, cap: &Capture, accepted_hash: &str) -> Option<String> {
+    const TECHO: usize = 500;
+
+    let repo_rel = git_path_from_repo_root(layer, &cap.file);
+    let out = std::process::Command::new("git")
+        .args(["-C", &layer.to_string_lossy(), "log", "--format=%H",
+               &format!("-{TECHO}"), "--", &repo_rel])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+
+    String::from_utf8(out.stdout).ok()?
+        .lines()
+        .find(|c| accepted_text(layer, cap, c, Some(accepted_hash)).is_some())
+        .map(str::to_string)
+}
+
 /// Byte range absoluto del fragmento en su archivo, resolviendo la query.
 pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<ByteRange>> {
     let path = layer.join(&cap.file);

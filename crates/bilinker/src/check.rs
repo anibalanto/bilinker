@@ -110,8 +110,35 @@ fn check_endpoint(
             }
 
             // ── dimensión de contenido ────────────────────────────────────────
-            compare_content(layer, &cap, accepted, range.as_ref(),
-                            cache.commit(uuid, n), cache.endpoint_state(uuid, n))
+            //
+            // El commit se deriva si la cache no lo tiene. Sin él, `accepted.hash`
+            // es un hash que no se puede resolver a texto, y sin el texto aceptado
+            // EXPANDED, DISPLACED y REANCHORED degradan todos a ALTERED — o sea,
+            // un clon fresco perdería las tres distinciones.
+            let cached_commit = cache.commit(uuid, n).map(str::to_string);
+            let cached_state  = cache.endpoint_state(uuid, n);
+            let mut derived: Option<Option<String>> = None;
+            let state = {
+                let mut derive = || -> Option<String> {
+                    derived
+                        .get_or_insert_with(|| match &cached_commit {
+                            Some(c) => Some(c.clone()),
+                            None => crate::capture::derive_commit(layer, &cap, &accepted.hash),
+                        })
+                        .clone()
+                };
+                let mut src = CommitSource {
+                    cached: cached_commit.as_deref(),
+                    derive: &mut derive,
+                };
+                compare_content(layer, &cap, accepted, range.as_ref(), &mut src, cached_state)?
+            };
+            // Lo derivado se guarda: el walk cuesta un `git show` por commit y el
+            // mismo endpoint se consulta más de una vez en una corrida.
+            if let Some(Some(c)) = &derived {
+                if cached_commit.is_none() { cache.set_commit(uuid, n, c); }
+            }
+            Ok(state)
         }
     }
 }
@@ -180,12 +207,25 @@ pub(crate) fn resolve_capture(
 
 // ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
 
+/// De dónde sale el commit del contenido aceptado.
+///
+/// Son dos cosas distintas y por eso van separadas: el que la cache **ya tenía**
+/// habilita el fast path y nada más, y el derivado cuesta un walk por la historia
+/// del archivo. Derivarlo antes de saber si hace falta lo cobraría también sobre
+/// los endpoints OK, que son los que nunca lo necesitan —el hash decide antes—, y
+/// el costo dejaría de estar acotado por lo que está roto.
+pub(crate) struct CommitSource<'a> {
+    pub cached: Option<&'a str>,
+    /// Se llama a lo sumo una vez, y sólo después de que el hash dijo que hay drift.
+    pub derive: &'a mut dyn FnMut() -> Option<String>,
+}
+
 pub(crate) fn compare_content(
     layer: &Path,
     cap: &Capture,
     accepted: &bilink_format::Accepted,
     range: Option<&ByteRange>,
-    commit: Option<&str>,
+    commit: &mut CommitSource<'_>,
     cached: Option<EndpointState>,
 ) -> Result<EndpointState> {
     // Fast path: el archivo no cambió desde el commit del contenido aceptado.
@@ -194,7 +234,7 @@ pub(crate) fn compare_content(
     // trabajo, no el commit, así que un estado no-OK pudo calcularse sobre una
     // edición que después se revirtió: el diff sale vacío y el estado viejo
     // describiría un contenido que ya no está.
-    if let (Some(c), Some(EndpointState::Ok)) = (commit, cached) {
+    if let (Some(c), Some(EndpointState::Ok)) = (commit.cached, cached) {
         if !git_file_changed(layer, &cap.file, c) {
             return Ok(EndpointState::Ok);
         }
@@ -214,7 +254,8 @@ pub(crate) fn compare_content(
     //
     //   fragmento ⊃ aceptado          → creció alrededor        → EXPANDED
     //   fragmento ⊅ aceptado, nodo sí → se corrió, sigue igual  → DISPLACED
-    let text = commit.and_then(|c| crate::capture::accepted_text(layer, cap, c, Some(&accepted.hash)));
+    let text = (commit.derive)()
+        .and_then(|c| crate::capture::accepted_text(layer, cap, &c, Some(&accepted.hash)));
 
     if let Some(t) = text.as_deref() {
         if !t.is_empty() && fragment.len() > t.len() && fragment.contains(t) {
@@ -525,7 +566,9 @@ mod tests {
         };
         let range = ByteRange { start: 0, end: after.len() };
 
-        let state = compare_content(d.path(), &cap, &accepted, Some(&range), None, None).unwrap();
+        let mut derive = || None;
+        let mut src = CommitSource { cached: None, derive: &mut derive };
+        let state = compare_content(d.path(), &cap, &accepted, Some(&range), &mut src, None).unwrap();
         assert_eq!(state, EndpointState::Altered,
                    "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
     }

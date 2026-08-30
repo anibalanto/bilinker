@@ -65,11 +65,18 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
     let accepted = e.accepted.as_ref()
         .context("el endpoint no tiene nada aceptado — correr `bilinker accept` primero")?;
 
-    let cache  = Cache::load(root);
-    let commit = cache.commit(&uuid, endpoint)
-        .context("no hay commit del contenido aceptado en la cache — correr `bilinker accept`")?
-        .to_string();
+    let mut cache = Cache::load(root);
     let range = e.link.capture_id().and_then(|id| cache.capture_range(id));
+
+    // El commit se deriva si la cache no lo tiene: una cache fría —un clon fresco,
+    // otra rama— no puede dejar sin `--diff` a un endpoint que sí tiene aceptación.
+    let commit = match crate::capture::capture_of(root, &e.link)? {
+        Some(cap) => cache.commit_or_derive(root, &uuid, endpoint, &cap, &accepted.hash),
+        None      => cache.commit(&uuid, endpoint).map(str::to_string),
+    }
+    .context("no se pudo ubicar en la historia el contenido aceptado: ni la cache lo \
+              tiene ni aparece en los últimos commits del archivo")?;
+    let _ = cache.save(root);
 
     match &e.link {
         LinkEndpoint::Capture(_) => {

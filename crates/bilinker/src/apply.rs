@@ -82,9 +82,16 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
                     // último `check`, y el archivo pudo cambiar después: aplicar un
                     // fix derivado de la cache es corregir contra una foto vieja.
                     let Some(accepted) = e.accepted.as_ref() else { continue };
+                    let cached_commit = cache.commit(uuid, n).map(str::to_string);
+                    let range = cache.capture_range(cap_id);
+                    let mut derive = || cached_commit.clone().or_else(
+                        || crate::capture::derive_commit(layer, &cap, &accepted.hash));
+                    let mut src = crate::check::CommitSource {
+                        cached: cached_commit.as_deref(),
+                        derive: &mut derive,
+                    };
                     let fresh = crate::check::compare_content(
-                        layer, &cap, accepted, cache.capture_range(cap_id).as_ref(),
-                        cache.commit(uuid, n), None)?;
+                        layer, &cap, accepted, range.as_ref(), &mut src, None)?;
 
                     if fresh == EndpointState::Ok {
                         // El fix ya no hace falta. Se omite en silencio: que algo se
@@ -176,11 +183,11 @@ fn compute_reanchored(
     // Los **dos** hacen falta: el hash dice qué texto buscar y el commit dice de
     // dónde sacarlo. Con uno solo, `accepted_text` no devuelve nada y no hay contra
     // qué puntuar los candidatos.
-    let commit = Cache::load(layer);
-    let commit = commit.commit(uuid, n);
+    let mut cache = Cache::load(layer);
+    let commit = accepted.and_then(|a| cache.commit_or_derive(layer, uuid, n, cap, &a.hash));
     let Some((new_name, score)) = crate::check::find_renamed_anchor(
         layer, language, &source, query_str, cap,
-        accepted.map(|a| a.hash.as_str()), commit)?
+        accepted.map(|a| a.hash.as_str()), commit.as_deref())?
     else {
         bail!("REANCHORED: el anchor ya no se localiza — correr `bilinker check`");
     };
@@ -204,12 +211,12 @@ fn compute_offset(
     let Some(accepted) = bl.endpoint.get(n).accepted.as_ref() else {
         bail!("{state}, pero el endpoint no tiene nada aprobado que buscar");
     };
-    let cache = Cache::load(layer);
-    let Some(commit) = cache.commit(uuid, n) else {
-        bail!("{state}, pero no hay commit del contenido aceptado en la cache — \
-               correr `bilinker check`");
+    let mut cache = Cache::load(layer);
+    let Some(commit) = cache.commit_or_derive(layer, uuid, n, cap, &accepted.hash) else {
+        bail!("{state}, pero el contenido aceptado no se ubica en la historia del \
+               archivo — ni en la cache ni en los últimos commits");
     };
-    let Some(text) = crate::capture::accepted_text(layer, cap, commit, Some(&accepted.hash)) else {
+    let Some(text) = crate::capture::accepted_text(layer, cap, &commit, Some(&accepted.hash)) else {
         bail!("{state}, pero git no entrega el texto aceptado en {commit} — sin él no \
                hay qué buscar");
     };

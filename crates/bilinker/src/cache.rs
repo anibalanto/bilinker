@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use bilink_format::ByteRange;
+use bilink_format::{ByteRange, Capture};
 
 use crate::state::{CaptureState, EndpointState};
 
@@ -135,6 +135,25 @@ impl Cache {
 
     pub fn set_commit(&mut self, uuid: &str, n: u8, commit: &str) {
         self.endpoints.entry(key(uuid, n)).or_default().commit = Some(commit.to_string());
+    }
+
+    /// El commit del contenido aceptado, derivándolo de git si la cache no lo tiene.
+    ///
+    /// Es la única puerta por la que se pide: una cache fría es un estado corriente
+    /// —un clon fresco, otra rama, otra máquina— y `commit` es la clase de derivado
+    /// que ahí significa "más lento", no "no disponible". Pedirlo por `commit()` a
+    /// secas convierte lo primero en lo segundo.
+    ///
+    /// Lo derivado queda memoizado: el walk cuesta un `git show` por commit, y
+    /// dentro de una corrida el mismo endpoint se consulta varias veces.
+    pub fn commit_or_derive(
+        &mut self, layer: &Path, uuid: &str, n: u8,
+        cap: &Capture, accepted_hash: &str,
+    ) -> Option<String> {
+        if let Some(c) = self.commit(uuid, n) { return Some(c.to_string()); }
+        let derived = crate::capture::derive_commit(layer, cap, accepted_hash)?;
+        self.set_commit(uuid, n, &derived);
+        Some(derived)
     }
 }
 

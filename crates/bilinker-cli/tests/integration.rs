@@ -1103,3 +1103,60 @@ fn the_declaration_fields_survive_an_accept() {
     assert!(bl.contains("kind: governs"),     "accept perdió el kind:\n{bl}");
     assert!(bl.contains("name: la-decision"), "accept perdió el name:\n{bl}");
 }
+
+// ─── task `17`: el commit se re-deriva ──────────────────────────────────────
+
+/// Con la cache borrada, `get --diff` sigue funcionando.
+///
+/// `commit` es un derivado y la cache no está en git: un clon fresco no la tiene.
+/// Si de ahí saliera un error, `accepted.hash` sería un hash que no se puede
+/// resolver a texto, y la decisión de sacar `commit` del formato le costaría a
+/// todo el que clone.
+#[test]
+fn get_diff_works_with_a_cold_cache() {
+    let (_t, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    let uuid = sole_uuid(&root);
+
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    commit(&root, "cambio");
+
+    fs::remove_file(root.join(".bilink/cache/state")).unwrap();
+
+    let (out, err, ok) = run_in(&root, &["get", &format!("{uuid}.0"), "--diff"]);
+    assert!(ok, "get --diff falló con la cache fría:\n{err}");
+    assert!(out.contains("Some spec content"), "no recuperó el texto aceptado:\n{out}");
+}
+
+/// Y `check` sigue distinguiendo EXPANDED de ALTERED.
+///
+/// Sin el texto aceptado, EXPANDED, DISPLACED y REANCHORED degradan los tres a
+/// ALTERED — "algo cambió y no sé qué". Es la distinción que se pierde, no un
+/// detalle de rendimiento.
+#[test]
+fn check_still_tells_expanded_from_altered_with_a_cold_cache() {
+    let (_t, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    // El fragmento crece alrededor de lo aceptado.
+    let spec = fs::read_to_string(root.join("docs/spec.md")).unwrap();
+    fs::write(root.join("docs/spec.md"), format!("{spec}\nUna línea más.\n")).unwrap();
+    commit(&root, "creció");
+
+    fs::remove_file(root.join(".bilink/cache/state")).unwrap();
+
+    let states = check_states(&root);
+    assert!(states.contains("EXPANDED"),
+            "con la cache fría degradó a ALTERED en vez de derivar el commit:\n{states}");
+}
+
+fn sole_uuid(root: &Path) -> String {
+    std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .find_map(|e| e.file_name().to_str()?.strip_suffix(".yaml").map(str::to_owned))
+        .expect("un bilink")
+}
