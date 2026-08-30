@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "recapture")) @target
 
 # Cache
-range:       31978~33529
+range:       21313~22864
 state:       RESOLVED
-resolved_at: 2026-08-30T01:56:04Z
+resolved_at: 2026-08-30T02:16:44Z

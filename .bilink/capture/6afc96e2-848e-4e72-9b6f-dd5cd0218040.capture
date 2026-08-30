@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "orphans")) @target
 
 # Cache
-range:       2679~3355
+range:       2929~3605
 state:       RESOLVED
-resolved_at: 2026-08-30T00:33:20Z
+resolved_at: 2026-08-30T02:16:44Z

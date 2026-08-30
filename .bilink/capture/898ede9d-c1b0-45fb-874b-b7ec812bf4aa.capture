@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "accepted_text")) @target
 
 # Cache
-range:       4937~6448
+range:       5187~6698
 state:       RESOLVED
-resolved_at: 2026-08-30T00:33:20Z
+resolved_at: 2026-08-30T02:16:44Z

@@ -1,0 +1,8 @@
+file:   crates/bilink-format/src/schema.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "schema")) @target
+
+# Cache
+range:       780~1334
+state:       RESOLVED
+resolved_at: 2026-08-30T02:20:10Z

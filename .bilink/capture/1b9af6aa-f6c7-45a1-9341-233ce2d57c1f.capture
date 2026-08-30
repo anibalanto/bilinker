@@ -1,0 +1,8 @@
+file:   crates/bilink-format/src/lib.rs
+query:  (const_item
+  name: (identifier) @n0 (#eq? @n0 "VERSION")) @target
+
+# Cache
+range:       867~919
+state:       RESOLVED
+resolved_at: 2026-08-30T02:21:20Z

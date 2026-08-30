@@ -1,0 +1,8 @@
+file:   crates/bilink-format/src/schema.rs
+query:  (function_item
+  name: (identifier) @n0 (#eq? @n0 "registered_hash")) @target
+
+# Cache
+range:       2644~2780
+state:       RESOLVED
+resolved_at: 2026-08-30T02:20:10Z

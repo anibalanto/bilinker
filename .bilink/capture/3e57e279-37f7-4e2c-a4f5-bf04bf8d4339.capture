@@ -1,0 +1,8 @@
+file:   crates/bilink-format/src/link.rs
+query:  (const_item
+  name: (identifier) @n0 (#eq? @n0 "ENDPOINT_PREFIXES")) @target
+
+# Cache
+range:       6465~6617
+state:       RESOLVED
+resolved_at: 2026-08-30T02:21:20Z
