@@ -2497,3 +2497,54 @@ fn the_cutover_records_itself_in_the_ledger() {
     assert!(en_x.contains("bilinker-005-ref-cutover"),
             "y en el mismo commit que saca .bilink/ del índice:\n{en_x}");
 }
+
+/// **La cache no puede conservar un `OK` que ya no es cierto.**
+///
+/// Hubo un fast-path que lo hacía: con un `OK` cacheado y el archivo sin cambios
+/// desde el commit del contenido aceptado, devolvía `OK` sin volver a hashear. Su
+/// premisa es un proxy —"¿el archivo cambió?"— de la pregunta real —"¿el fragmento
+/// sigue hasheando a lo aceptado?"—, y las dos dejan de coincidir apenas el
+/// `accepted.hash` deja de describir lo que hay, **sin que el archivo se toque**.
+///
+/// Este test lo fuerza por el camino más directo: se edita el `accepted.hash` a
+/// mano. En producción llegó por otro —un cambio en cómo se resuelve el rango— pero
+/// la forma es la misma, y lo que importa es que ningún atajo tape la diferencia.
+#[test]
+fn check_never_keeps_a_cached_ok_when_the_hash_no_longer_matches() {
+    let (_t, root, uuid) = accepted_layer();
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+
+    // Con el archivo intacto y el estado en OK, la cache queda tibia.
+    assert!(check_states(&root).trim().is_empty(), "arranca limpio");
+
+    // El accepted.hash deja de describir el fragmento — y el archivo no se toca.
+    let bl = fs::read_to_string(&path).unwrap();
+    let doctored = bl.replacen("hash: ", "hash: ff", 1);
+    assert_ne!(bl, doctored, "el hash tiene que haber cambiado");
+    fs::write(&path, &doctored).unwrap();
+
+    let states = check_states(&root);
+    assert!(states.contains("ALTERED"),
+            "el fragmento ya no coincide y check tiene que decirlo:\n{states}");
+}
+
+/// Y el corolario que hace que el bug importara: `accept` le cree a `check`, así
+/// que un `OK` falso no es un reporte equivocado — es una aceptación que no ocurre.
+#[test]
+fn a_false_ok_would_silently_skip_the_acceptance() {
+    let (_t, root, uuid) = accepted_layer();
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+
+    let before = fs::read_to_string(&path).unwrap();
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    assert_ne!(before, fs::read_to_string(&path).unwrap(),
+               "con el estado bien reportado, accept escribe la decisión");
+    assert!(check_states(&root).trim().is_empty(), "y queda limpio");
+}
