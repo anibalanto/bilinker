@@ -1,14 +1,62 @@
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 /// Run a tree-sitter query against `source` and return the byte range of the `@target` capture.
 pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<Option<(usize, usize)>> {
     Ok(find_target_with_sexp(language, source, query_str)?.map(|(s, e, _)| (s, e)))
 }
 
-/// Like `find_target` but also returns the S-expression of the matched node.
-/// The sexp is stable across whitespace/formatting changes — suitable for AST hashing.
+/// La forma del árbol **más el texto de cada token hoja**.
+///
+/// `Node::to_sexp` da sólo la forma: dice `(identifier)`, no *qué* identificador.
+/// Hashear eso hace invisible todo renombre y todo literal, y el estado sale
+/// RESTYLED —"sólo formato"— de un cambio de versión o de un parámetro renombrado.
+///
+/// Con los tokens adentro, dos fragmentos coinciden cuando tienen los mismos
+/// tokens en el mismo orden y la misma estructura. Lo único que puede diferir es
+/// el espacio entre ellos, que es lo que "sólo formato" quiere decir.
+///
+/// Un comentario es un token, así que cambiarlo no es sólo formato: un comentario
+/// dice algo, y cambiar lo que dice es un cambio de contenido.
+pub fn shape_and_tokens(node: Node, source: &str) -> String {
+    let mut out = String::new();
+    write_node(node, source, &mut out);
+    out
+}
+
+fn write_node(node: Node, source: &str, out: &mut String) {
+    out.push('(');
+    out.push_str(node.kind());
+
+    // El texto se toma de lo que **no** cubre ningún hijo. En una hoja es el token
+    // entero; en un nodo interno son los huecos, que en código son espacios y se
+    // descartan al recortar — salvo donde no lo son: el cuerpo de un comentario
+    // cuelga así, con el `//` como único hijo, y sin esto sería invisible.
+    let mut at = node.start_byte();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        write_gap(&source[at..child.start_byte()], out);
+        out.push(' ');
+        write_node(child, source, out);
+        at = child.end_byte();
+    }
+    write_gap(&source[at..node.end_byte()], out);
+
+    out.push(')');
+}
+
+fn write_gap(text: &str, out: &mut String) {
+    let t = text.trim();
+    if !t.is_empty() {
+        out.push(' ');
+        out.push_str(t);
+    }
+}
+
+
+/// Como `find_target`, pero además devuelve la huella del nodo: forma del árbol y
+/// tokens, estable ante cambios de espaciado. Ver [`shape_and_tokens`].
 pub fn find_target_with_sexp(language: Language, source: &str, query_str: &str) -> Result<Option<(usize, usize, String)>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
@@ -27,7 +75,7 @@ pub fn find_target_with_sexp(language: Language, source: &str, query_str: &str) 
     while let Some(m) = matches.next() {
         for cap in m.captures {
             if cap.index == target_idx {
-                let sexp = cap.node.to_sexp();
+                let sexp = shape_and_tokens(cap.node, source);
                 return Ok(Some((cap.node.start_byte(), cap.node.end_byte(), sexp)));
             }
         }
@@ -84,7 +132,7 @@ pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Re
             out.push(TargetMatch {
                 start: t.node.start_byte(),
                 end:   t.node.end_byte(),
-                sexp:  t.node.to_sexp(),
+                sexp:  shape_and_tokens(t.node, source),
                 name,
             });
         }
@@ -212,5 +260,44 @@ mod rewrite_tests {
     #[test]
     fn returns_none_without_a_name_predicate() {
         assert!(rewrite_name_predicate("(source_file) @target", "x").is_none());
+    }
+
+    fn fingerprint(src: &str) -> String {
+        let language = crate::grammar::for_language("rust").unwrap();
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        shape_and_tokens(tree.root_node(), src)
+    }
+
+    /// Reformatear no cambia la huella: es lo que RESTYLED significa.
+    #[test]
+    fn whitespace_does_not_change_the_fingerprint() {
+        assert_eq!(
+            fingerprint("fn f(a: u8) -> u8 { a }"),
+            fingerprint("fn  f( a : u8 )  ->  u8\n{\n    a\n}\n"),
+        );
+    }
+
+    /// Renombrar sí. Con la forma del árbol sola, `sref` y `cap` eran el mismo
+    /// nodo `(identifier)` y el renombre salía como cambio de formato.
+    #[test]
+    fn renaming_an_identifier_changes_the_fingerprint() {
+        assert_ne!(fingerprint("fn f(sref: u8) {}"), fingerprint("fn f(cap: u8) {}"));
+    }
+
+    /// Un literal también. `"0.1.0"` y `"2.0.0"` tienen el mismo árbol.
+    #[test]
+    fn changing_a_literal_changes_the_fingerprint() {
+        assert_ne!(fingerprint(r#"const V: &str = "0.1.0";"#),
+                   fingerprint(r#"const V: &str = "2.0.0";"#));
+    }
+
+    /// Y un comentario: dice algo, y cambiar lo que dice no es formato. Su cuerpo
+    /// no es una hoja —cuelga como hueco, con el `//` de único hijo—, así que sin
+    /// leer los huecos sería invisible.
+    #[test]
+    fn editing_a_comment_changes_the_fingerprint() {
+        assert_ne!(fingerprint("// antes\nfn f() {}"), fingerprint("// después\nfn f() {}"));
     }
 }

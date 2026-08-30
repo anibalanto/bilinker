@@ -117,7 +117,16 @@ fn compute(
                         .context("no hay contenido previo que conservar: aceptar con --place \
                                   exige que el endpoint ya tuviera algo aprobado")?
                 },
-                hash_ast: if what.content { ast_hash } else { previous.and_then(|a| a.hash_ast.clone()) },
+                // Nunca se conserva un `hash_ast` que la gramática no puede
+                // producir: uno guardado por una versión anterior sobreviviría a
+                // cada `accept --place` y seguiría estando ahí para mentir.
+                hash_ast: if what.content {
+                    ast_hash
+                } else if grammar::ast_discriminates_content(grammar::language_for_file(&cap.file)) {
+                    previous.and_then(|a| a.hash_ast.clone())
+                } else {
+                    None
+                },
             };
 
             // `commit` es el commit **del contenido**, no el HEAD de quien acepta.

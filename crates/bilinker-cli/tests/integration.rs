@@ -984,3 +984,4 @@ fn capture_without_a_selection_takes_the_whole_file() {
     assert!(!cap.contains("query:"),  "el archivo entero no lleva query:\n{cap}");
     assert!(!cap.contains("offset:"), "el archivo entero no lleva offset:\n{cap}");
 }
+

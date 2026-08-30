@@ -223,11 +223,20 @@ pub(crate) fn compare_content(
     }
 
     // Sólo formato: el texto difiere y el AST no.
-    if let (Some(expected_ast), Some(q)) = (&accepted.hash_ast, &cap.query) {
-        let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
-        if let Some((_, _, sexp)) = query::find_target_with_sexp(language, &source, q)? {
-            if hash::sha256(sexp.as_bytes()) == *expected_ast {
-                return Ok(EndpointState::Restyled);
+    //
+    // La pregunta la decide la gramática, no el archivo: donde el AST no
+    // discrimina contenido —prosa— el sexp de una sección es el mismo con
+    // cualquier texto adentro, y compararlo diría RESTYLED de una reescritura
+    // entera. Se consulta la gramática antes que `accepted`, así que un
+    // `hash_ast` guardado por una versión anterior queda inerte en vez de mentir.
+    let lang = grammar::language_for_file(&cap.file);
+    if grammar::ast_discriminates_content(lang) {
+        if let (Some(expected_ast), Some(q)) = (&accepted.hash_ast, &cap.query) {
+            let language = grammar::for_language(lang)?;
+            if let Some((_, _, sexp)) = query::find_target_with_sexp(language, &source, q)? {
+                if hash::sha256(sexp.as_bytes()) == *expected_ast {
+                    return Ok(EndpointState::Restyled);
+                }
             }
         }
     }
@@ -476,4 +485,48 @@ pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, B
         }
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bilink_format::Accepted;
+    use tempfile::tempdir;
+
+    const QUERY: &str = r#"(section (atx_heading (inline) @n0 (#eq? @n0 "Spec"))) @target"#;
+
+    fn sexp_hash(source: &str, query: &str) -> String {
+        let language = grammar::for_language("markdown").unwrap();
+        let (_, _, sexp) = query::find_target_with_sexp(language, source, query)
+            .unwrap()
+            .expect("la query debería resolver");
+        hash::sha256(sexp.as_bytes())
+    }
+
+    /// Sobre prosa, un `hash_ast` guardado no se consulta aunque coincida.
+    ///
+    /// Una versión anterior lo escribía también para markdown. La gramática se
+    /// consulta antes que `accepted`, así que el residuo queda inerte: acá el
+    /// hash es el del contenido actual —coincide exacto— y aun así el estado es
+    /// ALTERED, porque en prosa la pregunta no se hace.
+    #[test]
+    fn a_stored_ast_hash_over_prose_is_never_consulted() {
+        let d = tempdir().unwrap();
+        let file = "spec.md";
+        let before = "# Spec\n\nLo que decía antes.\n";
+        let after  = "# Spec\n\nOtra cosa completamente distinta.\n";
+        std::fs::write(d.path().join(file), after).unwrap();
+
+        let cap = Capture { file: file.into(), query: Some(QUERY.into()), offset: None };
+        let accepted = Accepted {
+            link: None,
+            hash: hash::sha256(before.as_bytes()),
+            hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
+        };
+        let range = ByteRange { start: 0, end: after.len() };
+
+        let state = compare_content(d.path(), &cap, &accepted, Some(&range), None, None).unwrap();
+        assert_eq!(state, EndpointState::Altered,
+                   "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
+    }
 }
