@@ -1,4 +1,0 @@
-file: crates/bilinker-cli/tests/integration.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "the_declaration_fields_survive_an_accept")) @target

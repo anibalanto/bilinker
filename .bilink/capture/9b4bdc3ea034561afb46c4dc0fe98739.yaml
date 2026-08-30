@@ -1,4 +1,0 @@
-file: crates/bilinker/src/chain.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "chain_new")) @target

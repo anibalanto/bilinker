@@ -1,4 +1,0 @@
-file: crates/bilinker-cli/tests/integration.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "check_still_tells_expanded_from_altered_with_a_cold_cache")) @target

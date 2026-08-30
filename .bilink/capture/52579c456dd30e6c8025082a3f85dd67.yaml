@@ -1,4 +1,0 @@
-file: crates/bilinker-cli/tests/integration.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "the_approximate_diff_works_from_a_nested_layer")) @target

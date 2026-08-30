@@ -1,2 +1,0 @@
-file: crates/bilinker-cli/tests/integration.rs
-query: '(function_item name: (identifier) @n0 (#eq? @n0 "check_marks_altered_after_accept_and_file_change")) @target'

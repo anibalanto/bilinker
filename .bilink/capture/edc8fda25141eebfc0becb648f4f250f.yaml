@@ -1,4 +1,0 @@
-file: crates/bilinker-cli/tests/integration.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "the_derived_directories_are_left_out_of_git")) @target
