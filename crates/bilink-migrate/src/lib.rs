@@ -18,6 +18,7 @@
 //! Es lo único que permite que alguien parado en una versión vieja llegue a la
 //! actual corriendo la cadena entera.
 
+pub mod cut;
 pub mod partition;
 
 use accreta_migrate::Migration;

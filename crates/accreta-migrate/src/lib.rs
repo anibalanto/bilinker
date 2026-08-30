@@ -163,7 +163,17 @@ impl Report {
 /// se marca como aplicada cuando corrió sobre **todas** las capas del repo, no
 /// sobre la primera: si no, una corrida parcial dejaría el repo marcado como
 /// migrado con capas sin tocar.
-pub fn run(
+/// **Genera** la salida de las migraciones pendientes. No toca el ledger.
+///
+/// El ledger se escribe en el corte, no acá: si se escribiera al generar, el repo
+/// quedaría marcado como migrado mientras sigue corriendo el formato viejo. Es el
+/// mismo principio por el que una migración se marca recién cuando corrió sobre
+/// todas las capas del repo — se registra cuando el estado es verdadero, no cuando
+/// el trabajo empezó.
+///
+/// Y **siempre regenera**: la salida es un derivado, y regenerar es lo que recupera
+/// un cambio hecho con el binario viejo entre la generación y el corte.
+pub fn generate(
     layers:     &[PathBuf],
     migrations: &[Migration],
     dry_run:    bool,
@@ -173,19 +183,8 @@ pub fn run(
         return Ok(report);
     }
 
-    // Agrupar capas por el repo que las contiene: un ledger por repo.
-    let mut by_repo: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
-    for layer in layers {
-        let root = repo_root_of(layer);
-        match by_repo.iter_mut().find(|(r, _)| *r == root) {
-            Some((_, ls)) => ls.push(layer.clone()),
-            None          => by_repo.push((root, vec![layer.clone()])),
-        }
-    }
-
-    for (repo_root, repo_layers) in by_repo {
-        let mut ledger = Ledger::load(&repo_root)?;
-        let mut ledger_changed = false;
+    for (repo_root, repo_layers) in group_by_repo(layers) {
+        let ledger = Ledger::load(&repo_root)?;
 
         for m in migrations {
             if ledger.contains(m.id) {
@@ -203,26 +202,46 @@ pub fn run(
                 notes.extend(outcome.notes);
                 changed.extend(outcome.changed);
             }
-
-            // Se registra aunque no haya cambiado nada: que una capa ya estuviera
-            // en el formato nuevo no la deja pendiente.
-            if !dry_run {
-                ledger.record(m.id);
-                ledger_changed = true;
-            }
             report.applied.push(Applied {
-                id: m.id.to_string(),
-                repo: repo_root.clone(),
-                notes,
-                changed,
+                id: m.id.to_string(), repo: repo_root.clone(), notes, changed,
             });
         }
+    }
+    Ok(report)
+}
 
-        if ledger_changed {
+/// **Registra** las migraciones en el ledger del repo. Es la mitad del corte.
+///
+/// Se llama cuando el estado ya es verdadero: los archivos nuevos están en su lugar
+/// y el binario que los entiende es el que corre.
+pub fn record(layers: &[PathBuf], migrations: &[Migration]) -> Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for (repo_root, _) in group_by_repo(layers) {
+        let mut ledger = Ledger::load(&repo_root)?;
+        let mut changed = false;
+        for m in migrations {
+            if !ledger.contains(m.id) {
+                ledger.record(m.id);
+                changed = true;
+            }
+        }
+        if changed {
             ledger.save()?;
-            report.ledgers.push(Ledger::path_for(&repo_root));
+            written.push(Ledger::path_for(&repo_root));
         }
     }
+    Ok(written)
+}
 
-    Ok(report)
+/// Las capas agrupadas por el repo que las contiene: un ledger por repo.
+fn group_by_repo(layers: &[PathBuf]) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut by_repo: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for layer in layers {
+        let root = repo_root_of(layer);
+        match by_repo.iter_mut().find(|(r, _)| *r == root) {
+            Some((_, ls)) => ls.push(layer.clone()),
+            None          => by_repo.push((root, vec![layer.clone()])),
+        }
+    }
+    by_repo
 }

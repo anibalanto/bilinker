@@ -91,6 +91,9 @@ enum Command {
         /// Mostrar qué haría sin escribir nada
         #[arg(long)]
         dry_run: bool,
+        /// Ejecutar el corte: regenerar, verificar, y cambiar .bilink/ por lo migrado
+        #[arg(long)]
+        cut: bool,
     },
 
     /// Manage chains of bilinks
@@ -643,7 +646,7 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Migrate { path, recursive, dry_run } => {
+        Command::Migrate { path, recursive, dry_run, cut } => {
             let base = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
             let layers = if recursive {
@@ -652,7 +655,42 @@ Eliminar? [y/N] ");
                 vec![base.clone()]
             };
 
-            let report = accreta_migrate::run(&layers, &bilink_migrate::all(), dry_run)?;
+            // Las carpetas transitorias nunca se commitean.
+            for layer in &layers {
+                bilink_migrate::cut::exclude_in(&accreta_migrate::repo_root_of(layer))?;
+            }
+
+            if cut {
+                if dry_run {
+                    anyhow::bail!("--cut y --dry-run se excluyen: el corte escribe");
+                }
+                let mut cuts = Vec::new();
+                // Se planifican **todas** antes de mover ninguna: si una capa no
+                // verifica, no se corta nada. Un corte a medias deja el repo con
+                // dos formatos y ningún binario que entienda los dos.
+                for layer in &layers {
+                    match bilink_migrate::cut::plan_cut(layer) {
+                        Ok(c) => cuts.push(c),
+                        Err(e) => anyhow::bail!("{layer:?}: {e}\n\nNo se cortó ninguna capa."),
+                    }
+                }
+                for c in &cuts {
+                    println!("  {}  {} bilink(s), {} capture(s)",
+                             c.layer.display(), c.bilinks, c.captures);
+                }
+                for c in &cuts {
+                    bilink_migrate::cut::execute(c)?;
+                }
+                // El ledger va acá: el estado recién ahora es verdadero.
+                let written = accreta_migrate::record(&layers, &bilink_migrate::all())?;
+                println!();
+                for l in &written { println!("ledger: {}", l.display()); }
+                eprintln!("\ncorte hecho en {} capa(s). Lo anterior queda en .bilink-formato-1/", cuts.len());
+                eprintln!("Revisar con `bilinker check .` y commitear.");
+                return Ok(());
+            }
+
+            let report = accreta_migrate::generate(&layers, &bilink_migrate::all(), dry_run)?;
 
             for id in &report.skipped {
                 eprintln!("ya aplicada: {id}");
@@ -673,13 +711,11 @@ Eliminar? [y/N] ");
                 }
                 println!("    {} archivo(s) afectado(s)", a.changed.len());
             }
-            for l in &report.ledgers {
-                println!("\nledger: {}", l.display());
-            }
             if dry_run {
                 eprintln!("\ndry-run: no se escribió nada");
             } else {
-                eprintln!("\nrevisar con `git diff` y correr `bilinker check .`");
+                eprintln!("\ngenerado. Revisar, y cortar con `bilinker migrate --cut`.");
+                eprintln!("El ledger se escribe en el corte, no ahora.");
             }
         }
 
