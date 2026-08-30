@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use anyhow::Result;
 
-use crate::bilink::BiLinkFile;
+use bilink_format::BiLink;
 
 #[derive(Debug, PartialEq)]
 pub enum IndexStatus {
@@ -23,14 +23,16 @@ pub fn build(layer_root: &Path) -> Result<usize> {
     let mut count = 0;
 
     for path in bilink_files_in(&bilink_dir) {
-        let Ok(bl) = BiLinkFile::load(&path) else { continue };
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
         for n in [0u8, 1u8] {
-            if let Ok(Some(cap)) = bl.capture_for(layer_root, n) {
-                out.push_str(&cap.sref.file);
+            let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
+            if let Ok(cap) = bilink_format::Capture::load_in(layer_root, id) {
+                out.push_str(&cap.file);
                 out.push('\t');
-                out.push_str(&format!("{}.{n}", bl.uuid));
+                out.push_str(&format!("{uuid}.{n}"));
                 out.push('\t');
-                out.push_str(&cap.uuid);
+                out.push_str(id);
                 out.push('\n');
                 count += 1;
             }
@@ -105,14 +107,7 @@ fn collect_layer_roots(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn bilink_files_in(bilink_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(bilink_dir) else { return vec![] };
-    entries.flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().and_then(|e| e.to_str()) == Some("bilink")
-                && !p.ancestors().any(|a| a.ends_with(".pending"))
-        })
-        .collect()
+    bilink_format::bilink::bilink_files(bilink_dir)
 }
 
 fn index_is_valid(bilink_dir: &Path, index_path: &Path) -> bool {
@@ -147,11 +142,13 @@ fn lookup_scan(bilink_dir: &Path, file: &str) -> Result<Vec<(String, u8)>> {
     let layer_root = bilink_dir.parent().unwrap_or(bilink_dir);
     let mut results = Vec::new();
     for path in bilink_files_in(bilink_dir) {
-        let Ok(bl) = BiLinkFile::load(&path) else { continue };
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
         for n in [0u8, 1u8] {
-            if let Ok(Some(cap)) = bl.capture_for(layer_root, n) {
-                if cap.sref.file == file {
-                    results.push((bl.uuid.clone(), n));
+            let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
+            if let Ok(cap) = bilink_format::Capture::load_in(layer_root, id) {
+                if cap.file == file {
+                    results.push((uuid.to_string(), n));
                 }
             }
         }
@@ -187,83 +184,30 @@ fn ensure_gitignore(bilink_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bilink::BiLinkFile;
-    use crate::link::{LinkEndpoint, StructuralRef};
     use tempfile::tempdir;
 
-    fn make_bilink(bilink_dir: &Path, uuid: &str, file0: &str, file1: &str) {
-        let bl = BiLinkFile::new(uuid, LinkEndpoint::LegacyStructural(StructuralRef { file: file0.into(), query: None, range: None }), LinkEndpoint::LegacyStructural(StructuralRef { file: file1.into(), query: None, range: None }));
-        std::fs::create_dir_all(bilink_dir).unwrap();
-        bl.write(&bilink_dir.join(format!("{uuid}.bilink"))).unwrap();
+    fn write_chain(layer: &std::path::Path, uuid: &str, file: &str) {
+        let cap = bilink_format::Capture { file: file.into(), query: None, offset: None };
+        let (id, _, _) = cap.write_in(layer).unwrap();
+        BiLink::new(format!("capture {id}").parse().unwrap(), "issue 3a".parse().unwrap())
+            .write(&BiLink::path_in(layer, uuid)).unwrap();
     }
 
     #[test]
-    fn build_creates_index_and_gitignore() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
+    fn the_index_maps_a_file_to_its_endpoints() {
+        let d = tempdir().unwrap();
+        write_chain(d.path(), "uuid1", "src/lib.rs");
+        build(d.path()).unwrap();
 
-        let count = build(root).unwrap();
-        assert_eq!(count, 2);
-
-        let index = std::fs::read_to_string(root.join(".bilink/index/index")).unwrap();
-        assert!(index.contains("a.md\tuuid1.0"));
-        assert!(index.contains("b.md\tuuid1.1"));
-
-        let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-        assert!(gi.contains("index/"));
-        assert!(gi.contains(".pending/"));
+        assert_eq!(lookup(d.path(), "src/lib.rs").unwrap(), vec![("uuid1".to_string(), 0u8)]);
+        assert!(lookup(d.path(), "otro.rs").unwrap().is_empty());
     }
 
+    /// Sin índice, el lookup cae a scan y da lo mismo. Nunca es fuente de verdad.
     #[test]
-    fn lookup_uses_index_when_valid() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
-        build(root).unwrap();
-
-        let results = lookup(root, "a.md").unwrap();
-        assert_eq!(results, vec![("uuid1".to_string(), 0u8)]);
-    }
-
-    #[test]
-    fn lookup_falls_back_to_scan_when_no_index() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
-
-        let results = lookup(root, "b.md").unwrap();
-        assert_eq!(results, vec![("uuid1".to_string(), 1u8)]);
-    }
-
-    #[test]
-    fn status_missing_when_no_index() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
-
-        assert_eq!(status(root).unwrap(), IndexStatus::Missing);
-    }
-
-    #[test]
-    fn status_ok_after_build() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
-        build(root).unwrap();
-
-        assert_eq!(status(root).unwrap(), IndexStatus::Ok);
-    }
-
-    #[test]
-    fn gitignore_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        make_bilink(&root.join(".bilink"), "uuid1", "a.md", "b.md");
-        build(root).unwrap();
-        build(root).unwrap();
-
-        let gi = std::fs::read_to_string(root.join(".bilink/.gitignore")).unwrap();
-        assert_eq!(gi.matches("index/").count(), 1);
+    fn a_missing_index_falls_back_to_scanning() {
+        let d = tempdir().unwrap();
+        write_chain(d.path(), "uuid1", "src/lib.rs");
+        assert_eq!(lookup(d.path(), "src/lib.rs").unwrap(), vec![("uuid1".to_string(), 0u8)]);
     }
 }

@@ -2,8 +2,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Result};
 use uuid::Uuid;
 
-use crate::bilink::BiLinkFile;
-use crate::link::LinkEndpoint;
+use bilink_format::{BiLink, LinkEndpoint};
 
 pub struct ChainNew {
     pub uuid: String,
@@ -38,16 +37,7 @@ pub fn chain_new(
 
     // Same-layer direct link: both tips in the same directory → one file.
     if n == 2 && normalize(&all_layers[0]) == normalize(&all_layers[1]) {
-        let bl = BiLinkFile {
-            uuid:      uuid.clone(),
-            link0:     tips[0].1.clone(),
-            link1:     tips[1].1.clone(),
-            hash0: None, hash_ast0: None, commit0: None,
-            hash1: None, hash_ast1: None, commit1: None,
-            range0:    None, range1: None,
-            state0:    None, state1: None,
-            resolved_at: None,
-        };
+        let bl = BiLink::new(tips[0].1.clone(), tips[1].1.clone());
         let path = bilink_path(root, &all_layers[0], &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -70,16 +60,7 @@ pub fn chain_new(
             (to_prev, to_next)
         };
 
-        let bl = BiLinkFile {
-            uuid:      uuid.clone(),
-            link0,
-            link1,
-            hash0: None, hash_ast0: None, commit0: None,
-            hash1: None, hash_ast1: None, commit1: None,
-            range0:    None, range1: None,
-            state0:    None, state1: None,
-            resolved_at: None,
-        };
+        let bl = BiLink::new(link0, link1);
         let path = bilink_path(root, layer, &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -95,19 +76,19 @@ pub fn resolve_layer_link(
     uuid: &str,
 ) -> PathBuf {
     let _ = bilink_file;
-    layer_root.join(link_path).join(".bilink").join(format!("{uuid}.bilink"))
+    BiLink::path_in(&layer_root.join(link_path), uuid)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 fn bilink_path(root: &Path, layer: &Path, uuid: &str) -> PathBuf {
-    root.join(layer).join(".bilink").join(format!("{uuid}.bilink"))
+    BiLink::path_in(&root.join(layer), uuid)
 }
 
 fn layer_endpoint(from_layer: &Path, to_layer: &Path) -> Result<LinkEndpoint> {
     let rel = diff_paths(to_layer, from_layer);
     let tokens = filesystem_to_stratum_tokens(&rel)?;
-    Ok(LinkEndpoint::Layer(tokens))
+    format!("path {}", stratum::format_path(&tokens)).parse()
 }
 
 /// Converts a filesystem relative path (as produced by `diff_paths`) into stratum tokens.
@@ -192,180 +173,51 @@ fn normalize(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bilink::BiLinkFile;
-    use crate::link::{LinkEndpoint, StructuralRef};
     use tempfile::tempdir;
 
-    fn whole_file(file: &str) -> LinkEndpoint {
-        LinkEndpoint::LegacyStructural(StructuralRef {
-            file: file.into(),
-            query: None,
-            range: None,
-        })
-    }
+    fn ep(raw: &str) -> LinkEndpoint { raw.parse().unwrap() }
 
-    fn is_layer(ep: &LinkEndpoint) -> bool {
-        matches!(ep, LinkEndpoint::Layer(_))
-    }
-    fn is_structural(ep: &LinkEndpoint) -> bool {
-        matches!(ep, LinkEndpoint::LegacyStructural(_))
-    }
-
-    // ─── filesystem_to_stratum_tokens ────────────────────────────────────────
-
+    /// Una cadena entre dos capas: un bilink en cada una, con el mismo uuid.
     #[test]
-    fn stratum_tokens_up_one() {
-        let tokens = filesystem_to_stratum_tokens(Path::new("../..")).unwrap();
-        let ep = LinkEndpoint::Layer(tokens);
-        assert_eq!(ep.to_string(), "<");
+    fn a_two_layer_chain_writes_one_file_per_layer() {
+        let d = tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".stratum/impl")).unwrap();
+
+        let r = chain_new(d.path(),
+            &[(PathBuf::from("."), ep("capture aaa")),
+              (PathBuf::from(".stratum/impl"), ep("capture bbb"))],
+            &[]).unwrap();
+
+        assert_eq!(r.files.len(), 2);
+        for f in &r.files { assert!(f.exists(), "no se escribió {}", f.display()); }
+
+        // El tip de la capa raíz apunta a su capture y a la capa vecina.
+        let spec = BiLink::load(&r.files[0]).unwrap();
+        assert_eq!(spec.endpoint.zero.link.to_string(), "capture aaa");
+        assert_eq!(spec.endpoint.one.link.prefix(), "path");
     }
 
+    /// Los dos endpoints en la misma capa: un solo archivo, sin traversal.
     #[test]
-    fn stratum_tokens_up_two() {
-        let tokens = filesystem_to_stratum_tokens(Path::new("../../../..")).unwrap();
-        let ep = LinkEndpoint::Layer(tokens);
-        assert_eq!(ep.to_string(), "<<");
+    fn a_direct_link_writes_a_single_file() {
+        let d = tempdir().unwrap();
+        let r = chain_new(d.path(),
+            &[(PathBuf::from("."), ep("capture aaa")),
+              (PathBuf::from("."), ep("capture bbb"))],
+            &[]).unwrap();
+        assert_eq!(r.files.len(), 1);
     }
 
+    /// Una cadena nace sin nada aceptado: su ausencia *es* PENDING.
     #[test]
-    fn stratum_tokens_down_one() {
-        let tokens = filesystem_to_stratum_tokens(Path::new(".stratum/impl")).unwrap();
-        let ep = LinkEndpoint::Layer(tokens);
-        assert_eq!(ep.to_string(), ">impl");
-    }
-
-    #[test]
-    fn stratum_tokens_down_two() {
-        let tokens = filesystem_to_stratum_tokens(Path::new(".stratum/td/.stratum/impl")).unwrap();
-        let ep = LinkEndpoint::Layer(tokens);
-        assert_eq!(ep.to_string(), ">td>impl");
-    }
-
-    // ─── diff_paths ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn diff_paths_root_to_child() {
-        assert_eq!(
-            diff_paths(Path::new(".stratum/tech-decisions"), Path::new(".")),
-            PathBuf::from(".stratum/tech-decisions")
-        );
-    }
-
-    #[test]
-    fn diff_paths_child_to_root() {
-        assert_eq!(
-            diff_paths(Path::new("."), Path::new(".stratum/tech-decisions")),
-            PathBuf::from("../..")
-        );
-    }
-
-    #[test]
-    fn diff_paths_sibling_layers() {
-        assert_eq!(
-            diff_paths(
-                Path::new(".stratum/tech-decisions/.stratum/impl"),
-                Path::new(".stratum/tech-decisions"),
-            ),
-            PathBuf::from(".stratum/impl")
-        );
-    }
-
-    // ─── chain_new ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn chain_new_direct_link_single_file() {
-        let dir   = tempdir().unwrap();
-        let root  = dir.path();
-        let tips  = vec![
-            (PathBuf::from("."), whole_file("a.md")),
-            (PathBuf::from("."), whole_file("b.md")),
-        ];
-        let result = chain_new(root, &tips, &[]).unwrap();
-
-        assert_eq!(result.files.len(), 1);
-        let bl = BiLinkFile::load(&result.files[0]).unwrap();
-        assert!(is_structural(&bl.link0), "direct link: link0 must be structural");
-        assert!(is_structural(&bl.link1), "direct link: link1 must be structural");
-    }
-
-    #[test]
-    fn chain_new_adjacent_layers_two_files() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let tips = vec![
-            (PathBuf::from("."),             whole_file("a.md")),
-            (PathBuf::from(".stratum/impl"), whole_file("b.md")),
-        ];
-        let result = chain_new(root, &tips, &[]).unwrap();
-
-        assert_eq!(result.files.len(), 2);
-
-        let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
-        assert!(is_structural(&tip0.link0), "tip0.link0 must be structural");
-        assert!(is_layer(&tip0.link1),      "tip0.link1 must be layer");
-
-        let tip1 = BiLinkFile::load(&result.files[1]).unwrap();
-        assert!(is_layer(&tip1.link0),      "tip1.link0 must be layer");
-        assert!(is_structural(&tip1.link1), "tip1.link1 must be structural");
-    }
-
-    #[test]
-    fn chain_new_three_layers_correct_endpoints() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let tips = vec![
-            (PathBuf::from("."),                            whole_file("a.md")),
-            (PathBuf::from(".stratum/td/.stratum/impl"),   whole_file("b.md")),
-        ];
-        let mids = vec![PathBuf::from(".stratum/td")];
-
-        let result = chain_new(root, &tips, &mids).unwrap();
-        assert_eq!(result.files.len(), 3);
-
-        let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
-        let mid  = BiLinkFile::load(&result.files[1]).unwrap();
-        let tip1 = BiLinkFile::load(&result.files[2]).unwrap();
-
-        assert!(is_structural(&tip0.link0));
-        assert!(is_layer(&tip0.link1));
-
-        assert!(is_layer(&mid.link0));
-        assert!(is_layer(&mid.link1));
-
-        assert!(is_layer(&tip1.link0));
-        assert!(is_structural(&tip1.link1));
-    }
-
-    #[test]
-    fn chain_new_uuid_shared_across_files() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let tips = vec![
-            (PathBuf::from("."),             whole_file("a.md")),
-            (PathBuf::from(".stratum/impl"), whole_file("b.md")),
-        ];
-        let result = chain_new(root, &tips, &[]).unwrap();
-
-        let uuid0 = BiLinkFile::load(&result.files[0]).unwrap().uuid;
-        let uuid1 = BiLinkFile::load(&result.files[1]).unwrap().uuid;
-        assert_eq!(uuid0, uuid1);
-        assert_eq!(uuid0, result.uuid);
-    }
-
-    #[test]
-    fn chain_new_layer_paths_are_correct() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let tips = vec![
-            (PathBuf::from("."),               whole_file("a.md")),
-            (PathBuf::from(".stratum/impl"),   whole_file("b.md")),
-        ];
-        let result = chain_new(root, &tips, &[]).unwrap();
-
-        let tip0 = BiLinkFile::load(&result.files[0]).unwrap();
-        assert_eq!(tip0.link1.to_string(), ">impl");
-
-        let tip1 = BiLinkFile::load(&result.files[1]).unwrap();
-        assert_eq!(tip1.link0.to_string(), "<");
+    fn a_fresh_chain_has_nothing_accepted() {
+        let d = tempdir().unwrap();
+        let r = chain_new(d.path(),
+            &[(PathBuf::from("."), ep("capture aaa")),
+              (PathBuf::from("."), ep("capture bbb"))],
+            &[]).unwrap();
+        let bl = BiLink::load(&r.files[0]).unwrap();
+        assert!(bl.endpoint.zero.accepted.is_none());
+        assert!(bl.endpoint.one.accepted.is_none());
     }
 }

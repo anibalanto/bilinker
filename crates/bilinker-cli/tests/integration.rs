@@ -45,9 +45,9 @@ fn capture_writes_a_capture_with_the_stable_anchor() {
     let uuid = stdout.trim();
     assert!(!uuid.is_empty(), "capture debe imprimir el uuid por stdout");
 
-    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.capture")))
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.yaml")))
         .expect("capture no fue escrito");
-    assert!(cap.contains("file:   src/Service.java"), "falta el archivo:
+    assert!(cap.contains("file: src/Service.java"), "falta el archivo:
 {cap}");
     assert!(cap.contains("Service"), "falta la clase en la query:
 {cap}");
@@ -190,7 +190,7 @@ fn chain_new_direct_link_creates_single_file() {
     let bilink_dir = root.join(".bilink");
     let files: Vec<_> = std::fs::read_dir(&bilink_dir).unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("bilink"))
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
         .collect();
     assert_eq!(files.len(), 1, "direct link should create exactly one file");
 }
@@ -210,7 +210,7 @@ fn chain_new_two_layers_creates_two_files() {
     let count_bilinks = |dir: &std::path::Path| -> usize {
         std::fs::read_dir(dir).map(|rd| rd
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("bilink"))
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
             .count()
         ).unwrap_or(0)
     };
@@ -239,41 +239,26 @@ fn check_marks_new_chain_as_pending() {
 
 #[test]
 fn check_marks_altered_after_accept_and_file_change() {
-    use sha2::{Digest, Sha256};
-    let (_tmp, root) = isolated_workspace();
+    let (_tmp, root) = isolated_git_workspace();
 
-    run_in(&root, &[
-        "chain", "new",
-        "--tip", "docs/spec.md",
-        "--tip", "src/Service.java",
-    ]);
-
-    // First check writes state/range; accepted.N remains empty
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5"]);
     run_in(&root, &["check", "."]);
 
-    // Simulate accept: inject accepted entry with current file hash
-    let bilink_dir = root.join(".bilink");
-    let entry = std::fs::read_dir(&bilink_dir).unwrap()
-        .filter_map(|e| e.ok())
-        .find(|e| e.path().extension().and_then(|x| x.to_str()) == Some("bilink"))
-        .expect("no bilink file");
-    let spec_bytes = std::fs::read(root.join("docs/spec.md")).unwrap();
-    let spec_hash = format!("{:x}", Sha256::digest(&spec_bytes));
-    let svc_bytes = std::fs::read(root.join("src/Service.java")).unwrap();
-    let svc_hash = format!("{:x}", Sha256::digest(&svc_bytes));
-    let current = std::fs::read_to_string(entry.path()).unwrap();
-    let patched = current.replace(
-        "\n# Cache\n",
-        &format!("\n# Cache\nhash.0: {spec_hash}\ncommit.0: deadbeef\nhash.1: {svc_hash}\ncommit.1: deadbeef\n"),
-    );
-    std::fs::write(entry.path(), patched).unwrap();
-
-    // Modify the file → hash no longer in accepted → ALTERED
-    std::fs::write(root.join("docs/spec.md"), "# Modified\n\nDifferent content.\n").unwrap();
+    // Aceptar de verdad, no simularlo: es lo que escribe el bloque `accepted`.
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept failed:\n{stderr}");
 
     let (stdout, _, ok) = run_in(&root, &["check", "."]);
-    assert!(!ok, "check should exit 1 when state is ALTERED");
-    assert!(stdout.contains("ALTERED"), "expected ALTERED in output:\n{stdout}");
+    assert!(ok, "tras aceptar tiene que quedar limpio:\n{stdout}");
+
+    // El contenido cambia **bajo el mismo anchor**: el heading sigue siendo el que
+    // la query nombra, así que el capture resuelve y lo que difiere es el hash.
+    // Cambiar el heading sería otra cosa —el anchor se fue— y daría UNRESOLVED.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nContenido distinto.\n").unwrap();
+
+    let (stdout, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "ALTERED tiene que salir con 1");
+    assert!(stdout.contains("ALTERED"), "esperaba ALTERED:\n{stdout}");
 }
 
 // ─── 7. chain list / chain status ──────────────────────────────────────────
@@ -317,9 +302,9 @@ fn chain_status_shows_nodes() {
 
     let (status_out, _, ok) = run_in(&root, &["chain", "status", uuid]);
     assert!(ok, "chain status failed");
-    assert!(status_out.contains("Chain:"), "expected chain header:\n{status_out}");
-    assert!(status_out.contains("link.0"), "expected link.0 in output");
-    assert!(status_out.contains("link.1"), "expected link.1 in output");
+    assert!(status_out.contains("Cadena:"), "falta el encabezado:\n{status_out}");
+    assert!(status_out.contains("endpoint.0"), "falta endpoint.0:\n{status_out}");
+    assert!(status_out.contains("endpoint.1"), "falta endpoint.1:\n{status_out}");
 }
 
 // ─── 8. get by file ────────────────────────────────────────────────────────
@@ -560,7 +545,7 @@ fn capture_disambiguates_a_rust_impl_block() {
     assert!(ok, "capture del impl de trait falló:\n{stderr}");
 
     let uuid = stdout.trim();
-    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.capture"))).unwrap();
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{uuid}.yaml"))).unwrap();
     assert!(cap.contains("trait:"), "la query tiene que discriminar por trait:\n{cap}");
     assert!(cap.contains("\"Default\""), "falta el trait en la query:\n{cap}");
 
@@ -625,8 +610,8 @@ fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
     let cap = stdout.trim();
 
     let uuid = "aaaaaaaa-0000-4000-8000-000000000001";
-    fs::write(root.join(format!(".bilink/{uuid}.bilink")),
-        format!("link.0: capture {cap}\nlink.1: issue 3a\n")).unwrap();
+    fs::write(root.join(format!(".bilink/{uuid}.yaml")),
+        format!("endpoint:\n  0: {{link: capture {cap}}}\n  1: {{link: issue 3a}}\n")).unwrap();
 
     let (stdout, _, _) = run_in(&root, &["check", "."]);
     assert!(stdout.contains("aaaaaaaa"), "el bilink tiene que aparecer:\n{stdout}");
@@ -647,8 +632,8 @@ fn an_unknown_issue_id_is_todo() {
     let cap = stdout.trim();
 
     let uuid = "bbbbbbbb-0000-4000-8000-000000000001";
-    fs::write(root.join(format!(".bilink/{uuid}.bilink")),
-        format!("link.0: capture {cap}\nlink.1: issue zz9\n")).unwrap();
+    fs::write(root.join(format!(".bilink/{uuid}.yaml")),
+        format!("endpoint:\n  0: {{link: capture {cap}}}\n  1: {{link: issue zz9}}\n")).unwrap();
 
     let (stdout, _, _) = run_in(&root, &["check", "."]);
     assert!(stdout.contains("TODO"), "un id inexistente tiene que dar TODO:\n{stdout}");

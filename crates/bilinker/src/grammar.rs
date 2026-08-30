@@ -25,6 +25,19 @@ pub fn for_language(lang: &str) -> Result<Language> {
     }
 }
 
+/// ¿El AST de este lenguaje discrimina el contenido?
+///
+/// La s-expression de tree-sitter lleva **tipos de nodo, no texto**. En código eso
+/// alcanza: reindentar no cambia el árbol, pero cambiar una expresión sí. En prosa
+/// no: dos párrafos distintos bajo el mismo heading dan la misma s-expression, así
+/// que `hash_ast` no distingue nada.
+///
+/// Donde devuelve `false` no se calcula `hash_ast`, y entonces `RESTYLED` no existe
+/// y todo cambio de texto es `ALTERED` — que en prosa es lo correcto.
+pub fn ast_discriminates_content(lang: &str) -> bool {
+    !matches!(lang, "markdown" | "text")
+}
+
 /// Node kinds that are considered stable anchors for a given language.
 /// A stable anchor is a named declaration that identifies itself (class, method, etc.).
 pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
@@ -111,5 +124,30 @@ pub fn name_node_type(lang: &str, kind: &str) -> &'static str {
         ("typescript" | "tsx", "method_definition")
         | ("typescript" | "tsx", "method_signature")       => "property_identifier",
         _ => "identifier",
+    }
+}
+
+#[cfg(test)]
+mod ast_tests {
+    use super::*;
+
+    /// En prosa el AST no distingue contenido, así que no se hashea.
+    ///
+    /// La s-expression lleva tipos de nodo y no texto: dos párrafos distintos bajo
+    /// el mismo heading dan el mismo árbol. Calcular `hash_ast` ahí haría que
+    /// cualquier reescritura de prosa se reportara como RESTYLED —"sólo cambió el
+    /// formato"— cuando lo que cambió es lo que el documento dice.
+    #[test]
+    fn prose_does_not_get_an_ast_hash() {
+        assert!(!ast_discriminates_content("markdown"));
+        assert!(!ast_discriminates_content("text"));
+    }
+
+    /// En código sí: reindentar no cambia el árbol, cambiar una expresión sí.
+    #[test]
+    fn code_gets_an_ast_hash() {
+        for lang in ["rust", "java", "typescript", "tsx", "yaml"] {
+            assert!(ast_discriminates_content(lang), "{lang} debería discriminar");
+        }
     }
 }

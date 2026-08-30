@@ -1,167 +1,277 @@
+//! `bilinker check` — verifica, y **no escribe ni un byte en git**.
+//!
+//! Opera en dos pasos y sobre **dos dimensiones**. Primero resuelve el capture
+//! —dónde está el fragmento—, después compara contra `accepted` —dónde se aprobó
+//! que estuviera, y qué se aprobó que dijera. Todo lo que produce va a la
+//! [cache](crate::cache).
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
 use anyhow::Result;
-use chrono::Utc;
 
-use crate::bilink::{walkdir, BiLinkFile};
-use crate::chain::resolve_layer_link;
-use crate::grammar;
-use crate::hash;
-use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
-use crate::query;
-use crate::issue::resolve_issue_path;
+use bilink_format::bilink::bilink_files;
+use bilink_format::{BiLink, ByteRange, Capture, LinkEndpoint};
 
-#[derive(Debug)]
+use crate::cache::Cache;
+use crate::state::{CaptureState, EndpointState};
+use crate::{grammar, hash, query};
+
 pub struct CheckResult {
     pub uuid: String,
     pub state0: EndpointState,
     pub state1: EndpointState,
-    pub updated: bool,
 }
 
 impl CheckResult {
-    /// Los dos endpoints en OK. Decide **qué se imprime**.
-    ///
-    /// Distinto de `is_clean`, que decide el código de salida. Un endpoint con
-    /// auto-fix no está OK —hay trabajo— pero no obliga a fallar, porque `apply`
-    /// lo resuelve sin decisión humana. Enumerar estados para decidir qué mostrar
-    /// hace que cada estado nuevo nazca mudo; acá se excluye OK y nada más.
-    pub fn all_ok(&self) -> bool {
-        self.state0 == EndpointState::Ok && self.state1 == EndpointState::Ok
-    }
+    /// Los dos endpoints en OK. **Decide qué se imprime.**
+    pub fn all_ok(&self) -> bool { self.state0.is_ok() && self.state1.is_ok() }
 
-    /// El criterio de código de salida de `commands/check.md` § "Código de salida":
-    /// los estados con auto-fix no hacen fallar a `check`.
-    pub fn is_clean(&self) -> bool {
-        use EndpointState::*;
-        matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded | Todo | Restyled)
-            && matches!(self.state1, Ok | Moved | Displaced | Reanchored | Expanded | Todo | Restyled)
-    }
+    /// Nada que exija una decisión humana. **Decide el código de salida.**
+    pub fn is_clean(&self) -> bool { self.state0.is_clean() && self.state1.is_clean() }
 }
 
+/// Verifica una capa y deja el resultado en la cache.
 pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
-    let mut results = Vec::new();
+    let layer = if path.join(".bilink").is_dir() { path.to_path_buf() } else { root.to_path_buf() };
+    let mut cache = Cache::load_for(&layer, None);
+    let mut out = Vec::new();
 
-    if path.is_file() {
-        results.push(check_file(root, path)?);
-        return Ok(results);
-    }
+    // Un mismo capture se resuelve **una sola vez**, aunque lo referencien varios
+    // endpoints. La comparación contra `accepted` sí corre por endpoint, porque
+    // cada uno tiene el suyo.
+    let mut resolved: HashMap<String, (CaptureState, Option<ByteRange>)> = HashMap::new();
 
-    let bilink_dir = if path.ends_with(".bilink") { path.to_path_buf() }
-                     else { path.join(".bilink") };
+    for path in bilink_files(&layer.join(".bilink")) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
 
-    for entry in walkdir(&bilink_dir)? {
-        if entry.extension().and_then(|e| e.to_str()) == Some("bilink")
-            && !entry.ancestors().any(|a| a.ends_with(".pending"))
-        {
-            results.push(check_file(root, &entry)?);
+        let mut states = [EndpointState::Pending; 2];
+        for n in [0u8, 1u8] {
+            states[n as usize] = check_endpoint(&layer, &bl, uuid, n, &mut resolved, &mut cache)?;
+            cache.set_endpoint_state(uuid, n, states[n as usize]);
         }
-    }
-    Ok(results)
-}
-
-fn check_file(root: &Path, bilink_path: &Path) -> Result<CheckResult> {
-    let mut bl = BiLinkFile::load(bilink_path)?;
-
-    let layer_root = bilink_path
-        .parent().and_then(|p| p.parent())
-        .unwrap_or(root);
-
-    let uuid = bl.uuid.clone();
-
-    // El `range` de partida sale del capture, no del bilink.
-    let cap0 = bl.capture_for(layer_root, 0).ok().flatten();
-    let cap1 = bl.capture_for(layer_root, 1).ok().flatten();
-
-    let (state0, range0) =
-        check_endpoint(root, layer_root, &bl.link0, &uuid, bl.hash0.as_deref(), bl.hash_ast0.as_deref(),
-                       cap0.as_ref().and_then(|c| c.range.as_ref()), bl.commit0.as_deref(), bl.state0.as_ref())?;
-
-    let (state1, range1) =
-        check_endpoint(root, layer_root, &bl.link1, &uuid, bl.hash1.as_deref(), bl.hash_ast1.as_deref(),
-                       cap1.as_ref().and_then(|c| c.range.as_ref()), bl.commit1.as_deref(), bl.state1.as_ref())?;
-
-    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-
-    // El resultado de la resolución se escribe en el capture; el estado de
-    // aceptación, en el bilink. `range.N` ya no vive en el bilink.
-    // La resolución va al capture; la aceptación, al bilink. Si el capture no
-    // resolvió, el endpoint no puede evaluarse y queda UNRESOLVED: el detalle de
-    // por qué lo lleva el capture.
-    let mut cap_updated = false;
-    let mut states      = [state0.clone(), state1.clone()];
-
-    for (n, cap, range) in [(0u8, cap0, &range0), (1u8, cap1, &range1)] {
-        let Some(mut cap) = cap else { continue };
-        let cap_state = capture_state_for(&states[n as usize]);
-
-        if !cap_state.is_resolved() {
-            states[n as usize] = EndpointState::Unresolved;
-        }
-
-        // Solo los endpoints ya migrados tienen archivo que escribir; los legacy
-        // llevan su ubicación embebida en el bilink hasta que corra `migrate`.
-        if bl.link(n).capture_uuid().is_none() { continue; }
-
-        if cap.range.as_ref() != range.as_ref() || cap.state.as_ref() != Some(&cap_state) {
-            cap.range       = range.clone();
-            cap.state       = Some(cap_state);
-            cap.resolved_at = Some(now.clone());
-            cap.write_in(layer_root)?;
-            cap_updated = true;
-        }
+        out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1] });
     }
 
-    let [state0, state1] = states;
-    let updated = cap_updated
-        || bl.state0.as_ref() != Some(&state0)
-        || bl.state1.as_ref() != Some(&state1);
-
-    bl.range0      = None;
-    bl.range1      = None;
-    bl.state0      = Some(state0.clone());
-    bl.state1      = Some(state1.clone());
-    bl.resolved_at = Some(now);
-
-    bl.write(bilink_path)?;
-
-
-    Ok(CheckResult { uuid, state0, state1, updated })
-}
-
-/// Estado de resolución del capture, derivado del estado del endpoint.
-fn capture_state_for(state: &EndpointState) -> crate::capture::CaptureState {
-    use crate::capture::CaptureState as C;
-    match state {
-        EndpointState::Unanchored => C::Unanchored,
-        EndpointState::Deleted    => C::Deleted,
-        EndpointState::Broken     => C::Broken,
-        EndpointState::Moved      => C::Moved,
-        EndpointState::Reanchored => C::Reanchored,
-        _                         => C::Resolved,
+    for (id, (state, range)) in &resolved {
+        cache.set_capture(id, *state, range.as_ref());
     }
+    cache.save(&layer)?;
+    out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+    Ok(out)
 }
 
 fn check_endpoint(
-    _root: &Path,
-    layer_root: &Path,
-    endpoint: &LinkEndpoint,
+    layer: &Path,
+    bl: &BiLink,
     uuid: &str,
-    hash: Option<&str>,
-    hash_ast: Option<&str>,
-    stored_range: Option<&ByteRange>,
-    commit: Option<&str>,
-    cached_state: Option<&EndpointState>,
-) -> Result<(EndpointState, Option<ByteRange>)> {
-    match endpoint {
-        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
-            let sref = crate::capture::sref_of(layer_root, endpoint)?
-                .expect("endpoint estructural sin referencia resoluble");
-            check_structural(layer_root, &sref, hash, hash_ast, stored_range, commit, cached_state)
+    n: u8,
+    resolved: &mut HashMap<String, (CaptureState, Option<ByteRange>)>,
+    cache: &mut Cache,
+) -> Result<EndpointState> {
+    let e = bl.endpoint.get(n);
+    match &e.link {
+        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.as_ref()),
+        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.as_ref()),
+        LinkEndpoint::Capture(cap_id) => {
+            let cap = match Capture::load_in(layer, cap_id) {
+                Ok(c) => c,
+                // El capture que el link nombra no está: no hay ubicación que evaluar.
+                Err(_) => return Ok(EndpointState::Unresolved),
+            };
+
+            let (state, range) = match resolved.get(cap_id) {
+                Some(v) => v.clone(),
+                None => {
+                    let v = resolve_capture(layer, &cap)?;
+                    resolved.insert(cap_id.clone(), v.clone());
+                    v
+                }
+            };
+            if !state.is_resolved() {
+                return Ok(EndpointState::Unresolved);
+            }
+
+            let Some(accepted) = &e.accepted else { return Ok(EndpointState::Pending) };
+
+            // ── dimensión de ubicación ────────────────────────────────────────
+            //
+            // Dos ids: no abre ningún archivo. Por eso se decide **siempre**, incluso
+            // donde la otra dimensión degrada por no poder recuperar el texto aceptado.
+            if accepted.link.as_ref() != Some(&e.link) {
+                return Ok(EndpointState::Relocated);
+            }
+
+            // ── dimensión de contenido ────────────────────────────────────────
+            compare_content(layer, &cap, accepted, range.as_ref(),
+                            cache.commit(uuid, n), cache.endpoint_state(uuid, n))
         }
-        LinkEndpoint::Layer(tokens)    => check_layer(layer_root, tokens, uuid, hash),
-        LinkEndpoint::Issue(id)        => check_issue(layer_root, id, hash),
     }
 }
+
+// ─── dimensión 1: ¿dónde está? ────────────────────────────────────────────────
+
+/// Resuelve un capture contra el árbol actual. No mira ninguna aceptación.
+pub(crate) fn resolve_capture(layer: &Path, cap: &Capture) -> Result<(CaptureState, Option<ByteRange>)> {
+    let path = layer.join(&cap.file);
+
+    if !path.exists() {
+        if git_renamed_to(layer, &cap.file).is_some() {
+            return Ok((CaptureState::Moved, None));
+        }
+        if git_knows_file(layer, &cap.file) {
+            return Ok((CaptureState::Deleted, None));
+        }
+        return Ok((CaptureState::Broken, None));
+    }
+
+    let Ok(source) = std::fs::read_to_string(&path) else {
+        return Ok((CaptureState::Broken, None));
+    };
+
+    // Sin query, el capture es el archivo entero.
+    let Some(query_str) = &cap.query else {
+        return Ok((CaptureState::Resolved, Some(ByteRange { start: 0, end: source.len() })));
+    };
+
+    let lang     = grammar::language_for_file(&cap.file);
+    let language = grammar::for_language(lang)?;
+
+    let Some((node_start, node_end, _)) =
+        query::find_target_with_sexp(language.clone(), &source, query_str)?
+    else {
+        // La query no matchea: ¿el anchor se renombró, o el fragmento desapareció?
+        if find_renamed_anchor(layer, language, &source, query_str, cap, None, None)?.is_some() {
+            return Ok((CaptureState::Reanchored, None));
+        }
+        if git_fragment_vanished(layer, &cap.file, None) {
+            return Ok((CaptureState::Deleted, None));
+        }
+        return Ok((CaptureState::Unanchored, None));
+    };
+
+    let range = match &cap.offset {
+        Some(o) => ByteRange { start: node_start + o.start, end: (node_start + o.end).min(source.len()) },
+        None    => ByteRange { start: node_start, end: node_end },
+    };
+    Ok((CaptureState::Resolved, Some(range)))
+}
+
+// ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
+
+fn compare_content(
+    layer: &Path,
+    cap: &Capture,
+    accepted: &bilink_format::Accepted,
+    range: Option<&ByteRange>,
+    commit: Option<&str>,
+    cached: Option<EndpointState>,
+) -> Result<EndpointState> {
+    // Fast path: el archivo no cambió desde el commit del contenido aceptado.
+    //
+    // **Sólo vale para conservar un OK.** La cache se escribe leyendo el árbol de
+    // trabajo, no el commit, así que un estado no-OK pudo calcularse sobre una
+    // edición que después se revirtió: el diff sale vacío y el estado viejo
+    // describiría un contenido que ya no está.
+    if let (Some(c), Some(EndpointState::Ok)) = (commit, cached) {
+        if !git_file_changed(layer, &cap.file, c) {
+            return Ok(EndpointState::Ok);
+        }
+    }
+
+    let source = std::fs::read_to_string(layer.join(&cap.file))?;
+    let Some(r) = range else { return Ok(EndpointState::Unresolved) };
+    let fragment = &source[r.start..r.end.min(source.len())];
+
+    if hash::sha256(fragment.as_bytes()) == accepted.hash {
+        return Ok(EndpointState::Ok);
+    }
+
+    // El texto aceptado, recuperado de git y verificado contra `accepted.hash`. Con
+    // él, la frontera entre EXPANDED y DISPLACED es un test de subcadena y no un
+    // umbral:
+    //
+    //   fragmento ⊃ aceptado          → creció alrededor        → EXPANDED
+    //   fragmento ⊅ aceptado, nodo sí → se corrió, sigue igual  → DISPLACED
+    let text = commit.and_then(|c| crate::capture::accepted_text(layer, cap, c, Some(&accepted.hash)));
+
+    if let Some(t) = text.as_deref() {
+        if !t.is_empty() && fragment.len() > t.len() && fragment.contains(t) {
+            return Ok(EndpointState::Expanded);
+        }
+    }
+
+    // Sólo formato: el texto difiere y el AST no.
+    if let (Some(expected_ast), Some(q)) = (&accepted.hash_ast, &cap.query) {
+        let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
+        if let Some((_, _, sexp)) = query::find_target_with_sexp(language, &source, q)? {
+            if hash::sha256(sexp.as_bytes()) == *expected_ast {
+                return Ok(EndpointState::Restyled);
+            }
+        }
+    }
+
+    if let Some(t) = text.as_deref() {
+        if !t.is_empty() && !fragment.contains(t) && source.contains(t) {
+            return Ok(EndpointState::Displaced);
+        }
+    }
+
+    // Respaldo por hash, para cuando git no pudo entregar el texto aceptado —sin
+    // commit, archivo inexistente en ese commit, query irresoluble ahí—.
+    if find_in_node(&source, r.start, source.len(), &accepted.hash, r.end - r.start).is_some() {
+        return Ok(EndpointState::Displaced);
+    }
+
+    Ok(EndpointState::Altered)
+}
+
+// ─── endpoints que no son estructurales ───────────────────────────────────────
+
+/// Un endpoint `path` copia los **dos** valores aceptados de su vecino.
+fn check_path(
+    layer: &Path,
+    p: &bilink_format::link::StratumPath,
+    uuid: &str,
+    accepted: Option<&bilink_format::Accepted>,
+) -> Result<EndpointState> {
+    // Sin `accepted` y sin capa, es una intención declarada: TODO, no un error.
+    let absent = if accepted.is_none() { EndpointState::Todo } else { EndpointState::Broken };
+
+    let Ok(target) = stratum::resolve(layer, layer, p.tokens()) else { return Ok(absent) };
+    let adj_path = layer.join(&target).join(".bilink").join(format!("{uuid}.yaml"));
+    if !adj_path.exists() { return Ok(absent); }
+
+    let Ok(adj) = BiLink::load(&adj_path) else { return Ok(EndpointState::Broken) };
+    let Some(adj_accepted) = adj.structural_accepted() else {
+        // El vecino existe y nunca se aceptó: no hay contra qué comparar.
+        return Ok(EndpointState::Pending);
+    };
+    let Some(mine) = accepted else { return Ok(EndpointState::Pending) };
+
+    // Los dos valores, no uno: la ubicación aprobada del vecino y su contenido.
+    let same = mine.hash == adj_accepted.hash && mine.link == adj_accepted.link;
+    Ok(if same { EndpointState::Ok } else { EndpointState::ChainDirty })
+}
+
+/// Un endpoint `issue` se hashea como el contenido del archivo del ítem.
+fn check_issue(layer: &Path, id: &str, accepted: Option<&bilink_format::Accepted>) -> Result<EndpointState> {
+    let (item, _) = crate::issue::resolve_issue_path(layer, id)?;
+    let Some(item) = item else {
+        return Ok(if accepted.is_none() { EndpointState::Todo } else { EndpointState::Broken });
+    };
+    let Some(accepted) = accepted else { return Ok(EndpointState::Pending) };
+    let Ok(text) = std::fs::read_to_string(&item) else { return Ok(EndpointState::Broken) };
+
+    Ok(if hash::sha256(text.as_bytes()) == accepted.hash {
+        EndpointState::Ok
+    } else {
+        EndpointState::Altered
+    })
+}
+
+// ─── git ──────────────────────────────────────────────────────────────────────
 
 /// Nueva ruta del archivo si git detecta un rename (≥ 50% de similitud).
 ///
@@ -190,8 +300,7 @@ pub(crate) fn git_renamed_to(layer_root: &Path, file: &str) -> Option<String> {
 
 /// ¿Git tiene historial de este archivo?
 ///
-/// Distingue "el archivo se borró" de "esta referencia nunca apuntó a nada":
-/// lo primero es rastreable y accionable, lo segundo es un bilink roto.
+/// Distingue "el archivo se borró" de "esta referencia nunca apuntó a nada".
 fn git_knows_file(layer_root: &Path, file: &str) -> bool {
     std::process::Command::new("git")
         .args(["-C", &layer_root.to_string_lossy(), "log", "--oneline", "-1", "--", file])
@@ -226,11 +335,11 @@ pub(crate) fn find_renamed_anchor(
     language:  tree_sitter::Language,
     source:    &str,
     query_str: &str,
-    sref:      &StructuralRef,
+    cap:       &Capture,
     hash:      Option<&str>,
     commit:    Option<&str>,
 ) -> Result<Option<(String, f64)>> {
-    let Some(old_text) = commit.and_then(|c| crate::capture::accepted_text(root, sref, c, hash)) else {
+    let Some(old_text) = commit.and_then(|c| crate::capture::accepted_text(root, cap, c, hash)) else {
         return Ok(None);
     };
 
@@ -242,7 +351,7 @@ pub(crate) fn find_renamed_anchor(
     let mut scored: Vec<(String, f64)> = Vec::new();
     for m in matches {
         let Some(name) = m.name.clone() else { continue };
-        let (start, end) = match &sref.range {
+        let (start, end) = match &cap.offset {
             Some(r) => (m.start + r.start, (m.start + r.end).min(source.len())),
             None    => (m.start, m.end),
         };
@@ -292,201 +401,6 @@ fn git_file_changed(layer_root: &Path, file: &str, commit: &str) -> bool {
         .unwrap_or(true)
 }
 
-pub(crate) fn check_structural(
-    root: &Path,
-    sref: &StructuralRef,
-    hash: Option<&str>,
-    hash_ast: Option<&str>,
-    stored_range: Option<&ByteRange>,
-    commit: Option<&str>,
-    cached_state: Option<&EndpointState>,
-) -> Result<(EndpointState, Option<ByteRange>)> {
-    let file_path = root.join(&sref.file);
-
-    // 1. El archivo no está donde lo dejamos: ¿se movió, o se borró?
-    if !file_path.exists() {
-        if git_renamed_to(root, &sref.file).is_some() {
-            return Ok((EndpointState::Moved, None));
-        }
-        if git_knows_file(root, &sref.file) {
-            return Ok((EndpointState::Deleted, None));
-        }
-        return Ok((EndpointState::Broken, None));
-    }
-
-    // Fast path: el archivo no cambió desde el commit aceptado.
-    //
-    // Solo vale para conservar un OK. La cache se escribe leyendo el árbol de
-    // trabajo, no el commit, así que un estado no-OK pudo calcularse sobre una
-    // edición que después se revirtió: el diff sale vacío y el estado viejo
-    // describiría un contenido que ya no está. Recalcular lo no-OK cuesta
-    // proporcionalmente a lo que está roto.
-    if let (Some(commit), Some(state @ EndpointState::Ok)) = (commit, cached_state) {
-        if !git_file_changed(root, &sref.file, commit) {
-            return Ok((state.clone(), stored_range.cloned()));
-        }
-    }
-
-    let source = std::fs::read_to_string(&file_path)?;
-
-    let Some(query_str) = &sref.query else {
-        let new_hash = hash::sha256(source.as_bytes());
-        let range    = ByteRange { start: 0, end: source.len() };
-        let state = if hash.is_none() {
-            EndpointState::Pending
-        } else if hash == Some(new_hash.as_str()) {
-            EndpointState::Ok
-        } else {
-            EndpointState::Altered
-        };
-        return Ok((state, Some(range)));
-    };
-
-    let lang     = grammar::language_for_file(&sref.file);
-    let language = grammar::for_language(lang)?;
-    let node_range = query::find_target_with_sexp(language.clone(), &source, query_str)?;
-
-    // 2. La query no matchea: ¿el anchor se renombró, o desapareció?
-    let Some((node_start, node_end, sexp)) = node_range else {
-        if find_renamed_anchor(root, language.clone(), &source, query_str,
-                               sref, hash, commit)?.is_some() {
-            return Ok((EndpointState::Reanchored, None));
-        }
-        // El anchor no está y no se renombró. Si git tiene historial del archivo,
-        // el fragmento se fue en algún commit rastreable; si no, la referencia
-        // simplemente ya no ancla.
-        if git_fragment_vanished(root, &sref.file, hash) {
-            return Ok((EndpointState::Deleted, None));
-        }
-        return Ok((EndpointState::Unanchored, None));
-    };
-
-    let (frag_start, frag_end) = match &sref.range {
-        Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
-        None    => (node_start, node_end),
-    };
-    let fragment      = &source[frag_start..frag_end];
-    let new_hash      = hash::sha256(fragment.as_bytes());
-    let new_hash_ast  = hash::sha256(sexp.as_bytes());
-    let new_range     = ByteRange { start: frag_start, end: frag_end };
-
-    if hash.is_none() {
-        return Ok((EndpointState::Pending, Some(new_range)));
-    }
-
-    if hash == Some(new_hash.as_str()) {
-        return Ok((EndpointState::Ok, Some(new_range)));
-    }
-
-    // El texto aceptado, recuperado y verificado contra `hash.N`. Con él, la
-    // frontera entre EXPANDED y DISPLACED es un test de subcadena y no un umbral:
-    //
-    //   fragmento ⊃ aceptado          → creció alrededor        → EXPANDED
-    //   fragmento ⊅ aceptado, nodo sí → se corrió, sigue igual  → DISPLACED
-    let accepted = commit.and_then(|c| crate::capture::accepted_text(root, sref, c, hash));
-
-    if let Some(t) = accepted.as_deref() {
-        if !t.is_empty() && fragment.len() > t.len() && fragment.contains(t) {
-            // El fragmento contiene lo aceptado verbatim y algo más: nada de lo
-            // aceptado cambió, así que el AST interno tampoco.
-            return Ok((EndpointState::Expanded, Some(new_range)));
-        }
-    }
-
-    // Text changed — check if AST is identical (formatting-only change)
-    if hash_ast.is_some() && hash_ast == Some(new_hash_ast.as_str()) {
-        return Ok((EndpointState::Restyled, Some(new_range)));
-    }
-
-    if let Some(t) = accepted.as_deref() {
-        if !t.is_empty() && !fragment.contains(t) {
-            if let Some(pos) = source[node_start..node_end].find(t) {
-                let start = node_start + pos;
-                return Ok((EndpointState::Displaced,
-                           Some(ByteRange { start, end: start + t.len() })));
-            }
-        }
-    }
-
-    // Respaldo por hash para cuando git no pudo entregar el texto aceptado
-    // —sin commit, archivo inexistente en ese commit, query irresoluble ahí—.
-    if let (Some(stored_hash), Some(sr)) = (hash, stored_range) {
-        let frag_len = sr.end - sr.start;
-        if let Some(displaced) = find_in_node(&source, node_start, node_end, stored_hash, frag_len) {
-            return Ok((EndpointState::Displaced, Some(displaced)));
-        }
-    }
-
-    Ok((EndpointState::Altered, Some(new_range)))
-}
-
-fn check_layer(
-    layer_root: &Path,
-    tokens: &stratum::StratumPath,
-    uuid: &str,
-    stored_hash: Option<&str>,
-) -> Result<(EndpointState, Option<ByteRange>)> {
-    let absent = if stored_hash.is_none() { EndpointState::Todo } else { EndpointState::Broken };
-
-    let target_layer = match stratum::resolve(layer_root, layer_root, tokens) {
-        Ok(p)  => p,
-        Err(_) => return Ok((absent, None)),
-    };
-
-    let target_bilink = resolve_layer_link(
-        &layer_root.join(".bilink").join(format!("{uuid}.bilink")),
-        layer_root,
-        &target_layer,
-        uuid,
-    );
-
-    if !target_bilink.exists() {
-        return Ok((absent, None));
-    }
-
-    // Hash = structural endpoint's accepted hash in the adjacent bilink.
-    // This avoids circular dependency: accepting a layer endpoint never modifies
-    // the adjacent bilink file, so the hash never cascades back.
-    let adj_bl = crate::bilink::BiLinkFile::load(&target_bilink)?;
-    let Some(adj_struct_hash) = adj_bl.structural_hash() else {
-        return Ok((EndpointState::Pending, None));
-    };
-
-    let state = if stored_hash.is_none() {
-        EndpointState::Pending
-    } else if stored_hash == Some(adj_struct_hash) {
-        EndpointState::Ok
-    } else {
-        EndpointState::ChainDirty
-    };
-
-    Ok((state, None))
-}
-
-fn check_issue(
-    layer_root: &Path,
-    issue_id: &str,
-    stored_hash: Option<&str>,
-) -> Result<(EndpointState, Option<ByteRange>)> {
-    let (issue_path, _) = resolve_issue_path(layer_root, issue_id)?;
-    // Mismo criterio que un endpoint layer: sin hash aceptado el ítem todavía no
-    // existe (TODO); con hash aceptado, existía y desapareció (BROKEN).
-    let Some(issue_path) = issue_path else {
-        let absent = if stored_hash.is_none() { EndpointState::Todo } else { EndpointState::Broken };
-        return Ok((absent, None));
-    };
-    let issue_dir = match issue_path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => return Ok((EndpointState::Broken, None)),
-    };
-    let filename = match issue_path.file_name().and_then(|n| n.to_str()) {
-        Some(f) => f.to_string(),
-        None => return Ok((EndpointState::Broken, None)),
-    };
-    let sref = StructuralRef { file: filename, query: None, range: None };
-    check_structural(&issue_dir, &sref, stored_hash, None, None, None, None)
-}
-
 fn find_in_node(
     source: &str,
     node_start: usize,
@@ -516,496 +430,30 @@ fn find_in_node(
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bilink::BiLinkFile;
-    use crate::hash;
-    use crate::link::{ByteRange, EndpointState, LinkEndpoint, StructuralRef};
-    use tempfile::tempdir;
-
-    fn whole_file_endpoint(file: &str) -> LinkEndpoint {
-        LinkEndpoint::LegacyStructural(StructuralRef {
-            file: file.into(),
-            query: None,
-            range: None,
-        })
-    }
-
-    fn layer_endpoint(path: &str) -> LinkEndpoint {
-        LinkEndpoint::Layer(stratum::parse_path(path).unwrap())
-    }
-
-    fn make_bilink(dir: &Path, uuid: &str, link0: LinkEndpoint, link1: LinkEndpoint) -> std::path::PathBuf {
-        let bl = BiLinkFile::new(uuid, link0, link1);
-        let path = dir.join(format!("{uuid}.bilink"));
-        bl.write(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn check_whole_file_first_time_is_pending() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("a.md"), "hello world").unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        let path = make_bilink(&bilink_dir, "uuid1",
-            whole_file_endpoint("a.md"),
-            whole_file_endpoint("a.md"),
-        );
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Pending);
-        assert_eq!(result.state1, EndpointState::Pending);
-    }
-
-    #[test]
-    fn check_whole_file_ok_when_hash_matches() {
-        let dir = tempdir().unwrap();
-        let content = b"stable content";
-        std::fs::write(dir.path().join("a.md"), content).unwrap();
-        let stored_hash = hash::sha256(content);
-
-        let bilink_dir = dir.path().join(".bilink");
-        let mut bl = BiLinkFile::new("uuid1", whole_file_endpoint("a.md"), whole_file_endpoint("a.md"));
-        bl.hash0 = Some(stored_hash.clone());
-        bl.commit0 = Some("abc1234".into());
-        bl.hash1 = Some(stored_hash);
-        bl.commit1 = Some("abc1234".into());
-        bl.range0 = Some(ByteRange { start: 0, end: content.len() });
-        bl.range1 = Some(ByteRange { start: 0, end: content.len() });
-        bl.state0 = Some(EndpointState::Ok);
-        bl.state1 = Some(EndpointState::Ok);
-        bl.resolved_at = Some("2026-01-01T00:00:00Z".into());
-        let path = bilink_dir.join("uuid1.bilink");
-        bl.write(&path).unwrap();
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Ok);
-    }
-
-    #[test]
-    fn check_whole_file_altered_when_hash_differs() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("a.md"), "new content").unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        let mut bl = BiLinkFile::new("uuid1", whole_file_endpoint("a.md"), whole_file_endpoint("a.md"));
-        bl.hash0   = Some("old-hash-that-wont-match".into());
-        bl.commit0 = Some("abc1234".into());
-        bl.hash1   = Some("old-hash-that-wont-match".into());
-        bl.commit1 = Some("abc1234".into());
-        let path = bilink_dir.join("uuid1.bilink");
-        bl.write(&path).unwrap();
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Altered);
-    }
-
-    #[test]
-    fn check_unresolved_when_file_missing() {
-        let dir = tempdir().unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        let path = make_bilink(&bilink_dir, "uuid1",
-            whole_file_endpoint("missing.md"),
-            whole_file_endpoint("missing.md"),
-        );
-
-        // El archivo no está: eso es un problema de ubicación, no del vínculo.
-        // El bilink no puede evaluarse; el detalle lo lleva el capture.
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Unresolved);
-    }
-
-    /// Prepara un repo git con un archivo commiteado.
-    fn git_repo_with(dir: &Path, file: &str, content: &str) {
-        std::fs::create_dir_all(dir.join(file).parent().unwrap()).ok();
-        std::fs::write(dir.join(file), content).unwrap();
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "t@t"],
-            vec!["config", "user.name", "t"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "init"],
-        ] {
-            std::process::Command::new("git")
-                .args(["-C", &dir.to_string_lossy()]).args(&args)
-                .output().unwrap();
-        }
-    }
-
-    /// Crea un capture y el bilink que lo referencia, con hash aceptado.
-    fn capture_bilink(
-        layer: &Path, uuid: &str, file: &str, query: Option<&str>, hash: &str,
-    ) -> std::path::PathBuf {
-        let cap = crate::capture::CaptureFile {
-            uuid: format!("cap-{uuid}"),
-            sref: StructuralRef {
-                file: file.into(),
-                query: query.map(String::from),
-                range: None,
-            },
-            range: None, state: None, resolved_at: None,
-        };
-        cap.write_in(layer).unwrap();
-
-        let mut bl = BiLinkFile::new(uuid,
-            LinkEndpoint::Capture(cap.uuid.clone()),
-            layer_endpoint(".stratum/impl"));
-        bl.hash0   = Some(hash.into());
-        bl.commit0 = Some("0000000".into());
-        let path = layer.join(".bilink").join(format!("{uuid}.bilink"));
-        bl.write(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn check_detects_moved_after_git_rename() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let content = "# Doc\n";
-        git_repo_with(root, "a.md", content);
-
-        let path = capture_bilink(root, "uuid1", "a.md", None, &hash::sha256(content.as_bytes()));
-
-        // Rename rastreable por git: el contenido no cambia.
-        std::process::Command::new("git")
-            .args(["-C", &root.to_string_lossy(), "mv", "a.md", "b.md"])
-            .output().unwrap();
-
-        let result = check_file(root, &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Unresolved,
-                   "el bilink no puede evaluarse mientras la ubicación no resuelva");
-
-        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Moved),
-                   "el capture es quien sabe que el archivo se movió");
-    }
-
-    /// Arma un capture sobre una función entera —con el nombre *dentro* del
-    /// fragmento, que es el caso de los 60 captures reales— y devuelve el commit.
-    fn reanchor_fixture(root: &Path, before: &str) -> std::path::PathBuf {
-        git_repo_with(root, "a.rs", before);
-        let commit = String::from_utf8(
-            std::process::Command::new("git")
-                .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
-                .output().unwrap().stdout).unwrap().trim().to_string();
-
-        let query = r#"(function_item name: (identifier) @n0 (#eq? @n0 "foo")) @target"#;
-        let fn_end = before.trim_end().len();
-        let cap = crate::capture::CaptureFile {
-            uuid: "cap-uuid1".into(),
-            sref: StructuralRef { file: "a.rs".into(), query: Some(query.into()), range: None },
-            range: Some(ByteRange { start: 0, end: fn_end }),
-            state: None, resolved_at: None,
-        };
-        cap.write_in(root).unwrap();
-
-        let mut bl = BiLinkFile::new("uuid1",
-            LinkEndpoint::Capture("cap-uuid1".into()),
-            layer_endpoint(".stratum/impl"));
-        bl.hash0   = Some(hash::sha256(before[..fn_end].as_bytes()));
-        bl.commit0 = Some(commit);
-        let path = root.join(".bilink/uuid1.bilink");
-        bl.write(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn check_detects_reanchored_when_anchor_is_renamed() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
-        let path = reanchor_fixture(root, before);
-
-        // El nombre está dentro del fragmento: el hash cambia sí o sí. Lo que
-        // sostiene la detección es la similitud del resto del bloque.
-        std::fs::write(root.join("a.rs"),
-            "fn calcular() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n").unwrap();
-
-        check_file(root, &path).unwrap();
-        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored));
-    }
-
-    #[test]
-    fn reanchored_survives_a_rename_plus_small_edit() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
-        let path = reanchor_fixture(root, before);
-
-        // Renombre + una línea distinta: el hash exacto no serviría de nada.
-        std::fs::write(root.join("a.rs"),
-            "fn calcular() {\n    let x = 1;\n    let y = 99;\n    x + y\n}\n").unwrap();
-
-        check_file(root, &path).unwrap();
-        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Reanchored));
-    }
-
-    #[test]
-    fn ambiguous_candidates_stay_unanchored() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let before = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n";
-        let path = reanchor_fixture(root, before);
-
-        // Dos candidatos igual de parecidos: reanclar a cualquiera sería arbitrario.
-        std::fs::write(root.join("a.rs"),
-            "fn a() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n\
-             fn b() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n").unwrap();
-
-        check_file(root, &path).unwrap();
-        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Unanchored),
-                   "ante un empate es preferible que lo mire un humano");
-    }
-
-    /// Capture sobre una sección markdown, aceptada contra el commit inicial.
-    fn md_fixture(root: &Path, before: &str) -> std::path::PathBuf {
-        git_repo_with(root, "a.md", before);
-        let commit = String::from_utf8(
-            std::process::Command::new("git")
-                .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
-                .output().unwrap().stdout).unwrap().trim().to_string();
-
-        let query = r#"(section (atx_heading (inline) @n0 (#eq? @n0 "Titulo"))) @target"#;
-        let lang  = crate::grammar::for_language("markdown").unwrap();
-        let (s0, e0, _) = query::find_target_with_sexp(lang, before, query).unwrap().unwrap();
-
-        let cap = crate::capture::CaptureFile {
-            uuid: "cap-uuid1".into(),
-            sref: StructuralRef { file: "a.md".into(), query: Some(query.into()), range: None },
-            range: Some(ByteRange { start: s0, end: e0 }),
-            state: None, resolved_at: None,
-        };
-        cap.write_in(root).unwrap();
-
-        let mut bl = BiLinkFile::new("uuid1",
-            LinkEndpoint::Capture("cap-uuid1".into()),
-            layer_endpoint(".stratum/impl"));
-        bl.hash0   = Some(hash::sha256(before[s0..e0].as_bytes()));
-        bl.commit0 = Some(commit);
-        let path = root.join(".bilink/uuid1.bilink");
-        bl.write(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn check_detects_expanded_when_fragment_grows_around_accepted_text() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let path = md_fixture(root, "## Titulo\n\nUno.\n");
-
-        // La sección gana un párrafo: lo aceptado sigue ahí, verbatim, y hay más.
-        std::fs::write(root.join("a.md"), "## Titulo\n\nUno.\n\nDos.\n").unwrap();
-
-        let result = check_file(root, &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Expanded);
-    }
-
-    #[test]
-    fn check_says_altered_when_accepted_text_changed() {
-        let dir  = tempdir().unwrap();
-        let root = dir.path();
-        let path = md_fixture(root, "## Titulo\n\nUno.\n");
-
-        // Lo aceptado ya no está verbatim: creció no, cambió.
-        std::fs::write(root.join("a.md"), "## Titulo\n\nOtra cosa.\n").unwrap();
-
-        let result = check_file(root, &path).unwrap();
-        assert_eq!(result.state0, EndpointState::Altered,
-                   "si el texto aceptado no sobrevive, no es EXPANDED");
-    }
-
-    #[test]
-    fn check_detects_deleted_when_file_removed_from_git() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let content = "# Doc\n";
-        git_repo_with(root, "a.md", content);
-
-        let path = capture_bilink(root, "uuid1", "a.md", None, &hash::sha256(content.as_bytes()));
-        std::fs::remove_file(root.join("a.md")).unwrap();
-
-        check_file(root, &path).unwrap();
-        let cap = crate::capture::CaptureFile::load_in(root, "cap-uuid1").unwrap();
-        assert_eq!(cap.state, Some(crate::capture::CaptureState::Deleted),
-                   "git tiene historial del archivo: la eliminación es rastreable");
-    }
-
-    #[test]
-    fn check_layer_first_time_is_pending() {
-        let dir = tempdir().unwrap();
-        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
-
-        let adj_dir = dir.path().join(".stratum/impl/.bilink");
-        std::fs::create_dir_all(&adj_dir).unwrap();
-        std::fs::write(adj_dir.join(format!("{uuid}.bilink")), "link.0: a.md\nlink.1: b.md\n").unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        let path = make_bilink(&bilink_dir, uuid,
-            whole_file_endpoint("a.md"),
-            layer_endpoint(".stratum/impl"),
-        );
-        std::fs::write(dir.path().join("a.md"), "content").unwrap();
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state1, EndpointState::Pending);
-    }
-
-    #[test]
-    fn check_layer_ok_when_hash_matches() {
-        let dir = tempdir().unwrap();
-        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
-
-        // Adjacent bilink has an accepted structural endpoint (link.1 = b.md, hash.1 set)
-        let adj_struct_hash = "deadbeefdeadbeef".to_string();
-        let adj_dir = dir.path().join(".stratum/impl/.bilink");
-        std::fs::create_dir_all(&adj_dir).unwrap();
-        let mut adj_bl = BiLinkFile::new(uuid, layer_endpoint("../.."), whole_file_endpoint("b.md"));
-        adj_bl.hash1   = Some(adj_struct_hash.clone());
-        adj_bl.commit1 = Some("abc1234".into());
-        adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
-
-        // Spec bilink stores adj structural hash as its layer endpoint hash
-        let bilink_dir = dir.path().join(".bilink");
-        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
-        bl.hash1   = Some(adj_struct_hash);
-        bl.commit1 = Some("abc1234".into());
-        let path = bilink_dir.join(format!("{uuid}.bilink"));
-        bl.write(&path).unwrap();
-        std::fs::write(dir.path().join("a.md"), "content").unwrap();
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state1, EndpointState::Ok);
-    }
-
-    #[test]
-    fn check_layer_chain_dirty_when_hash_differs() {
-        let dir = tempdir().unwrap();
-        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
-
-        // Adjacent bilink has structural hash "current-hash"
-        let adj_dir = dir.path().join(".stratum/impl/.bilink");
-        std::fs::create_dir_all(&adj_dir).unwrap();
-        let mut adj_bl = BiLinkFile::new(uuid, layer_endpoint("../.."), whole_file_endpoint("b.md"));
-        adj_bl.hash1   = Some("current-hash".into());
-        adj_bl.commit1 = Some("abc1234".into());
-        adj_bl.write(&adj_dir.join(format!("{uuid}.bilink"))).unwrap();
-
-        // Spec bilink stores a different (stale) hash
-        let bilink_dir = dir.path().join(".bilink");
-        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
-        bl.hash1   = Some("stale-hash-000".into());
-        bl.commit1 = Some("abc1234".into());
-        let path = bilink_dir.join(format!("{uuid}.bilink"));
-        bl.write(&path).unwrap();
-        std::fs::write(dir.path().join("a.md"), "content").unwrap();
-
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state1, EndpointState::ChainDirty);
-    }
-
-    #[test]
-    fn check_layer_todo_when_adjacent_missing_and_no_hash() {
-        let dir = tempdir().unwrap();
-        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
-
-        let bilink_dir = dir.path().join(".bilink");
-        std::fs::write(dir.path().join("a.md"), "content").unwrap();
-        let path = make_bilink(&bilink_dir, uuid,
-            whole_file_endpoint("a.md"),
-            layer_endpoint(".stratum/impl"),
-        );
-
-        // No hash stored, target layer doesn't exist → TODO (intentional absence)
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state1, EndpointState::Todo);
-    }
-
-    #[test]
-    fn check_layer_broken_when_adjacent_missing_but_had_hash() {
-        let dir = tempdir().unwrap();
-        let uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb";
-
-        let bilink_dir = dir.path().join(".bilink");
-        std::fs::write(dir.path().join("a.md"), "content").unwrap();
-        let mut bl = BiLinkFile::new(uuid, whole_file_endpoint("a.md"), layer_endpoint(".stratum/impl"));
-        bl.hash1   = Some("previously-accepted-hash".into());
-        bl.commit1 = Some("abc1234".into());
-        let path = bilink_dir.join(format!("{uuid}.bilink"));
-        bl.write(&path).unwrap();
-
-        // Hash present but target gone → BROKEN (regression)
-        let result = check_file(dir.path(), &path).unwrap();
-        assert_eq!(result.state1, EndpointState::Broken);
-    }
-
-    #[test]
-    fn check_writes_state_and_timestamp() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("doc.md"), "# Title\nContent here.").unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        let path = make_bilink(&bilink_dir, "uuid1",
-            whole_file_endpoint("doc.md"),
-            whole_file_endpoint("doc.md"),
-        );
-
-        check_file(dir.path(), &path).unwrap();
-
-        let updated = BiLinkFile::load(&path).unwrap();
-        assert!(updated.state0.is_some(),      "state.0 should be written");
-        assert!(updated.resolved_at.is_some(), "resolved_at should be written");
-        assert!(updated.hash0.is_none(),        "check must not modify hash.0");
-    }
-
-    #[test]
-    fn check_dir_processes_all_bilinks() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("a.md"), "content a").unwrap();
-        std::fs::write(dir.path().join("b.md"), "content b").unwrap();
-
-        let bilink_dir = dir.path().join(".bilink");
-        make_bilink(&bilink_dir, "uuid1",
-            whole_file_endpoint("a.md"),
-            whole_file_endpoint("a.md"),
-        );
-        make_bilink(&bilink_dir, "uuid2",
-            whole_file_endpoint("b.md"),
-            whole_file_endpoint("b.md"),
-        );
-
-        let results = check(dir.path(), dir.path()).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.state0 == EndpointState::Pending));
-    }
-}
-
 /// Finds all bilinks referencing `file_path` across all layers under `root`.
 /// Returns `(bilink_path, endpoint_index, absolute_range)`.
 /// Uses `.bilink/.index` per layer when valid; falls back to O(N) scan.
+/// Los endpoints que referencian un archivo, con el rango que la cache tiene.
+///
+/// El rango es un derivado: con la cache fría no está, y este comando cae a vacío
+/// en vez de resolver. Quien lo necesite corre `check` primero.
 pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, ByteRange)>> {
     let mut results = Vec::new();
-
     for layer_root in crate::index::layer_roots(root) {
         let Ok(rel) = file_path.strip_prefix(&layer_root) else { continue };
         let Some(rel_str) = rel.to_str() else { continue };
 
+        let cache = Cache::load(&layer_root);
         let bilink_dir = layer_root.join(".bilink");
+
         for (uuid, n) in crate::index::lookup(&layer_root, rel_str)? {
-            let bilink_path = bilink_dir.join(format!("{uuid}.bilink"));
-            let Ok(bl) = BiLinkFile::load(&bilink_path) else { continue };
-            // El range vive en el capture; `capture_for` lo sintetiza para legacy.
-            let Ok(Some(cap)) = bl.capture_for(&layer_root, n) else { continue };
-            if let Some(r) = cap.range {
+            let bilink_path = bilink_dir.join(format!("{uuid}.yaml"));
+            let Ok(bl) = BiLink::load(&bilink_path) else { continue };
+            let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
+            if let Some(r) = cache.capture_range(id) {
                 results.push((bilink_path, n, r));
             }
         }
     }
-
     Ok(results)
 }

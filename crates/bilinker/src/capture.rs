@@ -5,103 +5,73 @@ use tree_sitter::{Node, Parser, Point};
 use crate::git;
 use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
-use crate::link::{ByteRange, StructuralRef};
+use bilink_format::{ByteRange, Capture};
 use crate::query;
 
-/// El formato del `.capture` vive en `bilink-format`; acá está el algoritmo que lo
-/// produce. Se re-exporta para que el resto del crate siga diciendo
-/// `capture::CaptureFile` sin saber de dónde sale el tipo.
-pub use bilink_format::capture::{sref_of, CaptureFile, CaptureState};
+/// La ubicación aprobada de un endpoint, si el endpoint es estructural.
+///
+/// Devuelve `None` para `path` e `issue`, que no tienen capture.
+pub fn capture_of(layer: &Path, link: &bilink_format::LinkEndpoint) -> Result<Option<Capture>> {
+    match link.capture_id() {
+        Some(id) => Ok(Some(Capture::load_in(layer, id)?)),
+        None => Ok(None),
+    }
+}
 
 /// Busca un capture de la capa con la misma referencia exacta.
 ///
 /// La igualdad es `(file, query, offset)`: referencias idénticas describen la
 /// misma ubicación, así que comparten capture. Es el mismo criterio que usa la
 /// migración — si no, cada cadena nueva volvería a duplicar lo que aquélla unificó.
-pub fn find_equivalent(layer: &Path, sref: &StructuralRef) -> Option<String> {
-    CaptureFile::all_in(layer).ok()?.into_iter()
-        .find(|c| c.sref == *sref)
-        .map(|c| c.uuid)
-}
+// `find_equivalent` ya no existe. El id de un capture es el hash de su ubicación,
+// así que dos referencias iguales son el mismo archivo: no hay nada que buscar.
 
-/// Captura un fragmento y persiste el `.capture` en la capa.
-///
-/// Devuelve el UUID del capture creado, listo para referenciar desde un `link.N`.
+/// Captura una selección y escribe su capture. Devuelve `(id, path, ya_existía)`.
 pub fn capture_to_file(
     layer: &Path,
     file:  &str,
     start: (usize, usize),
     end:   (usize, usize),
-    now:   &str,
 ) -> Result<(String, PathBuf, bool)> {
-    let result = capture(layer, file, start, end)?;
-
-    if let Some(uuid) = find_equivalent(layer, &result.endpoint) {
-        return Ok((uuid.clone(), CaptureFile::path_in(layer, &uuid), true));
-    }
-
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let mut cap = CaptureFile {
-        uuid:        uuid.clone(),
-        sref:        result.endpoint,
-        range:       None,
-        state:       Some(CaptureState::Resolved),
-        resolved_at: Some(now.to_string()),
-    };
-    cap.range = absolute_range(layer, &cap.sref)?;
-
-    let path = cap.write_in(layer)?;
-    Ok((uuid, path, false))
+    capture(layer, file, start, end)?.capture.write_in(layer)
 }
 
-/// Captura un archivo completo, sin query.
-pub fn capture_file_whole(layer: &Path, file: &str, now: &str) -> Result<(String, PathBuf, bool)> {
-    let sref = StructuralRef { file: file.to_string(), query: None, range: None };
-    if let Some(uuid) = find_equivalent(layer, &sref) {
-        return Ok((uuid.clone(), CaptureFile::path_in(layer, &uuid), true));
-    }
-
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let mut cap = CaptureFile {
-        uuid:        uuid.clone(),
-        sref,
-        range:       None,
-        state:       Some(CaptureState::Resolved),
-        resolved_at: Some(now.to_string()),
-    };
-    cap.range = absolute_range(layer, &cap.sref)?;
-    let path = cap.write_in(layer)?;
-    Ok((uuid, path, false))
-}
-
-/// Captures de la capa que ningún `.bilink` referencia.
+/// El archivo entero como capture: sin query, sin offset.
 ///
-/// Un capture huérfano no rompe nada: se resuelve en cada `check` sin que nadie
-/// lea el resultado. Limpiarlo es higiene, no reparación.
-pub fn orphans(layer: &Path) -> Result<Vec<CaptureFile>> {
-    use std::collections::HashSet;
-    let mut referenced: HashSet<String> = HashSet::new();
+/// **No exige que el archivo exista.** Un capture es una ubicación, y sin query no
+/// hay nada que parsear para calcular su id. Exigirlo rompería el caso de declarar
+/// una cadena hacia una capa que todavía no se creó —el estado `TODO`—, que es una
+/// intención declarada y no un error.
+pub fn capture_file_whole(layer: &Path, file: &str) -> Result<(String, PathBuf, bool)> {
+    Capture { file: file.to_string(), query: None, offset: None }.write_in(layer)
+}
 
-    for path in crate::bilink::walkdir(&layer.join(".bilink"))? {
-        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-        let Ok(bl) = crate::bilink::BiLinkFile::load(&path) else { continue };
+/// Los captures que no alcanza ningún bilink.
+///
+/// **Mark & sweep sobre dos clases de raíz**, no una: un capture está vivo si lo
+/// referencia un `link` —la ubicación vigente— **o** un `accepted.link` —la que
+/// alguien aprobó. Barrer sólo por la primera borraría el capture que dice dónde
+/// estaba lo aceptado, y con él la capacidad de decidir si una ubicación cambió.
+pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
+    use std::collections::HashSet;
+    let mut alive: HashSet<String> = HashSet::new();
+
+    for path in bilink_format::bilink::bilink_files(&layer.join(".bilink")) {
+        let Ok(bl) = bilink_format::BiLink::load(&path) else { continue };
         for n in [0u8, 1u8] {
-            if let Some(uuid) = bl.link(n).capture_uuid() {
-                referenced.insert(uuid.to_string());
+            let e = bl.endpoint.get(n);
+            if let Some(id) = e.link.capture_id() {
+                alive.insert(id.to_string());
+            }
+            if let Some(id) = e.accepted.as_ref().and_then(|a| a.link.as_ref()).and_then(|l| l.capture_id()) {
+                alive.insert(id.to_string());
             }
         }
     }
 
-    Ok(CaptureFile::all_in(layer)?.into_iter()
-        .filter(|c| !referenced.contains(&c.uuid))
-        .collect())
+    Ok(Capture::all_in(layer)?.into_iter().filter(|(id, _)| !alive.contains(id)).collect())
 }
 
-/// Path de un archivo de la capa, relativo a la raíz del repo git.
-///
-/// Los paths de un capture son relativos a su capa, pero `git show <commit>:<p>`
-/// los resuelve contra la raíz del repo. Cuando coinciden da igual; cuando la
-/// capa está anidada dentro de un repo mayor, no.
 fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
     let top = std::process::Command::new("git")
         .args(["-C", &layer.to_string_lossy(), "rev-parse", "--show-toplevel"])
@@ -134,28 +104,28 @@ fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
 /// el fragmento equivocado: quien llama toma decisiones a partir de este texto.
 pub fn accepted_text(
     layer:         &Path,
-    sref:          &StructuralRef,
+    cap:           &Capture,
     commit:        &str,
     expected_hash: Option<&str>,
 ) -> Option<String> {
     // `git show <commit>:<path>` resuelve el path contra la **raíz del repo**, no
     // contra el `-C`. Cuando la capa no es la raíz —una capa de specs dentro de
     // un repo mayor— pasar el path relativo a la capa hace fallar el comando.
-    let repo_rel = git_path_from_repo_root(layer, &sref.file);
+    let repo_rel = git_path_from_repo_root(layer, &cap.file);
     let out = std::process::Command::new("git")
         .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{repo_rel}")])
         .output().ok()?;
     if !out.status.success() { return None; }
     let old_source = String::from_utf8(out.stdout).ok()?;
 
-    let text = match &sref.query {
+    let text = match &cap.query {
         None => old_source.clone(),
         Some(q) => {
-            let lang     = grammar::language_for_file(&sref.file);
+            let lang     = grammar::language_for_file(&cap.file);
             let language = grammar::for_language(lang).ok()?;
             let (start, end, _) =
                 crate::query::find_target_with_sexp(language, &old_source, q).ok()??;
-            let (s, e) = match &sref.range {
+            let (s, e) = match &cap.offset {
                 Some(r) => (start + r.start, (start + r.end).min(old_source.len())),
                 None    => (start, end),
             };
@@ -171,21 +141,21 @@ pub fn accepted_text(
 }
 
 /// Byte range absoluto del fragmento en su archivo, resolviendo la query.
-pub fn absolute_range(layer: &Path, sref: &StructuralRef) -> Result<Option<ByteRange>> {
-    let path = layer.join(&sref.file);
+pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<ByteRange>> {
+    let path = layer.join(&cap.file);
     if !path.exists() { return Ok(None); }
     let source = std::fs::read_to_string(&path)?;
 
-    let Some(query_str) = &sref.query else {
+    let Some(query_str) = &cap.query else {
         return Ok(Some(ByteRange { start: 0, end: source.len() }));
     };
-    let lang     = grammar::language_for_file(&sref.file);
+    let lang     = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
     let Some((node_start, node_end, _)) =
         crate::query::find_target_with_sexp(language, &source, query_str)? else {
         return Ok(None);
     };
-    Ok(Some(match &sref.range {
+    Ok(Some(match &cap.offset {
         Some(off) => ByteRange {
             start: node_start + off.start,
             end:   (node_start + off.end).min(source.len()),
@@ -195,7 +165,7 @@ pub fn absolute_range(layer: &Path, sref: &StructuralRef) -> Result<Option<ByteR
 }
 
 pub struct CaptureResult {
-    pub endpoint: StructuralRef,
+    pub capture: Capture,
     pub hash: String,
     pub commit: String,
 }
@@ -281,10 +251,10 @@ pub fn capture(
     let hash = hash::sha256(fragment.as_bytes());
 
     Ok(CaptureResult {
-        endpoint: StructuralRef {
-            file: file.to_string(),
-            query: Some(query),
-            range,
+        capture: Capture {
+            file:   file.to_string(),
+            query:  Some(query),
+            offset: range,
         },
         hash,
         commit,
@@ -555,90 +525,74 @@ pub fn recapture(
     n:      u8,
     file:   &str,
     pos:    Option<((usize, usize), (usize, usize))>,
-    now:    &str,
 ) -> Result<Recaptured> {
-    let mut bl = crate::bilink::BiLinkFile::load(bilink)?;
+    use bilink_format::BiLink;
+    let mut bl = BiLink::load(bilink)?;
 
-    // Un endpoint layer o task no tiene capture que repuntar.
-    if !bl.link(n).is_structural() {
-        anyhow::bail!(
-            "link.{n} no es un endpoint estructural (es {}) — no tiene capture que repuntar",
-            bl.link(n)
-        );
-    }
-    let old_uuid = bl.link(n).capture_uuid().map(String::from);
-
-    let (new_uuid, _, reused) = match pos {
-        Some((start, end)) => capture_to_file(layer, file, start, end, now)?,
-        None               => capture_file_whole(layer, file, now)?,
+    let e = bl.endpoint.get(n);
+    let Some(old_id) = e.link.capture_id().map(String::from) else {
+        bail!("el endpoint {n} no es estructural (es {}) — no tiene capture que repuntar", e.link);
     };
 
-    if old_uuid.as_deref() == Some(new_uuid.as_str()) {
-        anyhow::bail!("link.{n} ya apunta a ese capture — nada que repuntar");
+    let (new_id, _, reused) = match pos {
+        Some((start, end)) => capture_to_file(layer, file, start, end)?,
+        None               => capture_file_whole(layer, file)?,
+    };
+    if old_id == new_id {
+        bail!("el endpoint {n} ya apunta a ese capture — nada que repuntar");
     }
 
-    *bl.link_mut(n) = crate::link::LinkEndpoint::Capture(new_uuid.clone());
-    // El estado anterior describía el capture viejo: dejarlo mentiría hasta el
-    // próximo `check`.
-    bl.set_state(n, None);
-    bl.resolved_at = Some(now.to_string());
+    bl.endpoint.get_mut(n).link = format!("capture {new_id}").parse()?;
     bl.write(bilink)?;
 
-    // ¿El capture anterior quedó huérfano? Se informa, no se borra: puede tener
-    // otros referentes, y borrar por si acaso es peor que dejar basura inocua.
-    let orphaned = match &old_uuid {
-        None => false,
-        Some(u) => orphans(layer)?.iter().any(|c| c.uuid == *u),
-    };
+    // El estado cacheado describía el capture viejo: dejarlo mentiría.
+    let uuid = bilink.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+    let mut cache = crate::cache::Cache::load(layer);
+    cache.set_endpoint_state(&uuid, n, crate::state::EndpointState::Relocated);
+    cache.save(layer)?;
 
-    Ok(Recaptured { old_uuid, new_uuid, reused, orphaned })
+    // ¿El anterior quedó huérfano? Se informa, no se borra: puede tener otros
+    // referentes, y borrar por si acaso es peor que dejar basura inocua.
+    let orphaned = orphans(layer)?.iter().any(|(id, _)| *id == old_id);
+
+    Ok(Recaptured { old_uuid: Some(old_id), new_uuid: new_id, reused, orphaned })
 }
 
 #[cfg(test)]
-mod capture_lookup_tests {
+mod tests {
     use super::*;
-    use bilink_format::link::StructuralRef;
     use tempfile::tempdir;
 
-    fn sref(file: &str, query: Option<&str>) -> StructuralRef {
-        StructuralRef { file: file.into(), query: query.map(String::from), range: None }
+    fn write_cap(layer: &Path, file: &str) -> String {
+        Capture { file: file.into(), query: None, offset: None }
+            .write_in(layer).unwrap().0
     }
 
-    fn write_cap(layer: &Path, uuid: &str, s: StructuralRef) {
-        CaptureFile { uuid: uuid.into(), sref: s, range: None, state: None, resolved_at: None }
-            .write_in(layer).unwrap();
-    }
-
+    /// `prune` conserva lo que alcanza un `link` **o** un `accepted.link`.
+    ///
+    /// La segunda raíz es la que el formato anterior no tenía: barrer sólo por la
+    /// primera borraría el capture que dice dónde estaba lo aceptado.
     #[test]
-    fn find_equivalent_matches_identical_reference() {
-        let dir = tempdir().unwrap();
-        write_cap(dir.path(), "cap-a", sref("a.rs", Some("(function_item) @target")));
-        let found = find_equivalent(dir.path(), &sref("a.rs", Some("(function_item) @target")));
-        assert_eq!(found.as_deref(), Some("cap-a"));
-    }
-
-    #[test]
-    fn find_equivalent_ignores_different_reference() {
-        let dir = tempdir().unwrap();
-        write_cap(dir.path(), "cap-a", sref("a.rs", Some("(function_item) @target")));
-        assert!(find_equivalent(dir.path(), &sref("a.rs", Some("(struct_item) @target"))).is_none());
-        assert!(find_equivalent(dir.path(), &sref("b.rs", Some("(function_item) @target"))).is_none());
-    }
-
-    #[test]
-    fn orphans_excludes_referenced_captures() {
+    fn orphans_walks_both_kinds_of_root() {
         let dir   = tempdir().unwrap();
         let layer = dir.path();
-        write_cap(layer, "cap-usado",    sref("a.rs", None));
-        write_cap(layer, "cap-huerfano", sref("b.rs", None));
+        let vigente  = write_cap(layer, "a.rs");
+        let aprobado = write_cap(layer, "b.rs");
+        let suelto   = write_cap(layer, "c.rs");
 
-        crate::bilink::BiLinkFile::new("uuid1",
-            crate::link::LinkEndpoint::Capture("cap-usado".into()),
-            crate::link::LinkEndpoint::Issue("3a".into()))
-            .write(&layer.join(".bilink/uuid1.bilink")).unwrap();
+        // Un endpoint que `apply` repuntó: su link apunta a uno y su accepted a otro.
+        let mut bl = bilink_format::BiLink::new(
+            format!("capture {vigente}").parse().unwrap(),
+            "issue 3a".parse().unwrap());
+        bl.endpoint.zero.accepted = Some(bilink_format::Accepted {
+            link: Some(format!("capture {aprobado}").parse().unwrap()),
+            hash: "deadbeef".into(),
+            hash_ast: None,
+        });
+        bl.write(&bilink_format::BiLink::path_in(layer, "uuid1")).unwrap();
 
-        let o = orphans(layer).unwrap();
-        assert_eq!(o.len(), 1);
-        assert_eq!(o[0].uuid, "cap-huerfano");
+        let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(huerfanos, vec![suelto],
+            "sólo el capture que nadie nombra; el aprobado sigue vivo");
     }
 }

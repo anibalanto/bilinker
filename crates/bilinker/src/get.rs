@@ -1,11 +1,12 @@
 use std::path::Path;
 use anyhow::{bail, Context, Result};
 
-use crate::bilink::BiLinkFile;
+use bilink_format::{BiLink, ByteRange, Capture, LinkEndpoint};
+
+use crate::cache::Cache;
 use crate::grammar;
-use crate::link::{ByteRange, LinkEndpoint, StructuralRef};
 use crate::query;
-use stratum::StratumPath;
+use bilink_format::link::StratumPath;
 
 pub struct GetResult {
     pub content: String,
@@ -24,6 +25,7 @@ pub struct DiffResult {
     pub diff: Option<String>,
 }
 
+/// El fragmento que un endpoint referencia.
 pub fn get(
     root: &Path,
     bilink_name: &str,
@@ -31,76 +33,75 @@ pub fn get(
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
-    let bilinker_dir = root.join(".bilink");
-    let (_, bl) = BiLinkFile::find_by_id(&bilinker_dir, bilink_name)?;
-
-    let link = match endpoint {
-        0 => &bl.link0,
-        1 => &bl.link1,
-        _ => bail!("endpoint must be 0 or 1"),
-    };
+    let path = crate::accept::find_bilink_path(root, bilink_name)?;
+    let uuid = uuid_of(&path);
+    let bl = BiLink::load(&path)?;
+    if endpoint > 1 { bail!("el endpoint es 0 o 1"); }
+    let link = &bl.endpoint.get(endpoint).link;
 
     match link {
-        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
-            let sref = crate::capture::sref_of(root, link)?
-                .context("endpoint estructural sin capture resoluble")?;
-            resolve(root, &sref, before, after)
+        LinkEndpoint::Capture(_) => {
+            let cap = crate::capture::capture_of(root, link)?
+                .context("el endpoint estructural no tiene capture resoluble")?;
+            resolve(root, &cap, before, after)
         }
-        LinkEndpoint::Layer(layer_path) => {
-            traverse_layer(root, layer_path.clone(), &bl.uuid, before, after)
-        }
-        LinkEndpoint::Issue(id) => bail!(
-            "link.{endpoint} es un issue ({id}) — se mira con worklist"
-        ),
+        LinkEndpoint::Path(p) => traverse_layer(root, p.clone(), &uuid, before, after),
+        LinkEndpoint::Issue(id) => bail!("el endpoint {endpoint} es un issue ({id}) — se mira con worklist"),
     }
 }
 
-pub fn get_diff(
-    root: &Path,
-    bilink_name: &str,
-    endpoint: u8,
-) -> Result<DiffResult> {
-    let bilinker_dir = root.join(".bilink");
-    let (_, bl) = BiLinkFile::find_by_id(&bilinker_dir, bilink_name)?;
+/// El diff entre el fragmento aceptado y el actual.
+///
+/// El baseline es el `commit` del endpoint —aquel en que el contenido aceptado
+/// quedó establecido—, que vive en la cache. Con cache fría no está y se pide
+/// correr `accept` o `check`.
+pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResult> {
+    let path = crate::accept::find_bilink_path(root, bilink_name)?;
+    let uuid = uuid_of(&path);
+    let bl = BiLink::load(&path)?;
+    if endpoint > 1 { bail!("el endpoint es 0 o 1"); }
 
-    if endpoint > 1 { bail!("endpoint must be 0 or 1"); }
-    let link   = bl.link(endpoint);
-    let commit = bl.commit(endpoint);
-    let hash   = bl.hash(endpoint);
-    // El range del capture, no el del bilink: ahí ya no vive.
-    let cap    = bl.capture_for(root, endpoint).ok().flatten();
-    let range  = cap.as_ref().and_then(|c| c.range.clone());
+    let e = bl.endpoint.get(endpoint);
+    let accepted = e.accepted.as_ref()
+        .context("el endpoint no tiene nada aceptado — correr `bilinker accept` primero")?;
 
-    let commit = commit.context("endpoint has no accepted commit — run bilinker accept first")?;
+    let cache  = Cache::load(root);
+    let commit = cache.commit(&uuid, endpoint)
+        .context("no hay commit del contenido aceptado en la cache — correr `bilinker accept`")?
+        .to_string();
+    let range = e.link.capture_id().and_then(|id| cache.capture_range(id));
 
-    match link {
-        LinkEndpoint::Capture(_) | LinkEndpoint::LegacyStructural(_) => {
-            let sref = crate::capture::sref_of(root, link)?
-                .context("endpoint estructural sin capture resoluble")?;
-            diff_structural(root, &sref, commit, range.as_ref(), hash)
+    match &e.link {
+        LinkEndpoint::Capture(_) => {
+            let cap = crate::capture::capture_of(root, &e.link)?
+                .context("el endpoint estructural no tiene capture resoluble")?;
+            diff_structural(root, &cap, &commit, range.as_ref(), Some(&accepted.hash))
         }
-        LinkEndpoint::Layer(layer_path) => {
-            let (adj_root, sref_owned, adj_commit, adj_range, adj_hash) =
-                traverse_layer_for_diff(root, layer_path.clone(), &bl.uuid)?;
-            diff_structural(&adj_root, &sref_owned,
-                            adj_commit.as_deref().unwrap_or(commit),
+        LinkEndpoint::Path(p) => {
+            let (adj_root, adj_cap, adj_commit, adj_range, adj_hash) =
+                traverse_layer_for_diff(root, p.clone(), &uuid)?;
+            diff_structural(&adj_root, &adj_cap,
+                            adj_commit.as_deref().unwrap_or(&commit),
                             adj_range.as_ref(), adj_hash.as_deref())
         }
-        LinkEndpoint::Issue(id) => bail!(
-            "link.{endpoint} es un issue ({id})"
-        ),
+        LinkEndpoint::Issue(id) => bail!("el endpoint {endpoint} es un issue ({id})"),
     }
+}
+
+/// El uuid de un bilink es el nombre de su archivo.
+fn uuid_of(path: &Path) -> String {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string()
 }
 
 fn diff_structural(
     root: &Path,
-    sref: &StructuralRef,
+    cap: &Capture,
     commit: &str,
     stored_range: Option<&ByteRange>,
     hash: Option<&str>,
 ) -> Result<DiffResult> {
     // "after": current fragment via AST query
-    let after_result = resolve(root, sref, None, None)?;
+    let after_result = resolve(root, cap, None, None)?;
     let after_text = &after_result.content;
 
     // "before": el fragmento aceptado, resolviendo la query contra el contenido
@@ -109,9 +110,9 @@ fn diff_structural(
     //
     // Si la verificación por hash falla, se cae al recorte por range: para un
     // diff informativo es mejor mostrar algo aproximado que no mostrar nada.
-    let before_text = match crate::capture::accepted_text(root, sref, commit, hash) {
+    let before_text = match crate::capture::accepted_text(root, cap, commit, hash) {
         Some(t) => t,
-        None    => git_show_fragment(root, commit, &sref.file, stored_range)?,
+        None    => git_show_fragment(root, commit, &cap.file, stored_range)?,
     };
 
     let diff = if before_text.trim_end() == after_text.trim_end() {
@@ -121,7 +122,7 @@ fn diff_structural(
     };
 
     Ok(DiffResult {
-        file: sref.file.clone(),
+        file: cap.file.clone(),
         layer_root: root.to_path_buf(),
         commit: commit.to_string(),
         start_line: after_result.start_line,
@@ -255,31 +256,40 @@ fn traverse_layer_for_diff(
     root: &Path,
     layer_path: StratumPath,
     uuid: &str,
-) -> Result<(std::path::PathBuf, StructuralRef, Option<String>, Option<ByteRange>, Option<String>)> {
+) -> Result<(std::path::PathBuf, Capture, Option<String>, Option<ByteRange>, Option<String>)> {
     let adjacent_root = {
-        let p = stratum::resolve(root, root, &layer_path)
+        let p = stratum::resolve(root, root, layer_path.tokens())
             .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
         let (true_root, _) = crate::config::Config::load_from(&p)
             .with_context(|| format!("finding root of adjacent layer {}", p.display()))?;
         true_root
     };
 
-    let adjacent_bilink_dir = adjacent_root.join(".bilink");
-    let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)
-        .with_context(|| format!("bilink {uuid} not found in {}", adjacent_bilink_dir.display()))?;
+    let adj_path = BiLink::path_in(&adjacent_root, uuid);
+    let adjacent_bl = BiLink::load(&adj_path)
+        .with_context(|| format!("no está el bilink {uuid} en la capa vecina"))?;
 
-    let n = adjacent_bl.structural_n()
-        .with_context(|| format!("adjacent bilink {uuid} has no structural endpoint"))?;
-    let cap = adjacent_bl.capture_for(&adjacent_root, n)?
-        .with_context(|| format!("adjacent bilink {uuid}: capture no resoluble"))?;
-    let (sref, commit, range, hash) = (
-        cap.sref.clone(),
-        adjacent_bl.commit(n).map(String::from),
-        cap.range.clone(),
-        adjacent_bl.hash(n).map(String::from),
-    );
+    let (n, cap) = structural_of(&adjacent_root, &adjacent_bl)
+        .with_context(|| format!("el bilink vecino {uuid} no tiene endpoint estructural resoluble"))?;
 
-    Ok((adjacent_root, sref, commit, range, hash))
+    let cache  = Cache::load(&adjacent_root);
+    let commit = cache.commit(uuid, n).map(String::from);
+    let range  = adjacent_bl.endpoint.get(n).link.capture_id().and_then(|id| cache.capture_range(id));
+    let hash   = adjacent_bl.endpoint.get(n).accepted.as_ref().map(|a| a.hash.clone());
+
+    Ok((adjacent_root, cap, commit, range, hash))
+}
+
+/// El endpoint estructural de un bilink, con su capture.
+fn structural_of(layer: &Path, bl: &BiLink) -> Option<(u8, Capture)> {
+    for n in [0u8, 1u8] {
+        if let Some(id) = bl.endpoint.get(n).link.capture_id() {
+            if let Ok(cap) = Capture::load_in(layer, id) {
+                return Some((n, cap));
+            }
+        }
+    }
+    None
 }
 
 fn traverse_layer(
@@ -290,7 +300,7 @@ fn traverse_layer(
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
     let adjacent_root = {
-        let p = stratum::resolve(root, root, &layer_path)
+        let p = stratum::resolve(root, root, layer_path.tokens())
             .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
         // Walk up to the true root of the adjacent layer (.git or .bilink)
         let (true_root, _) = crate::config::Config::load_from(&p)
@@ -298,45 +308,41 @@ fn traverse_layer(
         true_root
     };
 
-    let adjacent_bilink_dir = adjacent_root.join(".bilink");
-    let (_, adjacent_bl) = BiLinkFile::find_by_id(&adjacent_bilink_dir, uuid)
-        .with_context(|| format!("bilink {uuid} not found in {}", adjacent_bilink_dir.display()))?;
+    let adjacent_bl = BiLink::load(&BiLink::path_in(&adjacent_root, uuid))
+        .with_context(|| format!("no está el bilink {uuid} en la capa vecina"))?;
+    let (_, cap) = structural_of(&adjacent_root, &adjacent_bl)
+        .with_context(|| format!("el bilink vecino {uuid} no tiene endpoint estructural resoluble"))?;
 
-    let n = adjacent_bl.structural_n()
-        .with_context(|| format!("adjacent bilink {uuid} has no structural endpoint"))?;
-    let cap = adjacent_bl.capture_for(&adjacent_root, n)?
-        .with_context(|| format!("adjacent bilink {uuid}: capture no resoluble"))?;
-
-    resolve(&adjacent_root, &cap.sref, before, after)
+    resolve(&adjacent_root, &cap, before, after)
 }
 
 fn resolve(
     root: &Path,
-    sref: &StructuralRef,
+    cap: &Capture,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
-    let file_path = root.join(&sref.file);
+    let file_path = root.join(&cap.file);
     let source = std::fs::read_to_string(&file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
 
-    let Some(query_str) = &sref.query else {
+    let Some(query_str) = &cap.query else {
         let total = count_lines(&source);
         return Ok(GetResult {
             content: source,
-            file: sref.file.clone(),
+            file: cap.file.clone(),
             start_line: 1,
             end_line: total,
         });
     };
 
-    let lang = grammar::language_for_file(&sref.file);
+    let lang = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
 
     let (node_start, node_end) = query::find_target(language, &source, query_str)?
-        .with_context(|| format!("query matched nothing in {}", sref.file))?;
+        .with_context(|| format!("query matched nothing in {}", cap.file))?;
 
-    let (frag_start, frag_end) = match &sref.range {
+    let (frag_start, frag_end) = match &cap.offset {
         Some(r) => (node_start + r.start, (node_start + r.end).min(source.len())),
         None    => (node_start, node_end),
     };
@@ -354,7 +360,7 @@ fn resolve(
 
     Ok(GetResult {
         content,
-        file: sref.file.clone(),
+        file: cap.file.clone(),
         start_line: ctx_start + 1,
         end_line: ctx_end + 1,
     })

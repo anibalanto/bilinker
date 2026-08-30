@@ -19,3 +19,7 @@ tempfile = "3"
 # Sólo para el guard de versión: el formato no hashea nada en runtime.
 sha2     = "0.10"
 hex      = "0.4"
+
+[[bin]]
+name = "schema-v1"
+path = "src/bin/schema.rs"

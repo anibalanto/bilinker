@@ -114,15 +114,16 @@ enum Command {
     ///   accept commands/check.md — PENDING endpoints pointing to that file
     ///   accept <uuid>            — both endpoints of that UUID
     ///   accept <uuid>.<0|1>      — one specific endpoint
+    /// Registra el estado actual de un endpoint como aprobado
     Accept {
-        /// path, UUID, or UUID.N
+        /// path, UUID, o UUID.N
         target: String,
-        /// Override the computed hash
+        /// Aprueba sólo la ubicación: escribe accepted.link y deja el contenido
         #[arg(long)]
-        hash: Option<String>,
-        /// Override the git commit
+        place: bool,
+        /// Aprueba sólo el contenido: escribe accepted.hash
         #[arg(long)]
-        commit: Option<String>,
+        content: bool,
     },
 
     /// Show status of all bilinks in the current layer (like git status)
@@ -262,11 +263,10 @@ fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bil
     let layer_fs   = layer_tokens_to_fs_path(&layer_tokens)?;
     let layer_root = root.join(&layer_fs);
 
-    let now = now_iso8601();
     let (uuid, _, _reused) = if let Some((line, col)) = pos {
-        bilinker::capture::capture_to_file(&layer_root, &file_str, (line, col), (line, col), &now)?
+        bilinker::capture::capture_to_file(&layer_root, &file_str, (line, col), (line, col))?
     } else {
-        bilinker::capture::capture_file_whole(&layer_root, &file_str, &now)?
+        bilinker::capture::capture_file_whole(&layer_root, &file_str)?
     };
     let endpoint = LinkEndpoint::Capture(uuid);
 
@@ -304,10 +304,6 @@ fn parse_accept_target(target: &str) -> anyhow::Result<(String, u8)> {
     Ok((target[..dot].to_string(), n))
 }
 
-/// Timestamp UTC en ISO 8601, el formato de `resolved_at`.
-fn now_iso8601() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -317,9 +313,9 @@ fn main() -> anyhow::Result<()> {
         Command::Capture { sub, file, start, end, dry_run } => {
             match sub {
                 Some(CaptureCommand::Remove { uuid, force }) => {
-                    let dir = bilinker::capture::CaptureFile::dir(&cwd);
-                    let all = bilinker::capture::CaptureFile::all_in(&cwd)?;
-                    let hits: Vec<_> = all.iter().filter(|c| c.uuid.starts_with(&uuid)).collect();
+                    let dir = bilink_format::Capture::dir(&cwd);
+                    let all = bilink_format::Capture::all_in(&cwd)?;
+                    let hits: Vec<_> = all.iter().filter(|(id, _)| id.starts_with(&uuid)).collect();
                     let cap = match hits.as_slice() {
                         []  => anyhow::bail!("no hay capture que empiece con '{uuid}'"),
                         [c] => *c,
@@ -327,16 +323,16 @@ fn main() -> anyhow::Result<()> {
                     };
 
                     // Un capture con referentes deja bilinks apuntando a la nada.
-                    let orphan = bilinker::capture::orphans(&cwd)?.iter().any(|o| o.uuid == cap.uuid);
+                    let orphan = bilinker::capture::orphans(&cwd)?.iter().any(|(id, _)| *id == cap.0);
                     if !orphan && !force {
                         anyhow::bail!(
                             "el capture {} tiene referentes — usar `bilinker recapture` para repuntarlos, o --force",
-                            &cap.uuid[..8.min(cap.uuid.len())]
+                            &cap.0[..8.min(cap.0.len())]
                         );
                     }
 
-                    std::fs::remove_file(dir.join(format!("{}.capture", cap.uuid)))?;
-                    eprintln!("eliminado: {}  {}", &cap.uuid[..8.min(cap.uuid.len())], cap.sref.file);
+                    std::fs::remove_file(dir.join(format!("{}.yaml", cap.0)))?;
+                    eprintln!("eliminado: {}  {}", &cap.0[..8.min(cap.0.len())], cap.1.file);
                     if !orphan {
                         eprintln!("warn: tenía referentes — correr `bilinker check .`");
                     }
@@ -354,7 +350,7 @@ fn main() -> anyhow::Result<()> {
                     for c in &orphans {
                         // La query es multilínea; en una lista de confirmación
                         // previa a borrar archivos, una línea por capture.
-                        let anchor = match c.sref.query.as_deref() {
+                        let anchor = match c.1.query.as_deref() {
                             None => "archivo completo".to_string(),
                             Some(q) => {
                                 let kind = q.split_whitespace().next().unwrap_or("")
@@ -365,7 +361,7 @@ fn main() -> anyhow::Result<()> {
                             }
                         };
                         println!("  {}…  {}  [{anchor}]",
-                                 &c.uuid[..8.min(c.uuid.len())], c.sref.file);
+                                 &c.0[..8.min(c.0.len())], c.1.file);
                     }
                     if !yes {
                         eprint!("
@@ -381,7 +377,7 @@ Eliminar? [y/N] ");
                     }
                     for c in &orphans {
                         std::fs::remove_file(
-                            bilinker::capture::CaptureFile::path_in(&layer, &c.uuid))?;
+                            bilink_format::Capture::path_in(&layer, &c.0))?;
                     }
                     eprintln!("eliminados {} capture(s)", orphans.len());
                 }
@@ -396,16 +392,14 @@ Eliminar? [y/N] ");
                     if dry_run {
                         let result = bilinker::capture::capture(&root, &file, s, e)?;
                         eprintln!("[dry-run] no se escribió nada");
-                        eprintln!("file:   {}", result.endpoint.file);
-                        if let Some(q) = &result.endpoint.query {
+                        eprintln!("file:   {}", result.capture.file);
+                        if let Some(q) = &result.capture.query {
                             eprintln!("query:  {q}");
                         }
                         return Ok(());
                     }
-
-                    let now = now_iso8601();
                     let (uuid, path, reused) =
-                        bilinker::capture::capture_to_file(&root, &file, s, e, &now)?;
+                        bilinker::capture::capture_to_file(&root, &file, s, e)?;
                     println!("{uuid}");
                     if reused {
                         eprintln!("reusado: {}", path.display());
@@ -474,8 +468,8 @@ Eliminar? [y/N] ");
                     if byte >= range.start && byte < range.end {
                         let uuid  = bilink_path.file_stem()
                             .and_then(|s| s.to_str()).unwrap_or("?");
-                        let bl    = bilinker::bilink::BiLinkFile::load(&bilink_path)?;
-                        let other = if n == 0 { &bl.link1 } else { &bl.link0 };
+                        let bl    = bilink_format::BiLink::load(&bilink_path)?;
+                        let other = &bl.endpoint.get(1 - n).link;
                         println!("{uuid}.{n}  {other}");
                     }
                 }
@@ -487,8 +481,8 @@ Eliminar? [y/N] ");
                 for (bilink_path, n, range) in results {
                     let uuid  = bilink_path.file_stem()
                         .and_then(|s| s.to_str()).unwrap_or("?");
-                    let bl    = bilinker::bilink::BiLinkFile::load(&bilink_path)?;
-                    let other = if n == 0 { &bl.link1 } else { &bl.link0 };
+                    let bl    = bilink_format::BiLink::load(&bilink_path)?;
+                    let other = &bl.endpoint.get(1 - n).link;
                     println!("{uuid}.{n}  {other}  bytes {}–{}", range.start, range.end);
                 }
             }
@@ -501,16 +495,14 @@ Eliminar? [y/N] ");
             if n > 1 { anyhow::bail!("el endpoint debe ser 0 o 1"); }
 
             let (bilink_path, _) =
-                bilinker::bilink::BiLinkFile::find_by_id(&cwd.join(".bilink"), uuid)?;
+                (bilinker::accept::find_bilink_path(&cwd, uuid)?, ());
 
             let range = match (pos.as_deref(), end.as_deref()) {
                 (None, _)          => None,
                 (Some(p), None)    => { let p = parse_pos(p)?; Some((p, p)) }
                 (Some(p), Some(e)) => Some((parse_pos(p)?, parse_pos(e)?)),
             };
-
-            let now = now_iso8601();
-            let r = bilinker::capture::recapture(&cwd, &bilink_path, n, &file, range, &now)?;
+            let r = bilinker::capture::recapture(&cwd, &bilink_path, n, &file, range)?;
 
             println!("{}", r.new_uuid);
             eprintln!("link.{n} → capture {}{}",
@@ -557,7 +549,7 @@ Eliminar? [y/N] ");
 
             if let Some(ref state) = filter {
                 let state_up = state.to_uppercase();
-                fixes.retain(|f| f.fix.state_name() == state_up);
+                fixes.retain(|f| f.reason == state_up);
             }
 
             if fixes.is_empty() {
@@ -566,17 +558,17 @@ Eliminar? [y/N] ");
             }
 
             // Collect state names for commit message summary
-            let mut state_set: Vec<&str> = fixes.iter().map(|f| f.fix.state_name()).collect();
+            let mut state_set: Vec<&str> = fixes.iter().map(|f| f.reason).collect();
             state_set.dedup();
             let states_label = state_set.join(" + ");
 
             // Print summary
-            let max_state = fixes.iter().map(|f| f.fix.state_name().len()).max().unwrap_or(0);
+            let max_state = fixes.iter().map(|f| f.reason.len()).max().unwrap_or(0);
             println!("Pending fixes ({}):", fixes.len());
             for f in &fixes {
                 println!("  {:<width$}  {}…  link.{}  {}",
-                    f.fix.state_name(), f.uuid_short, f.n,
-                    f.fix.description(&f.sref_file),
+                    f.reason, f.short(), f.n,
+                    f.description(),
                     width = max_state,
                 );
             }
@@ -597,26 +589,21 @@ Eliminar? [y/N] ");
             }
 
             // Apply each fix
-            let now = now_iso8601();
             let mut applied: Vec<std::path::PathBuf> = Vec::new();
             let mut bullet_lines = Vec::new();
             let mut errors  = 0usize;
-            let mut forked  = 0usize;
 
             for f in &fixes {
-                match bilinker::apply::apply_fix(&cwd, f, &now) {
+                match bilinker::apply::apply_fix(&cwd, f) {
                     Ok(paths) => {
                         applied.extend(paths);
-                        if f.fork { forked += 1; }
                         bullet_lines.push(format!(
-                            "- {}… link.{}: {} {}{}",
-                            f.uuid_short, f.n, f.fix.state_name(),
-                            f.fix.description(&f.sref_file),
-                            if f.fork { "  (capture forkeado)" } else { "" },
+                            "- {}… endpoint.{}: {} {}",
+                            f.short(), f.n, f.reason, f.description(),
                         ));
                     }
                     Err(e) => {
-                        eprintln!("error  {}.{}: {e}", f.uuid_short, f.n);
+                        eprintln!("error  {}.{}: {e}", f.short(), f.n);
                         errors += 1;
                     }
                 }
@@ -629,23 +616,16 @@ Eliminar? [y/N] ");
 
             // Commit
             let date    = chrono::Utc::now().format("%Y-%m-%d");
-            let summary = format!("bilinker: auto-fix {states_label} ({date})");
+            let summary = format!("bilinker: repuntar {states_label} ({date})");
             let body    = bullet_lines.join("\n");
             let message = format!("{summary}\n\n{body}");
 
-            match bilinker::apply::git_commit(&root, &applied, &message) {
+            match git_commit(&root, &applied, &message) {
                 Ok(hash) => {
-                    println!("\nApplied {} fix(es).", fixes.len() - errors);
-                    if forked > 0 {
-                        println!("  {} capture(s) corregidos, {forked} forkeado(s)",
-                                 fixes.len() - errors - forked);
-                    }
-                    let needs_accept: Vec<&str> = fixes.iter()
-                        .filter(|f| matches!(f.post_state,
-                            bilinker::link::EndpointState::Expanded
-                          | bilinker::link::EndpointState::Reanchored))
-                        .map(|f| f.uuid_short.as_str())
-                        .collect();
+                    let n = fixes.len() - errors;
+                    println!("\nRepuntados {n} endpoint(s). Los {n} quedan en RELOCATED.");
+                    println!("  Revisar con `bilinker get <uuid>.<N>` y aprobar con `bilinker accept --place`.");
+                    let needs_accept: Vec<String> = Vec::new();
                     if !needs_accept.is_empty() {
                         println!("  {} requiere(n) `bilinker accept` — el contenido cambió: {}",
                                  needs_accept.len(), needs_accept.join(", "));
@@ -672,7 +652,7 @@ Eliminar? [y/N] ");
                 vec![base.clone()]
             };
 
-            let report = accreta_migrate::run(&layers, &bilinker::migrations::all(), dry_run)?;
+            let report = accreta_migrate::run(&layers, &bilink_migrate::all(), dry_run)?;
 
             for id in &report.skipped {
                 eprintln!("ya aplicada: {id}");
@@ -752,23 +732,30 @@ Eliminar? [y/N] ");
             }
         },
 
-        Command::Accept { target, hash, commit } => {
+        Command::Accept { target, place, content } => {
             // Dispatch: uuid.N  |  uuid (both endpoints)  |  path / "."
             let is_uuid_n = (target.ends_with(".0") || target.ends_with(".1"))
                 && target[..target.len()-2].chars().all(|c| c.is_ascii_hexdigit() || c == '-');
             let is_path = target == "." || target.contains('/') || target.contains('\\')
                 || std::path::Path::new(&target).exists();
 
+            // Qué dimensiones aprueba. Sin flags, las dos.
+            let what = match (place, content) {
+                (true, false) => bilinker::accept::What::place_only(),
+                (false, true) => bilinker::accept::What::content_only(),
+                _             => bilinker::accept::What::default(),
+            };
+
             if is_uuid_n {
-                // Single endpoint
+                // Un endpoint
                 let (uuid, n) = parse_accept_target(&target)?;
-                let bilink_path = bilinker::accept::find_bilink_path(&cwd.join(".bilink"), &uuid)?;
-                let r = bilinker::accept::accept(&bilink_path, n, hash.as_deref(), commit.as_deref())?;
+                let r = bilinker::accept::accept(&cwd, &uuid, n, what)?;
                 print_accept_result(&r);
             } else if is_path {
                 // Bulk: all PENDING under path filter
                 let filter = if target == "." { None } else { Some(target.trim_end_matches('/')) };
-                let results = bilinker::accept::accept_layer(&cwd, filter)?;
+                let _ = filter;
+                let results = bilinker::accept::accept_all(&cwd)?;
                 if results.is_empty() {
                     eprintln!("nothing to accept");
                 } else {
@@ -779,11 +766,9 @@ Eliminar? [y/N] ");
                 }
             } else {
                 // UUID prefix: accept both endpoints
-                let bilink_dir = cwd.join(".bilink");
-                let bilink_path = bilinker::accept::find_bilink_path(&bilink_dir, &target)?;
                 let mut count = 0;
                 for n in [0u8, 1u8] {
-                    match bilinker::accept::accept(&bilink_path, n, hash.as_deref(), commit.as_deref()) {
+                    match bilinker::accept::accept(&cwd, &target, n, what) {
                         Ok(r) => { print_accept_result(&r); count += 1; }
                         Err(e) => eprintln!("warn .{n}: {e}"),
                     }
@@ -852,106 +837,94 @@ Eliminar? [y/N] ");
     Ok(())
 }
 
+/// El estado de una cadena, recorriendo sus nodos.
+///
+/// Los estados salen de la cache de cada capa: no están en los archivos. Con la
+/// cache fría se dice, en vez de inventar un OK.
 fn print_chain_status(root: &Path, uuid: &str) -> anyhow::Result<()> {
-    use bilinker::bilink::walkdir;
-
-    let mut nodes: Vec<(std::path::PathBuf, bilinker::bilink::BiLinkFile)> = Vec::new();
-    for entry in walkdir(root)? {
-        let stem = entry.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if stem == uuid {
-            if let Ok(bl) = bilinker::bilink::BiLinkFile::load(&entry) {
-                nodes.push((entry, bl));
-            }
+    let mut nodes: Vec<(PathBuf, bilink_format::BiLink)> = Vec::new();
+    for (layer, _) in layers_with(root, uuid) {
+        let path = bilink_format::BiLink::path_in(&layer, uuid);
+        if let Ok(bl) = bilink_format::BiLink::load(&path) {
+            nodes.push((layer, bl));
         }
     }
-
     if nodes.is_empty() {
-        anyhow::bail!("chain '{uuid}' not found");
+        anyhow::bail!("no existe la cadena '{uuid}'");
     }
 
-    let overall = chain_overall_state(&nodes);
-    println!("Chain: {}  [{}]", uuid, overall);
+    println!("Cadena: {uuid}  [{}]", chain_overall_state(root, uuid, &nodes));
     println!();
+    for (layer, bl) in &nodes {
+        let cache = bilinker::cache::Cache::load(layer);
+        let label = layer.strip_prefix(root).ok()
+            .map(|p| if p.as_os_str().is_empty() { ".".into() } else { p.display().to_string() })
+            .unwrap_or_else(|| layer.display().to_string());
 
-    for (path, bl) in &nodes {
-        let layer = path.parent().and_then(|p| p.parent())
-            .and_then(|p| p.strip_prefix(root).ok())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| ".".to_string());
-
-        let s0 = bilinker::state_str(&bl.state0);
-        let s1 = bilinker::state_str(&bl.state1);
-
-        println!("  {}/  ({s0}, {s1})", layer);
-        println!("    link.0  {}", bl.link0);
-        println!("    link.1  {}", bl.link1);
+        println!("  {label}/  ({}, {})", state_label(&cache, uuid, 0), state_label(&cache, uuid, 1));
+        println!("    endpoint.0  {}", bl.endpoint.zero.link);
+        println!("    endpoint.1  {}", bl.endpoint.one.link);
     }
     Ok(())
+}
+
+fn state_label(cache: &bilinker::cache::Cache, uuid: &str, n: u8) -> String {
+    cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into())
+}
+
+/// Las capas que tienen un bilink con este uuid.
+fn layers_with(root: &Path, uuid: &str) -> Vec<(PathBuf, PathBuf)> {
+    bilinker::index::layer_roots(root).into_iter()
+        .map(|l| (l.clone(), bilink_format::BiLink::path_in(&l, uuid)))
+        .filter(|(_, p)| p.exists())
+        .collect()
 }
 
 fn list_chains(root: &Path) -> anyhow::Result<()> {
-    use bilinker::bilink::walkdir;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
+    let mut chains: BTreeMap<String, usize> = BTreeMap::new();
 
-    let mut chains: HashMap<String, Vec<bilinker::bilink::BiLinkFile>> = HashMap::new();
-
-    for entry in walkdir(root)? {
-        if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-        if entry.ancestors().any(|a| a.ends_with(".pending")) { continue; }
-        if let Ok(bl) = bilinker::bilink::BiLinkFile::load(&entry) {
-            chains.entry(bl.uuid.clone()).or_default().push(bl);
+    for layer in bilinker::index::layer_roots(root) {
+        for path in bilink_format::bilink::bilink_files(&layer.join(".bilink")) {
+            if let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) {
+                *chains.entry(uuid.to_string()).or_default() += 1;
+            }
         }
     }
-
     if chains.is_empty() {
-        println!("(no chains found)");
+        println!("(no hay cadenas)");
         return Ok(());
     }
-
-    let mut uuids: Vec<_> = chains.keys().cloned().collect();
-    uuids.sort();
-
-    for uuid in uuids {
-        let nodes = &chains[&uuid];
-        let overall = chain_overall_state_for_bl(nodes);
-        println!("{}  [{}]  {} node(s)", &uuid[..8], overall, nodes.len());
+    for (uuid, n) in chains {
+        let nodes: Vec<(PathBuf, bilink_format::BiLink)> = layers_with(root, &uuid).into_iter()
+            .filter_map(|(l, p)| bilink_format::BiLink::load(&p).ok().map(|bl| (l, bl)))
+            .collect();
+        println!("{}  [{}]  {n} nodo(s)", &uuid[..8.min(uuid.len())],
+                 chain_overall_state(root, &uuid, &nodes));
     }
     Ok(())
 }
 
-fn chain_overall_state(nodes: &[(std::path::PathBuf, bilinker::bilink::BiLinkFile)]) -> &'static str {
-    use bilinker::link::EndpointState::*;
-    let terminal = |s: &Option<bilinker::link::EndpointState>| matches!(
-        s, Some(Altered) | Some(Deleted) | Some(Unanchored) | Some(Broken)
-    );
-    let dirty = |s: &Option<bilinker::link::EndpointState>| matches!(s, Some(ChainDirty));
-    for (_, bl) in nodes {
-        if terminal(&bl.state0) || terminal(&bl.state1) { return "BROKEN"; }
+/// El peor estado de la cadena.
+fn chain_overall_state(_root: &Path, uuid: &str, nodes: &[(PathBuf, bilink_format::BiLink)]) -> &'static str {
+    use bilinker::state::EndpointState::*;
+    let mut seen = Vec::new();
+    for (layer, _) in nodes {
+        let cache = bilinker::cache::Cache::load(layer);
+        for n in [0u8, 1u8] {
+            if let Some(s) = cache.endpoint_state(uuid, n) { seen.push(s); }
+        }
     }
-    for (_, bl) in nodes {
-        if dirty(&bl.state0) || dirty(&bl.state1) { return "DIRTY"; }
-    }
-    "OK"
-}
-
-fn chain_overall_state_for_bl(nodes: &[bilinker::bilink::BiLinkFile]) -> &'static str {
-    use bilinker::link::EndpointState::*;
-    let terminal = |s: &Option<bilinker::link::EndpointState>| matches!(
-        s, Some(Altered) | Some(Deleted) | Some(Unanchored) | Some(Broken)
-    );
-    let dirty = |s: &Option<bilinker::link::EndpointState>| matches!(s, Some(ChainDirty));
-    for bl in nodes {
-        if terminal(&bl.state0) || terminal(&bl.state1) { return "BROKEN"; }
-    }
-    for bl in nodes {
-        if dirty(&bl.state0) || dirty(&bl.state1) { return "DIRTY"; }
-    }
+    if seen.is_empty() { return "—"; }
+    if seen.iter().any(|s| matches!(s, Altered | Unresolved | Broken)) { return "BROKEN"; }
+    if seen.iter().any(|s| matches!(s, ChainDirty)) { return "DIRTY"; }
+    if seen.iter().any(|s| !s.is_ok()) { return "PENDIENTE"; }
     "OK"
 }
 
 fn watch(root: &Path) -> anyhow::Result<()> {
     use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
-    use bilinker::bilink::{walkdir, BiLinkFile};
+    use bilink_format::bilink::bilink_files;
     
     use std::sync::mpsc;
 
@@ -979,21 +952,17 @@ fn watch(root: &Path) -> anyhow::Result<()> {
             };
 
             let mut chains: Vec<String> = Vec::new();
-            for entry in walkdir(root).unwrap_or_default() {
-                if entry.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-                if entry.components().any(|c| c.as_os_str() == ".pending") { continue; }
-                let Ok(bl) = BiLinkFile::load(&entry) else { continue };
+            for entry in bilink_files(&root.join(".bilink")) {
+                let Ok(bl) = bilink_format::BiLink::load(&entry) else { continue };
+                let Some(uuid) = entry.file_stem().and_then(|s| s.to_str()) else { continue };
 
-                let references_file = [&bl.link0, &bl.link1].iter().any(|link| {
-                    match bilinker::capture::sref_of(root, link) {
-                        Ok(Some(sref)) => rel.contains(&sref.file) || sref.file.contains(&rel),
+                let references_file = (0..2u8).any(|n| {
+                    match bilinker::capture::capture_of(root, &bl.endpoint.get(n).link) {
+                        Ok(Some(cap)) => rel.contains(&cap.file) || cap.file.contains(&rel),
                         _ => false,
                     }
                 });
-
-                if references_file {
-                    chains.push(bl.uuid.clone());
-                }
+                if references_file { chains.push(uuid.to_string()); }
             }
 
             if !chains.is_empty() {
@@ -1009,73 +978,78 @@ fn watch(root: &Path) -> anyhow::Result<()> {
 }
 
 fn print_accept_result(r: &bilinker::accept::AcceptResult) {
-    let commit = if r.commit.is_empty() { "(uncommitted)".to_string() } else { r.commit[..12.min(r.commit.len())].to_string() };
+    let commit = match &r.commit {
+        Some(c) => c[..12.min(c.len())].to_string(),
+        None    => "(sin commit)".to_string(),
+    };
     println!("  {}.{}  {}  {}", &r.uuid[..8.min(r.uuid.len())], r.n, &r.hash[..12.min(r.hash.len())], commit);
 }
 
+/// El estado de la capa, agrupado por archivo.
+///
+/// Lee la cache; no resuelve nada. Con la cache fría **no hay estados** y se dice:
+/// mostrar OK sin haber verificado sería peor que no mostrar nada.
 fn print_status(layer: &Path) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
-    use bilinker::bilink::BiLinkFile;
-    
+    use bilink_format::{BiLink, Capture};
 
     let bilink_dir = layer.join(".bilink");
     if !bilink_dir.exists() {
-        eprintln!("no .bilink/ in {}", layer.display());
+        eprintln!("no hay .bilink/ en {}", layer.display());
         return Ok(());
     }
 
-    struct Row {
-        file_name: String,
-        uuid_short: String,
-        s0: String,
-        s1: String,
-    }
+    let cache = bilinker::cache::Cache::load(layer);
+    let mut cold = true;
 
+    struct Row { file_name: String, uuid_short: String, s0: String, s1: String }
     let mut groups: BTreeMap<String, Vec<Row>> = BTreeMap::new();
 
-    for entry in std::fs::read_dir(&bilink_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("bilink") { continue; }
-        if path.file_name().and_then(|n| n.to_str())
-            .map(|n| n.starts_with('.')).unwrap_or(false) { continue; }
+    for path in bilink_format::bilink::bilink_files(&bilink_dir) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
 
-        let Ok(bl) = BiLinkFile::load(&path) else { continue };
+        // Se agrupa por el directorio del endpoint estructural.
+        let file = (0..2u8)
+            .filter_map(|n| bl.endpoint.get(n).link.capture_id())
+            .filter_map(|id| Capture::load_in(layer, id).ok())
+            .map(|c| c.file)
+            .next();
 
-        // Group by the structural endpoint's parent directory
-        let (dir, file_name) = {
-            let sref = bl.structural_n()
-                .and_then(|n| bl.capture_for(layer, n).ok().flatten())
-                .map(|c| c.sref.file);
-            match sref.as_ref() {
-                Some(f) => {
-                    let p = std::path::Path::new(f);
-                    let dir = p.parent().and_then(|d| if d.as_os_str().is_empty() { None } else { Some(d) })
-                        .map(|d| d.display().to_string())
-                        .unwrap_or_else(|| ".".to_string());
-                    let name = p.file_name().map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| f.clone());
-                    (dir, name)
-                }
-                None => ("(layer)".to_string(), bl.uuid.clone()),
+        let (dir, file_name) = match file.as_ref() {
+            Some(f) => {
+                let p = std::path::Path::new(f);
+                let dir = p.parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_else(|| ".".into());
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| f.clone());
+                (dir, name)
             }
+            None => ("(layer)".into(), uuid.to_string()),
         };
 
-        let uuid_short = bl.uuid[..8.min(bl.uuid.len())].to_string();
-        let s0 = bilinker::state_str(&bl.state0);
-        let s1 = bilinker::state_str(&bl.state1);
+        let label = |n: u8| match cache.endpoint_state(uuid, n) {
+            Some(st) => { st.to_string() }
+            None     => "—".to_string(),
+        };
+        let (s0, s1) = (label(0), label(1));
+        if cache.endpoint_state(uuid, 0).is_some() { cold = false; }
 
-        groups.entry(dir).or_default().push(Row { file_name, uuid_short, s0, s1 });
+        groups.entry(dir).or_default().push(Row {
+            file_name, uuid_short: uuid[..8.min(uuid.len())].to_string(), s0, s1,
+        });
     }
 
     if groups.is_empty() {
-        println!("(no bilinks)");
+        println!("(no hay bilinks)");
         return Ok(());
     }
 
     for (dir, mut rows) in groups {
         println!("{dir}/");
         rows.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-
         let max_name = rows.iter().map(|r| r.file_name.len()).max().unwrap_or(0);
         let mut prev = String::new();
         for row in &rows {
@@ -1090,6 +1064,10 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
         println!();
     }
 
+    if cold {
+        eprintln!("sin estados: la cache está fría.");
+        eprintln!("  Correr `bilinker check .` para calcularlos.");
+    }
     Ok(())
 }
 
@@ -1110,9 +1088,10 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: O
         "json" => graph_json(root, &starts)?,
         "flat" => {
             for (bilink_path, layer_root) in &starts {
-                let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
-                visited.insert(visit_key(&bl.uuid, layer_root));
-                graph_flat(root, &bl, layer_root, &mut visited, 0, max_depth)?;
+                let bl = bilink_format::BiLink::load(bilink_path)?;
+                let uuid = uuid_of(bilink_path);
+                visited.insert(visit_key(&uuid, layer_root));
+                graph_flat(root, &bl, &uuid, layer_root, &mut visited, 0, max_depth)?;
             }
         }
         _ => {
@@ -1120,9 +1099,10 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, format: &str, max_depth: O
             if !starts.is_empty() { println!("│"); }
             for (i, (bilink_path, layer_root)) in starts.iter().enumerate() {
                 let is_last = i == starts.len() - 1;
-                let bl = bilinker::bilink::BiLinkFile::load(bilink_path)?;
-                visited.insert(visit_key(&bl.uuid, layer_root));
-                graph_tree(root, &bl, layer_root, "", is_last, &mut visited, 0, max_depth)?;
+                let bl = bilink_format::BiLink::load(bilink_path)?;
+                let uuid = uuid_of(bilink_path);
+                visited.insert(visit_key(&uuid, layer_root));
+                graph_tree(root, &bl, &uuid, layer_root, "", is_last, &mut visited, 0, max_depth)?;
                 if !is_last { println!("│"); }
             }
         }
@@ -1209,31 +1189,32 @@ struct TipNode {
 /// Los nodos intermedios son mecanismo interno de bilinker: si lattice los
 /// viera, el grafo se llenaría de nodos `.bilink` que no son contenido del
 /// proyecto. Por eso una cadena de N nodos emite **una** arista entre sus tips.
-fn chain_tips(base: &Path, bl: &bilinker::bilink::BiLinkFile, layer_root: &Path) -> Vec<TipNode> {
+fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
     let mut tips    = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    let mut queue   = vec![(bl.uuid.clone(), layer_root.to_path_buf())];
+    let mut queue   = vec![layer_root.to_path_buf()];
 
-    while let Some((uuid, layer)) = queue.pop() {
-        if !visited.insert(visit_key(&uuid, &layer)) { continue; }
-        let path = layer.join(".bilink").join(format!("{uuid}.bilink"));
-        let Ok(node) = bilinker::bilink::BiLinkFile::load(&path) else { continue };
+    while let Some(layer) = queue.pop() {
+        if !visited.insert(visit_key(uuid, &layer)) { continue; }
+        let Ok(node) = bilink_format::BiLink::load(&bilink_format::BiLink::path_in(&layer, uuid)) else { continue };
+        let cache = bilinker::cache::Cache::load(&layer);
 
         for n in [0u8, 1u8] {
-            if !node.link(n).is_structural() { continue; }
-            let Ok(Some(cap)) = node.capture_for(&layer, n) else { continue };
-            let Some(range) = &cap.range else { continue };
+            let Some(id) = node.endpoint.get(n).link.capture_id() else { continue };
+            let Ok(cap) = bilink_format::Capture::load_in(&layer, id) else { continue };
+            // El rango sale de la cache. Con cache fría no hay nodo canónico que
+            // emitir: lattice necesita `check` corrido antes de consultar.
+            let Some(range) = cache.capture_range(id) else { continue };
             tips.push(TipNode {
                 canonical: format!("{}::{}#{}~{}",
-                    layer_label(base, &layer), cap.sref.file, range.start, range.end),
-                state:  bilinker::state_str(node.state(n)),
-                commit: node.commit(n).unwrap_or("").to_string(),
+                    layer_label(base, &layer), cap.file, range.start, range.end),
+                state:  cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into()),
+                commit: cache.commit(uuid, n).unwrap_or("").to_string(),
             });
         }
 
-        for (adj_path, adj_layer) in layer_children(&node, &layer) {
-            let _ = adj_path;
-            queue.push((uuid.clone(), adj_layer));
+        for (_, adj_layer) in layer_children(&node, uuid, &layer) {
+            queue.push(adj_layer);
         }
     }
     tips
@@ -1241,29 +1222,30 @@ fn chain_tips(base: &Path, bl: &bilinker::bilink::BiLinkFile, layer_root: &Path)
 
 /// Emite las aristas de bilinker en el modelo de lattice.
 fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> anyhow::Result<()> {
-    use bilinker::link::LinkEndpoint;
+    use bilink_format::LinkEndpoint;
     let base     = outermost_root(root);
     let mut out  = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for (path, layer_root) in starts {
-        let Ok(bl) = bilinker::bilink::BiLinkFile::load(path) else { continue };
-        if !seen.insert(bl.uuid.clone()) { continue; }
+        let Ok(bl) = bilink_format::BiLink::load(path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if !seen.insert(uuid.to_string()) { continue; }
 
         // El `kind` sale de la semántica declarada; sin `kind`, es un bilink.
-        let kind = match (&bl.link0, &bl.link1) {
+        let kind = match (&bl.endpoint.zero.link, &bl.endpoint.one.link) {
             (LinkEndpoint::Issue(_), _) | (_, LinkEndpoint::Issue(_)) => "issue",
             _ => "bilink",
         };
 
-        let tips = chain_tips(&base, &bl, layer_root);
+        let tips = chain_tips(&base, uuid, layer_root);
         if tips.len() < 2 { continue; }
         let (a, b) = (&tips[0], &tips[1]);
 
         out.push(format!(
             r#"  {{"from":"{}","to":"{}","kind":"{}","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"{}","state":["{}","{}"],"commit":["{}","{}"]}}"#,
             esc_json(&a.canonical), esc_json(&b.canonical),
-            kind, bl.uuid, a.state, b.state, a.commit, b.commit,
+            kind, uuid, a.state, b.state, a.commit, b.commit,
         ));
     }
 
@@ -1282,21 +1264,26 @@ fn esc_json(s: &str) -> String {
      .replace('\n', "\\n").replace('\r', "").replace('\t', "\\t")
 }
 
+/// El uuid de un bilink es el nombre de su archivo.
+fn uuid_of(path: &Path) -> String {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string()
+}
+
 fn visit_key(uuid: &str, layer_root: &Path) -> String {
     format!("{}@{}", uuid, layer_root.display())
 }
 
-fn layer_children(bl: &bilinker::bilink::BiLinkFile, layer_root: &Path) -> Vec<(PathBuf, PathBuf)> {
-    use bilinker::link::LinkEndpoint;
+fn layer_children(bl: &bilink_format::BiLink, uuid: &str, layer_root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    use bilink_format::LinkEndpoint;
     let mut children = vec![];
-    for endpoint in [&bl.link0, &bl.link1] {
-        if let LinkEndpoint::Layer(tokens) = endpoint {
-            if let Ok(adj) = stratum::resolve(layer_root, layer_root, tokens) {
-                // Walk up to the true root of the adjacent layer (.git or .bilink)
+    for n in [0u8, 1u8] {
+        if let LinkEndpoint::Path(p) = &bl.endpoint.get(n).link {
+            if let Ok(adj) = stratum::resolve(layer_root, layer_root, p.tokens()) {
+                // Subir a la raíz verdadera de la capa vecina (.git o .bilink)
                 let true_adj = bilinker::config::Config::load_from(&adj)
                     .map(|(r, _)| r)
                     .unwrap_or(adj);
-                let adj_bilink = true_adj.join(".bilink").join(format!("{}.bilink", bl.uuid));
+                let adj_bilink = bilink_format::BiLink::path_in(&true_adj, uuid);
                 if adj_bilink.exists() {
                     children.push((adj_bilink, true_adj));
                 }
@@ -1308,7 +1295,8 @@ fn layer_children(bl: &bilinker::bilink::BiLinkFile, layer_root: &Path) -> Vec<(
 
 fn graph_tree(
     root: &Path,
-    bl: &bilinker::bilink::BiLinkFile,
+    bl: &bilink_format::BiLink,
+    uuid: &str,
     layer_root: &Path,
     prefix: &str,
     is_last: bool,
@@ -1316,15 +1304,14 @@ fn graph_tree(
     depth: usize,
     max_depth: Option<usize>,
 ) -> anyhow::Result<()> {
-    use bilinker::bilink::BiLinkFile;
-
     let conn = if is_last { "└── " } else { "├── " };
     let ext  = if is_last { "    " } else { "│   " };
     let child_prefix = format!("{prefix}{ext}");
 
-    let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bilinker::state_str(&bl.state0);
-    let s1 = bilinker::state_str(&bl.state1);
+    let uuid_short = &uuid[..8.min(uuid.len())];
+    let cache = bilinker::cache::Cache::load(layer_root);
+    let st = |n: u8| cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into());
+    let (s0, s1) = (st(0), st(1));
     let layer_label = if depth > 0 {
         let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
         format!("  ({})", rel.display())
@@ -1333,11 +1320,11 @@ fn graph_tree(
     };
 
     println!("{prefix}{conn}{uuid_short}  [{s0} ↔ {s1}]{layer_label}");
-    println!("{child_prefix}│  link.0  {}", bl.link0);
-    println!("{child_prefix}│  link.1  {}", bl.link1);
+    println!("{child_prefix}│  endpoint.0  {}", bl.endpoint.zero.link);
+    println!("{child_prefix}│  endpoint.1  {}", bl.endpoint.one.link);
 
     let children = if max_depth.map_or(true, |d| depth < d) {
-        layer_children(bl, layer_root)
+        layer_children(bl, uuid, layer_root)
     } else {
         vec![]
     };
@@ -1347,16 +1334,16 @@ fn graph_tree(
     } else {
         println!("{child_prefix}│");
         for (i, (adj_bilink_path, adj_layer)) in children.iter().enumerate() {
-            let key = visit_key(&bl.uuid, adj_layer);
+            let key = visit_key(uuid, adj_layer);
             if visited.contains(&key) {
                 let child_conn = if i == children.len() - 1 { "└── " } else { "├── " };
-                println!("{child_prefix}{child_conn}{}  [ya visitado]", &bl.uuid[..8.min(bl.uuid.len())]);
+                println!("{child_prefix}{child_conn}{uuid_short}  [ya visitado]");
                 continue;
             }
             visited.insert(key);
-            let adj_bl = BiLinkFile::load(adj_bilink_path)?;
+            let adj_bl = bilink_format::BiLink::load(adj_bilink_path)?;
             let child_is_last = i == children.len() - 1;
-            graph_tree(root, &adj_bl, adj_layer, &child_prefix, child_is_last, visited, depth + 1, max_depth)?;
+            graph_tree(root, &adj_bl, uuid, adj_layer, &child_prefix, child_is_last, visited, depth + 1, max_depth)?;
         }
     }
     Ok(())
@@ -1364,32 +1351,33 @@ fn graph_tree(
 
 fn graph_flat(
     root: &Path,
-    bl: &bilinker::bilink::BiLinkFile,
+    bl: &bilink_format::BiLink,
+    uuid: &str,
     layer_root: &Path,
     visited: &mut std::collections::HashSet<String>,
     depth: usize,
     max_depth: Option<usize>,
 ) -> anyhow::Result<()> {
-    use bilinker::bilink::BiLinkFile;
 
-    let uuid_short = &bl.uuid[..8.min(bl.uuid.len())];
-    let s0 = bilinker::state_str(&bl.state0);
-    let s1 = bilinker::state_str(&bl.state1);
+    let uuid_short = &uuid[..8.min(uuid.len())];
+    let cache = bilinker::cache::Cache::load(layer_root);
+    let st = |n: u8| cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into());
+    let (s0, s1) = (st(0), st(1));
     let layer_label = {
         let rel = layer_root.strip_prefix(root).unwrap_or(layer_root);
         if rel.as_os_str().is_empty() { ".".to_string() } else { rel.display().to_string() }
     };
 
     println!("{uuid_short}  {s0} ↔ {s1}  {}  →  {}  [{}]",
-        bl.link0, bl.link1, layer_label);
+        bl.endpoint.zero.link, bl.endpoint.one.link, layer_label);
 
     if max_depth.map_or(true, |d| depth < d) {
-        for (adj_bilink_path, adj_layer) in layer_children(bl, layer_root) {
-            let key = visit_key(&bl.uuid, &adj_layer);
+        for (adj_bilink_path, adj_layer) in layer_children(bl, uuid, layer_root) {
+            let key = visit_key(uuid, &adj_layer);
             if visited.contains(&key) { continue; }
             visited.insert(key);
-            let adj_bl = BiLinkFile::load(&adj_bilink_path)?;
-            graph_flat(root, &adj_bl, &adj_layer, visited, depth + 1, max_depth)?;
+            let adj_bl = bilink_format::BiLink::load(&adj_bilink_path)?;
+            graph_flat(root, &adj_bl, uuid, &adj_layer, visited, depth + 1, max_depth)?;
         }
     }
     Ok(())
@@ -1408,4 +1396,31 @@ fn line_col_to_byte(source: &str, line: usize, col: usize) -> usize {
         byte = i;
     }
     byte
+}
+
+/// Stagea y commitea los archivos escritos. Devuelve el hash corto.
+fn git_commit(root: &Path, paths: &[PathBuf], message: &str) -> anyhow::Result<String> {
+    for path in paths {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let st = std::process::Command::new("git")
+            .args(["add", &rel.display().to_string()])
+            .current_dir(root)
+            .status()?;
+        if !st.success() {
+            anyhow::bail!("git add falló para {}", path.display());
+        }
+    }
+    let out = std::process::Command::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(root)
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("git commit falló:\n{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(stdout.lines().next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or("?")
+        .to_string())
 }

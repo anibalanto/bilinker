@@ -9,7 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 accreta-migrate = { path = "../accreta-migrate" }
-bilinker    = { path = "../bilinker" }
+bilinker      = { path = "../bilinker" }
+bilink-format = { path = "../bilink-format" }
+bilink-migrate = { path = "../bilink-migrate" }
 stratum     = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 clap        = { version = "4", features = ["derive"] }
 anyhow      = "1"
