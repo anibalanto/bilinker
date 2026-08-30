@@ -337,11 +337,17 @@ Por eso poner `commit` en la cache no bloquea a nadie. Donde hace falta —recup
 
 `concepts/migration.md` ya define la maquinaria: ids ordenados, ledger por repo en `.accreta/migrations`, runner idempotente, `--dry-run` que no escribe, y la regla de que una migración se marca aplicada sólo cuando corrió sobre **todas** las capas del repo. Las dos nuevas se registran en `commands/migrate.md` junto a `bilinker-001-capture-split`.
 
-**El orden importa y no es el obvio.** La partición va primero: mientras `range`, `state` y `resolved_at` sigan dentro del `.capture`, no se le puede calcular un id estable.
+**Enmienda (2026-08-30): es una migración, no dos.** Se decidió partirla asumiendo que el id de un capture saldría de **hashear el archivo**, y ahí sí hay que sacarle los derivables antes de poder calcularlo. Pero el id sale de `H(file, query, offset)` —los tres campos, no el archivo— y una migración que escribe a una carpeta nueva simplemente no copia lo demás. No hay ningún momento en que el capture tenga basura adentro, así que no hay orden que respetar.
+
+Y separarlas costaba caro: `002` iría de formato 1 a un intermedio —captures ya en YAML, todavía nombrados por su uuid viejo— que viola la invariante 1 de `capture.md` y por lo tanto **es un formato propio**. Con la Decisión 2 de [ADR-0006](0006-formato-como-crate-versionado.md), eso pide su crate, su versión registrada y su hash de esquema *para siempre*, porque el conjunto es de sólo-agregar. Todo para un estado en el que nadie va a estar: las dos correrían en la misma pasada, antes del corte.
+
+La inspeccionabilidad que el encadenamiento buscaba se resuelve mejor por otro lado: la migración está partida en `plan()`, que calcula sin escribir, y `write()`; y `verify()` compara hash por hash entre los dos formatos, de punta a punta.
+
+Queda **`bilinker-002-file-partition`**, que hace las dos cosas. Lo que sigue describe las dos mitades.
 
 **`bilinker-002-file-partition`** — reescribe cada `.bilink` al formato nuevo: de `clave: valor` plano a YAML, con los endpoints bajo `endpoint.0`/`endpoint.1` y el tipo de cada `link` explícito (`path`, `repo`, …). `hash.N` → `accepted.hash` y `hash_ast.N` → `accepted.hash_ast`; `commit.N` y `state.N` van a `cache/state`, junto con el `range` y el `state` que salen del `.capture`; `resolved_at` **se descarta** en los dos archivos: no se muda, desaparece del formato. `kind` y `name.N` se preservan tal cual —la migración es el momento en que dejan de perderse— y `name.N` pasa a ser `name` adentro de su endpoint. Y se escribe `.bilink/version`. Y `accepted.link` se siembra copiando `link.N` donde `hash.N` está presente. Es exacto donde `state.N` es `OK`: en el formato viejo un endpoint `OK` es uno cuyo contenido actual coincide con el aceptado en la ubicación que `link.N` describe, así que esa ubicación *es* la bendecida. Donde el endpoint está no-OK es la única lectura disponible —el formato viejo no distingue drift de ubicación de drift de contenido— y es la que preserva la invariante de aceptación sin poner los 158 bilinks del ecosistema en `RELOCATED` de golpe ni degradarlos a `PENDING`, que borraría el inventario de trabajo que la Decisión 6 necesita. En un endpoint `PENDING` `accepted` quedan ausentes y sólo sobrevive `link.N`. Todo es copia y renombre —`state.N` se lee del archivo, no se recalcula—: no se resuelve ninguna query ni se consulta git, como exige `migration.md` inv. 5.
 
-**`bilinker-003-immutable-captures`** — reescribe cada `.capture` como `capture/<H(file, query, offset)>.yaml` y repunta cada `link` y cada `accepted.link`. No tiene fan-out: como el id no depende del hash, dos bilinks que aceptaron contenidos distintos del mismo fragmento siguen compartiendo un capture, y la divergencia queda en sus `_accepted`. Dos captures con la misma ubicación colapsan en uno, que es la dedup por construcción. Y un endpoint en `PENDING` no plantea ningún problema: el id nunca dependió de `hash.N`, así que se computa igual que para cualquier otro.
+**La otra mitad: los captures inmutables.** La misma migración acuña cada capture bajo `H(file, query, offset)` y repunta cada `link` y cada `accepted.link`. No tiene fan-out: como el id no depende del hash del contenido, dos bilinks que aceptaron contenidos distintos del mismo fragmento siguen compartiendo capture, y la divergencia queda en sus `accepted`. Dos captures con la misma ubicación colapsan en uno, que es la dedup por construcción. Y un endpoint en `PENDING` no plantea ningún problema: el id nunca dependió del hash aceptado.
 
 **No hace falta migración para las decisiones 3 y 4.** Los endpoints `abstract` y repo son aditivos: ningún archivo existente los usa, y todos siguen siendo válidos. La frontera se puede adoptar bilink por bilink, sin tocar nada de lo que ya está.
 
@@ -356,10 +362,10 @@ La herramienta que cambia de formato es la que se usa para cambiarlo, y las spec
 **El path lleva el id de la migración: `.bilink-migrate-<id>`.** Sin él, dos migraciones en vuelo colisionan, y una carpeta abandonada de un intento anterior es indistinguible de una en curso. Con él, cada paso es inspeccionable y regenerable por separado, y la secuencia se encadena sola:
 
 ```
-.bilink/  →  .bilink-migrate-002-file-partition/  →  .bilink-migrate-003-immutable-captures/
+.bilink/  →  .bilink-migrate-002-file-partition/
 ```
 
-El corte toma la última. El prefijo `bilinker-` del id se omite, que dentro del directorio de bilinker es redundante.
+El corte toma esa carpeta. Con una sola migración la cadena tiene un eslabón, y el id en el nombre se queda igual: es lo que distingue una carpeta en curso de una abandonada de un intento anterior. El prefijo `bilinker-` del id se omite, que dentro del directorio de bilinker es redundante.
 
 **Es un derivado, no un espacio de trabajo.** No se edita a mano: si se lo edita, deja de poder regenerarse, que es lo único que lo vuelve seguro. Y tiene que poder regenerarse, porque si entre la generación y el corte alguien acepta algo con el binario viejo en `.bilink/`, la copia migrada queda vieja y el corte se comería esa aceptación. Queda en la misma categoría que `cache/state` y `index/`.
 
