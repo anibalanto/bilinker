@@ -69,6 +69,8 @@ pub struct Plan {
     pub dropped_resolved_at: usize,
     /// Captures del formato 1 que colapsaron en uno solo por tener la misma ubicación.
     pub collapsed: usize,
+    /// Endpoints `path` cuyo vecino no se pudo leer: quedan sin `accepted.link`.
+    pub unresolved_neighbours: usize,
 }
 
 pub fn plan(layer: &Path) -> Result<Plan> {
@@ -124,7 +126,15 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
     // todo en RELOCATED de golpe ni degradarlo a PENDING, que borraría el inventario.
     let accepted = match hash {
         Some(h) => Some(v2::Accepted {
-            link: link.is_structural().then(|| link.clone()),
+            // Un endpoint estructural aprueba su propia ubicación; uno `path` copia
+            // la del endpoint estructural de su vecino. En el formato 1 esa segunda
+            // copia no existía —sólo se copiaba el hash— así que hay que ir a
+            // buscarla, o el endpoint nace en RELOCATED contra su propio vecino.
+            link: match &link {
+                v2::LinkEndpoint::Capture(_) => Some(link.clone()),
+                v2::LinkEndpoint::Path(_)    => neighbour_capture(layer, old_link, &old.uuid, p)?,
+                v2::LinkEndpoint::Issue(_)   => None,
+            },
             hash: h.clone(),
             hash_ast: hash_ast.clone(),
         }),
@@ -132,6 +142,64 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
     };
 
     Ok(v2::Endpoint { link, accepted, name: None })
+}
+
+/// El capture que el endpoint estructural del bilink vecino aprueba.
+///
+/// Se resuelve leyendo el formato 1 del vecino y acuñando su id igual que se acuña
+/// el propio: misma función, mismo resultado. No consulta git ni resuelve queries,
+/// así que sigue siendo una transformación sintáctica.
+///
+/// El capture del vecino **no se agrega al plan**: vive en la capa del vecino, y esa
+/// capa lo acuña cuando le toque migrar. Acá sólo se necesita su id.
+fn neighbour_capture(
+    layer: &Path,
+    old_link: &v1::link::LinkEndpoint,
+    uuid: &str,
+    p: &mut Plan,
+) -> Result<Option<v2::LinkEndpoint>> {
+    let v1::link::LinkEndpoint::Layer(tokens) = old_link else { return Ok(None) };
+    let Ok(target) = stratum::resolve(layer, layer, tokens) else { return Ok(None) };
+
+    // La raíz verdadera de la capa vecina, que puede estar más arriba del path.
+    let adj_layer = true_layer_root(&layer.join(&target));
+    let adj_path  = adj_layer.join(".bilink").join(format!("{uuid}.bilink"));
+    if !adj_path.exists() {
+        p.unresolved_neighbours += 1;
+        return Ok(None);
+    }
+    let adj = v1::bilink::BiLinkFile::load(&adj_path)?;
+
+    for n in [0u8, 1u8] {
+        let link = if n == 0 { &adj.link0 } else { &adj.link1 };
+        let sref = match link {
+            v1::link::LinkEndpoint::Capture(id) =>
+                Some(v1::capture::CaptureFile::load_in(&adj_layer, id)?.sref),
+            v1::link::LinkEndpoint::LegacyStructural(s) => Some(s.clone()),
+            _ => None,
+        };
+        if let Some(sref) = sref {
+            let cap = v2::Capture {
+                file:   sref.file.clone(),
+                query:  sref.query.clone(),
+                offset: sref.range.as_ref().map(|r| v2::ByteRange { start: r.start, end: r.end }),
+            };
+            return Ok(Some(format!("capture {}", cap.id()).parse()?));
+        }
+    }
+    p.unresolved_neighbours += 1;
+    Ok(None)
+}
+
+/// La raíz verdadera de una capa: el ancestro más cercano con `.git` o `.bilink`.
+fn true_layer_root(start: &Path) -> PathBuf {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join(".bilink").is_dir() || cur.join(".git").exists() {
+            return cur;
+        }
+        if !cur.pop() { return start.to_path_buf(); }
+    }
 }
 
 /// Un `link` del formato 1 al 2, acuñando el capture si hace falta.
@@ -187,7 +255,7 @@ impl Plan {
     pub fn summary(&self, layer: &Path) -> String {
         format!(
             "{}: {} bilink(s), {} capture(s){}{}, {} endpoint(s) sin aceptar, \
-             {} resolved_at descartado(s)",
+             {} resolved_at descartado(s){}",
             layer.display(),
             self.bilinks.len(),
             self.captures.len(),
@@ -195,6 +263,9 @@ impl Plan {
             "",
             self.pending,
             self.dropped_resolved_at,
+            if self.unresolved_neighbours > 0 {
+                format!(", {} vecino(s) sin resolver", self.unresolved_neighbours)
+            } else { String::new() },
         )
     }
 
@@ -433,5 +504,77 @@ mod tests {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Dos capas encadenadas, en formato 1.
+    fn chained() -> tempfile::TempDir {
+        let d = tempdir().unwrap();
+        let uuid = "cccc3333-0000-4000-8000-000000000003";
+
+        // capa raíz
+        let a = d.path().join(".bilink");
+        std::fs::create_dir_all(a.join("capture")).unwrap();
+        std::fs::write(a.join("capture/ca.capture"), "file:   spec.md\n").unwrap();
+        std::fs::write(a.join(format!("{uuid}.bilink")), concat!(
+            "link.0: capture ca\nlink.1: >impl\n\n# Cache\n",
+            "hash.0: aaaa1111\ncommit.0: c1\n",
+            "hash.1: bbbb2222\ncommit.1: c2\n",
+            "state.0: OK\nstate.1: OK\n")).unwrap();
+
+        // capa impl
+        let b = d.path().join(".stratum/impl/.bilink");
+        std::fs::create_dir_all(b.join("capture")).unwrap();
+        std::fs::write(b.join("capture/cb.capture"), "file:   src/lib.rs\n").unwrap();
+        std::fs::write(b.join(format!("{uuid}.bilink")), concat!(
+            "link.0: <\nlink.1: capture cb\n\n# Cache\n",
+            "hash.0: aaaa1111\ncommit.0: c1\n",
+            "hash.1: bbbb2222\ncommit.1: c2\n",
+            "state.0: OK\nstate.1: OK\n")).unwrap();
+        d
+    }
+
+    /// **Una cadena que estaba OK sigue OK después de migrar.**
+    ///
+    /// Un endpoint `path` aprueba la ubicación de su vecino, y en el formato 1 esa
+    /// copia no existía: sólo se copiaba el hash. Sin ir a buscarla, cada endpoint
+    /// `path` nace en CHAIN_DIRTY contra su propio vecino — que es exactamente lo
+    /// que pasó al cortar por primera vez, con 118 de 118.
+    #[test]
+    fn a_path_endpoint_gets_the_neighbours_accepted_link() {
+        let d = chained();
+        let uuid = "cccc3333-0000-4000-8000-000000000003";
+
+        let root = plan(d.path()).unwrap();
+        let impl_ = plan(&d.path().join(".stratum/impl")).unwrap();
+
+        let root_path_ep = &root.bilinks[uuid].endpoint.one;   // path >impl
+        let impl_struct  = &impl_.bilinks[uuid].endpoint.one;  // capture cb
+
+        assert_eq!(
+            root_path_ep.accepted.as_ref().unwrap().link,
+            impl_struct.accepted.as_ref().unwrap().link,
+            "el endpoint path tiene que copiar la ubicación aprobada de su vecino");
+
+        // Y al revés.
+        let impl_path_ep = &impl_.bilinks[uuid].endpoint.zero; // path <
+        let root_struct  = &root.bilinks[uuid].endpoint.zero;  // capture ca
+        assert_eq!(
+            impl_path_ep.accepted.as_ref().unwrap().link,
+            root_struct.accepted.as_ref().unwrap().link);
+    }
+
+    /// El capture del vecino no entra en el plan de esta capa: vive en la suya.
+    #[test]
+    fn the_neighbours_capture_is_not_minted_here() {
+        let d = chained();
+        let root = plan(d.path()).unwrap();
+        assert_eq!(root.captures.len(), 1, "sólo el propio, no el del vecino");
+        assert_eq!(root.unresolved_neighbours, 0);
     }
 }

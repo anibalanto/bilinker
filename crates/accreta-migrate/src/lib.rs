@@ -233,6 +233,32 @@ pub fn record(layers: &[PathBuf], migrations: &[Migration]) -> Result<Vec<PathBu
     Ok(written)
 }
 
+/// Quita del ledger las migraciones dadas. Es el reverso de `record`.
+///
+/// El conjunto de migraciones es de sólo-agregar, pero **el ledger no es el
+/// conjunto**: es qué corrió acá. Deshacer un corte tiene que poder deshacer su
+/// registro, o el repo diría estar migrado con el formato viejo en disco.
+pub fn forget(repo_root: &Path, migrations: &[Migration]) -> Result<()> {
+    let mut ledger = Ledger::load(repo_root)?;
+    let mut changed = false;
+    for m in migrations {
+        if ledger.applied.remove(m.id) { changed = true; }
+    }
+    if !changed { return Ok(()); }
+
+    // Un ledger sin entradas dice lo mismo que no tener ledger, y deshacer no
+    // debería dejar rastro: si el repo no tenía el archivo antes, no lo tiene ahora.
+    if ledger.applied.is_empty() {
+        let path = Ledger::path_for(repo_root);
+        let _ = std::fs::remove_file(&path);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        return Ok(());
+    }
+    ledger.save()
+}
+
 /// Las capas agrupadas por el repo que las contiene: un ledger por repo.
 fn group_by_repo(layers: &[PathBuf]) -> Vec<(PathBuf, Vec<PathBuf>)> {
     let mut by_repo: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();

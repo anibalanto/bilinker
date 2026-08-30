@@ -94,6 +94,9 @@ enum Command {
         /// Ejecutar el corte: regenerar, verificar, y cambiar .bilink/ por lo migrado
         #[arg(long)]
         cut: bool,
+        /// Deshacer el corte: restaurar .bilink/ desde el backup
+        #[arg(long)]
+        rollback: bool,
     },
 
     /// Manage chains of bilinks
@@ -646,7 +649,7 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Migrate { path, recursive, dry_run, cut } => {
+        Command::Migrate { path, recursive, dry_run, cut, rollback } => {
             let base = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
             let layers = if recursive {
@@ -658,6 +661,22 @@ Eliminar? [y/N] ");
             // Las carpetas transitorias nunca se commitean.
             for layer in &layers {
                 bilink_migrate::cut::exclude_in(&accreta_migrate::repo_root_of(layer))?;
+            }
+
+            if rollback {
+                for layer in &layers {
+                    bilink_migrate::cut::rollback(layer)?;
+                    println!("  restaurado  {}", layer.display());
+                }
+                // El ledger vuelve atrás con los archivos: si quedara escrito, el
+                // repo diría estar migrado con el formato viejo en disco.
+                let repos: std::collections::BTreeSet<PathBuf> =
+                    layers.iter().map(|l| accreta_migrate::repo_root_of(l)).collect();
+                for repo in &repos {
+                    accreta_migrate::forget(repo, &bilink_migrate::all())?;
+                }
+                eprintln!("\ncorte deshecho en {} capa(s).", layers.len());
+                return Ok(());
             }
 
             if cut {

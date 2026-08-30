@@ -76,6 +76,29 @@ pub fn execute(cut: &CutPlan) -> Result<()> {
     Ok(())
 }
 
+/// Deshace un corte: el backup vuelve a `.bilink/`.
+///
+/// Existe porque el corte es el único paso irreversible, y un paso irreversible sin
+/// camino de vuelta obliga a deshacerlo a mano — que es justo lo que la migración
+/// evita en todos los demás pasos.
+///
+/// No toca el ledger: quitarlo es del comando que llama, que sabe qué migraciones
+/// estaba deshaciendo.
+pub fn rollback(layer: &Path) -> Result<()> {
+    let live   = layer.join(".bilink");
+    let backup = layer.join(".bilink-formato-1");
+    if !backup.exists() {
+        bail!("no hay backup en {} — el corte no se hizo, o ya se deshizo", backup.display());
+    }
+    if live.exists() {
+        std::fs::remove_dir_all(&live)
+            .with_context(|| format!("quitando {}", live.display()))?;
+    }
+    std::fs::rename(&backup, &live)
+        .with_context(|| format!("restaurando {} desde el backup", live.display()))?;
+    Ok(())
+}
+
 /// Deja `.bilink-migrate-*` y el backup fuera de git.
 ///
 /// Va al empezar la migración y no en el corte: son temporales, se borran al
