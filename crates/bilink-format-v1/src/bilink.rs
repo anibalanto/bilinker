@@ -22,6 +22,12 @@ pub struct BiLinkFile {
     pub state0: Option<EndpointState>,
     pub state1: Option<EndpointState>,
     pub resolved_at: Option<String>,
+    /// Campos de declaración. Estuvieron en el formato desde siempre y este
+    /// lector no los leía, así que la migración no podía preservarlos —y
+    /// `migrate.md` decía que sí.
+    pub kind: Option<String>,
+    pub name0: Option<String>,
+    pub name1: Option<String>,
 }
 
 impl BiLinkFile {
@@ -30,6 +36,7 @@ impl BiLinkFile {
         Self {
             uuid: uuid.into(),
             link0, link1,
+            kind: None, name0: None, name1: None,
             hash0: None, hash_ast0: None, commit0: None,
             hash1: None, hash_ast1: None, commit1: None,
             range0: None, range1: None,
@@ -63,6 +70,9 @@ impl BiLinkFile {
         let mut state0 = None;
         let mut state1 = None;
         let mut resolved_at = None;
+        let mut kind = None;
+        let mut name0 = None;
+        let mut name1 = None;
         let mut current_key: Option<&'static str> = None;
 
         const KEYS: &[&str] = &[
@@ -72,6 +82,7 @@ impl BiLinkFile {
             "range.0", "range.1",
             "state.0", "state.1",
             "resolved_at",
+            "kind", "name.0", "name.1",
         ];
 
         for line in text.lines() {
@@ -111,6 +122,9 @@ impl BiLinkFile {
                     "state.0"     => { state0     = Some(value); "" }
                     "state.1"     => { state1     = Some(value); "" }
                     "resolved_at" => { resolved_at = Some(value); "" }
+                    "kind"        => { kind        = Some(value); "" }
+                    "name.0"      => { name0       = Some(value); "" }
+                    "name.1"      => { name1       = Some(value); "" }
                     _             => ""
                 });
             } else if let Some(key) = current_key {
@@ -133,6 +147,7 @@ impl BiLinkFile {
             uuid:        uuid.to_string(),
             link0:       parse_ep(link0, "link.0")?,
             link1:       parse_ep(link1, "link.1")?,
+            kind, name0, name1,
             hash0, hash_ast0, commit0,
             hash1, hash_ast1, commit1,
             range0:      range0.as_deref().map(str::parse).transpose()
@@ -155,6 +170,13 @@ impl BiLinkFile {
 
         push_field(&mut out, "link.0", &self.link0.to_string());
         push_field(&mut out, "link.1", &self.link1.to_string());
+
+        // Declaración: va con los `link`, no con la cache. Un round-trip que la
+        // perdiera convertiría a este lector en el lugar donde los campos
+        // desaparecen, que es justo lo que se está arreglando.
+        if let Some(k) = &self.kind  { push_field(&mut out, "kind",   k); }
+        if let Some(n) = &self.name0 { push_field(&mut out, "name.0", n); }
+        if let Some(n) = &self.name1 { push_field(&mut out, "name.1", n); }
 
         let has_cache = self.hash0.is_some() || self.hash1.is_some()
             || self.hash_ast0.is_some() || self.hash_ast1.is_some()

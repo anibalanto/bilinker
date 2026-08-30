@@ -122,7 +122,7 @@ pub fn plan(layer: &Path) -> Result<Plan> {
         }
 
         p.bilinks.insert(old.uuid.clone(), v2::BiLink {
-            kind: None,
+            kind: old.kind.clone(),
             endpoint: v2::Endpoints { zero, one },
         });
     }
@@ -132,9 +132,9 @@ pub fn plan(layer: &Path) -> Result<Plan> {
 
 /// Convierte un endpoint del formato 1 al 2.
 fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> Result<v2::Endpoint> {
-    let (old_link, hash, hash_ast) = match n {
-        0 => (&old.link0, &old.hash0, &old.hash_ast0),
-        _ => (&old.link1, &old.hash1, &old.hash_ast1),
+    let (old_link, hash, hash_ast, name) = match n {
+        0 => (&old.link0, &old.hash0, &old.hash_ast0, &old.name0),
+        _ => (&old.link1, &old.hash1, &old.hash_ast1, &old.name1),
     };
 
     let link = convert_link(layer, old_link, p)?;
@@ -164,7 +164,9 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
         None => { p.pending += 1; None }
     };
 
-    Ok(v2::Endpoint { link, accepted, name: None })
+    // `name.N` pasa a ser `name` adentro de su endpoint: es un dato de una punta
+    // y ahora hay dónde ponerlo.
+    Ok(v2::Endpoint { link, accepted, name: name.clone() })
 }
 
 /// El capture que el endpoint estructural del bilink vecino aprueba.
@@ -368,6 +370,7 @@ mod tests {
         // Aceptado, con endpoint layer.
         std::fs::write(b.join("aaaa1111-0000-4000-8000-000000000001.bilink"), concat!(
             "link.0: capture c0\nlink.1: subsystems/bilinker>impl\n",
+            "kind: governs\nname.0: la-decision\nname.1: lo-gobernado\n",
             "\n# Cache\n",
             "hash.0: c00e0760\nhash_ast.0: 1b9e44a2\ncommit.0: deadbeef\n",
             "hash.1: b2c3d4e5\ncommit.1: cafebabe\n",
@@ -377,6 +380,23 @@ mod tests {
         std::fs::write(b.join("bbbb2222-0000-4000-8000-000000000002.bilink"), concat!(
             "link.0: capture c1\nlink.1: issue 3a\n")).unwrap();
         d
+    }
+
+    /// La migración preserva `kind` y `name.N`.
+    ///
+    /// Son declaración, no cache: sobreviven el cambio de formato porque nadie los
+    /// deriva de nada. `migrate.md` lo decía desde antes de que fuera cierto — el
+    /// lector de formato 1 no los modelaba, así que la migración recibía `None`.
+    #[test]
+    fn the_declaration_fields_survive_the_migration() {
+        let d = layer_v1();
+        let plan = plan(d.path()).unwrap();
+        let bl = plan.bilinks.get("aaaa1111-0000-4000-8000-000000000001")
+            .expect("el bilink aceptado");
+
+        assert_eq!(bl.kind.as_deref(), Some("governs"));
+        assert_eq!(bl.endpoint.get(0).name.as_deref(), Some("la-decision"));
+        assert_eq!(bl.endpoint.get(1).name.as_deref(), Some("lo-gobernado"));
     }
 
     /// **La propiedad que importa.** Correrla dos veces da bytes idénticos.

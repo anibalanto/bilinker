@@ -4,7 +4,7 @@ name    = "bilink-format-v1"
 # migración depende de los dos formatos que puentea (ADR-0006, decisión 2).
 #
 # El conjunto de crates de formato es de sólo-agregar. Éste no se toca más.
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
 [dependencies]

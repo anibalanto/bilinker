@@ -1034,3 +1034,72 @@ fn commit(root: &Path, msg: &str) {
         std::process::Command::new("git").current_dir(root).args(&args).output().unwrap();
     }
 }
+
+// ─── task `4`: kind y name dejan de perderse ────────────────────────────────
+
+/// `chain new` puebla `kind` y `name` sin que nadie abra el YAML.
+///
+/// Son campos de declaración, y todo archivo de bilinker sale de un comando: sin
+/// los flags la única forma de escribirlos sería a mano, que es justo lo que el
+/// formato no le pide a nadie.
+#[test]
+fn chain_new_writes_the_declaration_fields() {
+    let (_t, root) = isolated_git_workspace();
+
+    let (_o, err, ok) = run_in(&root, &[
+        "chain", "new",
+        "--tip", "docs/spec.md",
+        "--tip", "src/Service.java:2:5",
+        "--kind", "governs",
+        "--name.0", "la-decision",
+        "--name.1", "lo-gobernado",
+    ]);
+    assert!(ok, "chain new con --kind falló:\n{err}");
+
+    let bl = std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".yaml")))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .unwrap();
+
+    assert!(bl.contains("kind: governs"),      "falta kind:\n{bl}");
+    assert!(bl.contains("name: la-decision"),  "falta el name del endpoint 0:\n{bl}");
+    assert!(bl.contains("name: lo-gobernado"), "falta el name del endpoint 1:\n{bl}");
+}
+
+/// Sin los flags no aparece ningún campo: son opcionales, no vacíos.
+#[test]
+fn chain_new_omits_the_declaration_fields_when_not_given() {
+    let (_t, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java:2:5"]);
+
+    let bl = std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".yaml")))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .unwrap();
+
+    assert!(!bl.contains("kind:"), "un kind ausente no se escribe:\n{bl}");
+    assert!(!bl.contains("name:"), "un name ausente no se escribe:\n{bl}");
+}
+
+/// Y sobreviven a un `accept`: son inertes, así que nada los toca.
+#[test]
+fn the_declaration_fields_survive_an_accept() {
+    let (_t, root) = isolated_git_workspace();
+    run_in(&root, &[
+        "chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java:2:5",
+        "--kind", "governs", "--name.0", "la-decision",
+    ]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    let bl = std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".yaml")))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .unwrap();
+
+    assert!(bl.contains("kind: governs"),     "accept perdió el kind:\n{bl}");
+    assert!(bl.contains("name: la-decision"), "accept perdió el name:\n{bl}");
+}

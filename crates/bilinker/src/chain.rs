@@ -9,6 +9,21 @@ pub struct ChainNew {
     pub files: Vec<PathBuf>,
 }
 
+/// Los campos de declaración de una cadena nueva.
+///
+/// Son inertes —no entran en ningún hash ni en ningún estado— y por eso viajan
+/// aparte de los tips: no cambian qué se compara, sólo qué dice el vínculo.
+///
+/// Van **sólo en los tips**. Un mid es un tramo de la cadena y no una punta: no
+/// tiene rol semántico que etiquetar, y darle uno inventaría un dato que nadie
+/// declaró. El `kind` sí va en todos, porque clasifica la relación entera.
+#[derive(Default)]
+pub struct Declaration {
+    pub kind: Option<String>,
+    /// El `name` de cada tip, en el orden en que se pasaron.
+    pub name: [Option<String>; 2],
+}
+
 /// Creates a new chain or direct link.
 ///
 /// `tips`: exactly 2 entries of (layer_path_relative_to_root, structural_endpoint).
@@ -18,6 +33,7 @@ pub fn chain_new(
     root: &Path,
     tips: &[(PathBuf, LinkEndpoint)],
     mids: &[PathBuf],
+    decl: &Declaration,
 ) -> Result<ChainNew> {
     if tips.len() != 2 {
         bail!("chain new requires exactly 2 --tip arguments");
@@ -37,7 +53,10 @@ pub fn chain_new(
 
     // Same-layer direct link: both tips in the same directory → one file.
     if n == 2 && normalize(&all_layers[0]) == normalize(&all_layers[1]) {
-        let bl = BiLink::new(tips[0].1.clone(), tips[1].1.clone());
+        let mut bl = BiLink::new(tips[0].1.clone(), tips[1].1.clone());
+        bl.kind = decl.kind.clone();
+        bl.endpoint.get_mut(0).name = decl.name[0].clone();
+        bl.endpoint.get_mut(1).name = decl.name[1].clone();
         let path = bilink_path(root, &all_layers[0], &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -60,7 +79,12 @@ pub fn chain_new(
             (to_prev, to_next)
         };
 
-        let bl = BiLink::new(link0, link1);
+        let mut bl = BiLink::new(link0, link1);
+        bl.kind = decl.kind.clone();
+        // El `name` de un tip viaja con el endpoint estructural, que es el 0 en el
+        // primer nodo y el 1 en el último. Los mids no llevan ninguno.
+        if i == 0        { bl.endpoint.get_mut(0).name = decl.name[0].clone(); }
+        if i == n - 1    { bl.endpoint.get_mut(1).name = decl.name[1].clone(); }
         let path = bilink_path(root, layer, &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -237,7 +261,7 @@ mod tests {
         let r = chain_new(d.path(),
             &[(PathBuf::from("."), ep("capture aaa")),
               (PathBuf::from(".stratum/impl"), ep("capture bbb"))],
-            &[]).unwrap();
+            &[], &Declaration::default()).unwrap();
 
         assert_eq!(r.files.len(), 2);
         for f in &r.files { assert!(f.exists(), "no se escribió {}", f.display()); }
@@ -255,7 +279,7 @@ mod tests {
         let r = chain_new(d.path(),
             &[(PathBuf::from("."), ep("capture aaa")),
               (PathBuf::from("."), ep("capture bbb"))],
-            &[]).unwrap();
+            &[], &Declaration::default()).unwrap();
         assert_eq!(r.files.len(), 1);
     }
 
@@ -266,7 +290,7 @@ mod tests {
         let r = chain_new(d.path(),
             &[(PathBuf::from("."), ep("capture aaa")),
               (PathBuf::from("."), ep("capture bbb"))],
-            &[]).unwrap();
+            &[], &Declaration::default()).unwrap();
         let bl = BiLink::load(&r.files[0]).unwrap();
         assert!(bl.endpoint.zero.accepted.is_none());
         assert!(bl.endpoint.one.accepted.is_none());

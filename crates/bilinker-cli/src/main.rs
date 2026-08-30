@@ -196,6 +196,15 @@ enum ChainCommand {
         /// Intermediate layer (can repeat, order matters)
         #[arg(long = "mid", action = ArgAction::Append)]
         mid: Vec<String>,
+        /// El `kind` del bilink: qué clase de relación declara
+        #[arg(long)]
+        kind: Option<String>,
+        /// El `name` del endpoint 0: su rol en la relación
+        #[arg(long = "name.0", value_name = "ETIQUETA")]
+        name0: Option<String>,
+        /// El `name` del endpoint 1
+        #[arg(long = "name.1", value_name = "ETIQUETA")]
+        name1: Option<String>,
     },
     /// Show complete state of a chain
     Status { uuid: String },
@@ -887,7 +896,7 @@ Eliminar? [y/N] ");
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid } => {
+            ChainCommand::New { tip, mid, kind, name0, name1 } => {
                 if tip.len() != 2 {
                     anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                 }
@@ -897,7 +906,13 @@ Eliminar? [y/N] ");
                 let tips = vec![(layer0, ep0), (layer1, ep1)];
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
-                let result = bilinker::chain::chain_new(&cwd, &tips, &mids)?;
+                // `kind` y `name` son declaración, y todo archivo de bilinker sale
+                // de un comando: sin estos flags la única forma de poblarlos sería
+                // abrir el YAML, que es lo que el formato no le pide a nadie.
+                let decl = bilinker::chain::Declaration {
+                    kind, name: [name0, name1],
+                };
+                let result = bilinker::chain::chain_new(&cwd, &tips, &mids, &decl)?;
 
                 println!("Created chain: {}", result.uuid);
                 println!();
