@@ -1,0 +1,21 @@
+[package]
+name    = "bilink-format-v1"
+# Formato 1, congelado. Existe sólo para que la migración 002 pueda leerlo: una
+# migración depende de los dos formatos que puentea (ADR-0006, decisión 2).
+#
+# El conjunto de crates de formato es de sólo-agregar. Éste no se toca más.
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow  = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+schemars    = "1"
+stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
+
+[dev-dependencies]
+tempfile = "3"
+# Sólo para el guard de versión: el formato no hashea nada en runtime.
+sha2     = "0.10"
+hex      = "0.4"

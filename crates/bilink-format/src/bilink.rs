@@ -1,382 +1,209 @@
+//! El archivo `<uuid>.yaml`: una declaración y dos decisiones.
+
 use std::path::{Path, PathBuf};
-use anyhow::{bail, Context, Result};
+
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::capture::CaptureFile;
-use crate::link::{ByteRange, EndpointState, LinkEndpoint};
+use crate::link::LinkEndpoint;
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct BiLinkFile {
-    pub uuid: String,
-    pub link0: LinkEndpoint,
-    pub link1: LinkEndpoint,
-    pub hash0: Option<String>,
-    pub hash_ast0: Option<String>,
-    pub commit0: Option<String>,
-    pub hash1: Option<String>,
-    pub hash_ast1: Option<String>,
-    pub commit1: Option<String>,
-    pub range0: Option<ByteRange>,
-    pub range1: Option<ByteRange>,
-    pub state0: Option<EndpointState>,
-    pub state1: Option<EndpointState>,
-    pub resolved_at: Option<String>,
+/// Un bilink: exactamente dos endpoints, distinguibles por su índice.
+///
+/// **La aridad es fija y la garantiza el tipo.** Tres endpoints se rechaza; que
+/// falte el `1`, también. Deja de ser algo que hay que verificar y pasa a ser algo
+/// que no se puede escribir.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BiLink {
+    /// Clasifica la relación. Inerte: no afecta ningún hash ni ningún estado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub endpoint: Endpoints,
 }
 
-impl BiLinkFile {
-    /// Un bilink recién creado: dos endpoints, sin nada de cache.
-    pub fn new(uuid: impl Into<String>, link0: LinkEndpoint, link1: LinkEndpoint) -> Self {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoints {
+    #[serde(rename = "0")] pub zero: Endpoint,
+    #[serde(rename = "1")] pub one:  Endpoint,
+}
+
+/// Un extremo: a qué apunta, y qué se aprobó de él.
+///
+/// > `apply` escribe `link`. `accept` escribe `accepted`. `check` no escribe nada.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoint {
+    pub link: LinkEndpoint,
+    /// **Su ausencia es `PENDING`, literalmente.** La invariante de aceptación no
+    /// se enuncia: es este `Option`, y el bloque no se puede escribir a medias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<Accepted>,
+    /// Etiqueta del rol de este extremo. Inerte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Lo que alguien aprobó: una ubicación y un contenido.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Accepted {
+    /// La ubicación aprobada. Ausente en un endpoint `issue`, que no tiene capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkEndpoint>,
+    pub hash: String,
+    /// Sólo donde hay gramática tree-sitter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_ast: Option<String>,
+}
+
+impl Endpoints {
+    pub fn get(&self, n: u8) -> &Endpoint {
+        match n { 0 => &self.zero, 1 => &self.one, _ => panic!("endpoint {n}: la aridad es 0 o 1") }
+    }
+    pub fn get_mut(&mut self, n: u8) -> &mut Endpoint {
+        match n { 0 => &mut self.zero, 1 => &mut self.one, _ => panic!("endpoint {n}: la aridad es 0 o 1") }
+    }
+}
+
+impl BiLink {
+    pub fn new(link0: LinkEndpoint, link1: LinkEndpoint) -> Self {
         Self {
-            uuid: uuid.into(),
-            link0, link1,
-            hash0: None, hash_ast0: None, commit0: None,
-            hash1: None, hash_ast1: None, commit1: None,
-            range0: None, range1: None,
-            state0: None, state1: None,
-            resolved_at: None,
+            kind: None,
+            endpoint: Endpoints {
+                zero: Endpoint { link: link0, accepted: None, name: None },
+                one:  Endpoint { link: link1, accepted: None, name: None },
+            },
         }
+    }
+
+    pub fn dir(layer: &Path) -> PathBuf { layer.join(".bilink") }
+
+    pub fn path_in(layer: &Path, uuid: &str) -> PathBuf {
+        Self::dir(layer).join(format!("{uuid}.yaml"))
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let uuid = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        Self::parse(&text, &uuid).with_context(|| format!("parsing {}", path.display()))
-    }
-
-    pub fn parse(text: &str, uuid: &str) -> Result<Self> {
-        let mut link0: Option<String> = None;
-        let mut link1: Option<String> = None;
-        let mut hash0 = None;
-        let mut hash_ast0 = None;
-        let mut commit0 = None;
-        let mut hash1 = None;
-        let mut hash_ast1 = None;
-        let mut commit1 = None;
-        let mut range0 = None;
-        let mut range1 = None;
-        let mut state0 = None;
-        let mut state1 = None;
-        let mut resolved_at = None;
-        let mut current_key: Option<&'static str> = None;
-
-        const KEYS: &[&str] = &[
-            "link.0", "link.1",
-            "hash.0", "hash_ast.0", "commit.0",
-            "hash.1", "hash_ast.1", "commit.1",
-            "range.0", "range.1",
-            "state.0", "state.1",
-            "resolved_at",
-        ];
-
-        for line in text.lines() {
-            if line.trim().is_empty() || line.trim().starts_with('#') {
-                current_key = None;
-                continue;
-            }
-
-            let is_new_key = KEYS.iter().any(|k| {
-                line.starts_with(k) && line[k.len()..].starts_with(':')
-            });
-
-            // Una línea a columna 0 con forma `clave:` termina la continuación,
-            // aunque la clave sea desconocida. Sin esto, cualquier campo que ya
-            // no reconozcamos —`subgraph.N` de versiones viejas, por ejemplo— se
-            // concatenaría al valor de `link.N` y corrompería la query.
-            if !is_new_key && looks_like_key(line) {
-                current_key = None;
-                continue;
-            }
-
-            if is_new_key {
-                let colon = line.find(':').unwrap();
-                let key   = line[..colon].trim();
-                let value = line[colon + 1..].trim().to_string();
-                current_key = Some(match key {
-                    "link.0"      => { link0      = Some(value); "link.0" }
-                    "link.1"      => { link1      = Some(value); "link.1" }
-                    "hash.0"      => { hash0      = Some(value); "" }
-                    "hash_ast.0"  => { hash_ast0  = Some(value); "" }
-                    "commit.0"    => { commit0    = Some(value); "" }
-                    "hash.1"      => { hash1      = Some(value); "" }
-                    "hash_ast.1"  => { hash_ast1  = Some(value); "" }
-                    "commit.1"    => { commit1    = Some(value); "" }
-                    "range.0"     => { range0     = Some(value); "" }
-                    "range.1"     => { range1     = Some(value); "" }
-                    "state.0"     => { state0     = Some(value); "" }
-                    "state.1"     => { state1     = Some(value); "" }
-                    "resolved_at" => { resolved_at = Some(value); "" }
-                    _             => ""
-                });
-            } else if let Some(key) = current_key {
-                let cont = line.trim();
-                match key {
-                    "link.0" => link0.get_or_insert_default().push_str(&format!(" {cont}")),
-                    "link.1" => link1.get_or_insert_default().push_str(&format!(" {cont}")),
-                    _ => {}
-                }
-            }
-        }
-
-        let parse_ep = |raw: Option<String>, field: &str| -> Result<LinkEndpoint> {
-            raw.with_context(|| format!("missing '{field}' field"))?
-                .parse::<LinkEndpoint>()
-                .with_context(|| format!("parsing {field}"))
-        };
-
-        Ok(BiLinkFile {
-            uuid:        uuid.to_string(),
-            link0:       parse_ep(link0, "link.0")?,
-            link1:       parse_ep(link1, "link.1")?,
-            hash0, hash_ast0, commit0,
-            hash1, hash_ast1, commit1,
-            range0:      range0.as_deref().map(str::parse).transpose()
-                             .context("parsing range.0")?,
-            range1:      range1.as_deref().map(str::parse).transpose()
-                             .context("parsing range.1")?,
-            state0:      state0.as_deref().map(str::parse).transpose()
-                             .context("parsing state.0")?,
-            state1:      state1.as_deref().map(str::parse).transpose()
-                             .context("parsing state.1")?,
-            resolved_at,
-        })
+            .with_context(|| format!("leyendo {}", path.display()))?;
+        serde_yaml_ng::from_str(&text).with_context(|| format!("parseando {}", path.display()))
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut out = String::new();
-
-        push_field(&mut out, "link.0", &self.link0.to_string());
-        push_field(&mut out, "link.1", &self.link1.to_string());
-
-        let has_cache = self.hash0.is_some() || self.hash1.is_some()
-            || self.hash_ast0.is_some() || self.hash_ast1.is_some()
-            || self.state0.is_some() || self.state1.is_some()
-            || self.range0.is_some() || self.range1.is_some()
-            || self.resolved_at.is_some();
-
-        if has_cache {
-            out.push_str("\n# Cache\n");
-            if let Some(h) = &self.hash0     { push_field(&mut out, "hash.0",     h); }
-            if let Some(h) = &self.hash_ast0 { push_field(&mut out, "hash_ast.0", h); }
-            if let Some(c) = &self.commit0   { push_field(&mut out, "commit.0",   c); }
-            if let Some(r) = &self.range0    { push_field(&mut out, "range.0",    &r.to_string()); }
-            if let Some(h) = &self.hash1     { push_field(&mut out, "hash.1",     h); }
-            if let Some(h) = &self.hash_ast1 { push_field(&mut out, "hash_ast.1", h); }
-            if let Some(c) = &self.commit1   { push_field(&mut out, "commit.1",   c); }
-            if let Some(r) = &self.range1    { push_field(&mut out, "range.1",    &r.to_string()); }
-            if let Some(s) = &self.state0    { push_field(&mut out, "state.0",    &s.to_string()); }
-            if let Some(s) = &self.state1    { push_field(&mut out, "state.1",    &s.to_string()); }
-            if let Some(t) = &self.resolved_at { push_field(&mut out, "resolved_at", t); }
-        }
-
-        std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+        std::fs::write(path, self.to_yaml()?)?;
+        Ok(())
     }
 
-    // ─── accessors por índice de endpoint ─────────────────────────────────────
-
-    pub fn link(&self, n: u8) -> &LinkEndpoint {
-        if n == 0 { &self.link0 } else { &self.link1 }
+    pub fn to_yaml(&self) -> Result<String> {
+        serde_yaml_ng::to_string(self).context("serializando el bilink")
     }
 
-    pub fn link_mut(&mut self, n: u8) -> &mut LinkEndpoint {
-        if n == 0 { &mut self.link0 } else { &mut self.link1 }
-    }
-
-    pub fn state(&self, n: u8) -> &Option<EndpointState> {
-        if n == 0 { &self.state0 } else { &self.state1 }
-    }
-
-    pub fn set_state(&mut self, n: u8, s: Option<EndpointState>) {
-        if n == 0 { self.state0 = s } else { self.state1 = s }
-    }
-
-    pub fn hash(&self, n: u8) -> Option<&str> {
-        if n == 0 { self.hash0.as_deref() } else { self.hash1.as_deref() }
-    }
-
-    pub fn hash_ast(&self, n: u8) -> Option<&str> {
-        if n == 0 { self.hash_ast0.as_deref() } else { self.hash_ast1.as_deref() }
-    }
-
-    pub fn commit(&self, n: u8) -> Option<&str> {
-        if n == 0 { self.commit0.as_deref() } else { self.commit1.as_deref() }
-    }
-
-    /// Índice del endpoint estructural, si hay exactamente uno.
-    pub fn structural_n(&self) -> Option<u8> {
-        match (self.link0.is_structural(), self.link1.is_structural()) {
-            (true, _) => Some(0),
-            (_, true) => Some(1),
-            _         => None,
-        }
-    }
-
-    /// Resuelve el endpoint `n` a un capture.
+    /// El `accepted` del endpoint estructural, si hay uno.
     ///
-    /// Para endpoints migrados carga el `.capture`. Para los legacy sintetiza uno
-    /// en memoria desde la referencia embebida y `range.N`, de modo que el resto
-    /// del código no tenga que distinguir los dos formatos. `bilinker migrate`
-    /// no hace más que persistir ese capture sintetizado.
-    ///
-    /// `Ok(None)` si el endpoint no es estructural.
-    pub fn capture_for(&self, layer: &Path, n: u8) -> Result<Option<CaptureFile>> {
-        match self.link(n) {
-            LinkEndpoint::Capture(uuid) => CaptureFile::load_in(layer, uuid).map(Some),
-            LinkEndpoint::LegacyStructural(sref) => Ok(Some(CaptureFile {
-                uuid:        format!("legacy-{}-{n}", self.uuid),
-                sref:        sref.clone(),
-                range:       if n == 0 { self.range0.clone() } else { self.range1.clone() },
-                state:       None,
-                resolved_at: self.resolved_at.clone(),
-            })),
-            _ => Ok(None),
-        }
-    }
-
-    /// Hash of the structural endpoint's accepted content hash.
-    /// Used by adjacent layer endpoints instead of hashing the full bilink file.
-    pub fn structural_hash(&self) -> Option<&str> {
-        self.structural_n().and_then(|n| self.hash(n))
-    }
-
-    pub fn structural_commit(&self) -> Option<&str> {
-        self.structural_n().and_then(|n| self.commit(n))
-    }
-
-    pub fn find_by_id(bilinker_dir: &Path, id: &str) -> Result<(PathBuf, BiLinkFile)> {
-        for entry in walkdir(bilinker_dir)? {
-            if entry.extension().and_then(|e| e.to_str()) == Some("bilink") {
-                if let Ok(bl) = BiLinkFile::load(&entry) {
-                    if bl.uuid == id || bl.uuid.starts_with(id) {
-                        return Ok((entry, bl));
-                    }
-                }
+    /// Es lo que un endpoint `path` copia de su vecino: los dos valores, no el hash
+    /// del archivo. Copiar el archivo entero haría que cualquier reordenamiento o
+    /// comentario del vecino disparara `CHAIN_DIRTY`.
+    pub fn structural_accepted(&self) -> Option<&Accepted> {
+        for n in [0u8, 1u8] {
+            let e = self.endpoint.get(n);
+            if e.link.is_structural() {
+                return e.accepted.as_ref();
             }
         }
-        bail!("no .bilink file with id '{id}' found under {}", bilinker_dir.display())
+        None
     }
+}
+
+/// Los archivos de bilink de una carpeta `.bilink/`, sin recursión.
+///
+/// Sin recursión a propósito: `capture/`, `cache/` e `index/` son subcarpetas de la
+/// misma raíz y ninguna contiene bilinks.
+pub fn bilink_files(bilink_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(bilink_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("yaml"))
+        .filter(|p| !p.file_name().and_then(|n| n.to_str())
+                      .map(|n| n.starts_with('.')).unwrap_or(false))
+        .collect();
+    out.sort();
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::link::{ByteRange, EndpointState};
     use tempfile::tempdir;
 
-    fn structural(file: &str) -> LinkEndpoint {
-        LinkEndpoint::LegacyStructural(crate::link::StructuralRef {
-            file: file.into(),
-            query: None,
-            range: None,
-        })
-    }
-
-    fn layer(path: &str) -> LinkEndpoint {
-        LinkEndpoint::Layer(stratum::parse_path(path).unwrap())
-    }
+    fn ep(raw: &str) -> LinkEndpoint { raw.parse().unwrap() }
 
     #[test]
-    fn roundtrip_empty_cache() {
-        let dir  = tempdir().unwrap();
-        let path = dir.path().join("test-uuid.bilink");
-
-        let original = BiLinkFile::new("test-uuid", structural("file.md"), layer(".stratum/impl"));
-        original.write(&path).unwrap();
-
-        let loaded = BiLinkFile::load(&path).unwrap();
-        assert_eq!(loaded.uuid, "test-uuid");
-        assert!(loaded.hash0.is_none());
-        assert!(loaded.state0.is_none());
-    }
-
-    #[test]
-    fn roundtrip_full_cache() {
-        let dir  = tempdir().unwrap();
-        let path = dir.path().join("abc123.bilink");
-
-        let mut original = BiLinkFile::new("abc123", structural("a.md"), structural("b.md"));
-        original.hash0   = Some("aabbcc".into());
-        original.commit0 = Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".into());
-        original.hash1   = Some("ddeeff".into());
-        original.commit1 = Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1".into());
-        original.range0  = Some(ByteRange { start: 10, end: 50 });
-        original.range1  = Some(ByteRange { start: 0, end: 100 });
-        original.state0  = Some(EndpointState::Ok);
-        original.state1  = Some(EndpointState::Altered);
-        original.resolved_at = Some("2026-05-27T00:00:00Z".into());
-        original.write(&path).unwrap();
-
-        let loaded = BiLinkFile::load(&path).unwrap();
-        assert_eq!(loaded.hash0.as_deref(), Some("aabbcc"));
-        assert_eq!(loaded.commit0.as_deref(), Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
-        assert_eq!(loaded.hash1.as_deref(), Some("ddeeff"));
-        assert_eq!(loaded.commit1.as_deref(), Some("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"));
-        assert_eq!(loaded.range0, Some(ByteRange { start: 10, end: 50 }));
-        assert_eq!(loaded.state0, Some(EndpointState::Ok));
-        assert_eq!(loaded.state1, Some(EndpointState::Altered));
-        assert_eq!(loaded.resolved_at.as_deref(), Some("2026-05-27T00:00:00Z"));
-    }
-
-    #[test]
-    fn uuid_comes_from_filename() {
-        let text = "link.0: file.md\nlink.1: .stratum/impl\n";
-        let bl = BiLinkFile::parse(text, "file-stem-uuid").unwrap();
-        assert_eq!(bl.uuid, "file-stem-uuid");
-    }
-
-    #[test]
-    fn find_by_id_locates_file() {
+    fn a_bilink_round_trips() {
         let dir = tempdir().unwrap();
-        let bl = BiLinkFile::new("my-uuid", structural("a.md"), structural("b.md"));
-        let path = dir.path().join("my-uuid.bilink");
-        bl.write(&path).unwrap();
-
-        let (found_path, found_bl) = BiLinkFile::find_by_id(dir.path(), "my-uuid").unwrap();
-        assert_eq!(found_path, path);
-        assert_eq!(found_bl.uuid, "my-uuid");
+        let mut bl = BiLink::new(ep("capture abc123"), ep("path >impl"));
+        bl.endpoint.zero.accepted = Some(Accepted {
+            link: Some(ep("capture abc123")),
+            hash: "c00e0760".into(),
+            hash_ast: Some("1b9e44a2".into()),
+        });
+        let p = BiLink::path_in(dir.path(), "7f3d8e9a");
+        bl.write(&p).unwrap();
+        assert_eq!(BiLink::load(&p).unwrap(), bl);
     }
-}
 
-/// ¿La línea arranca a columna 0 con forma `clave:`?
-///
-/// Las continuaciones de query tree-sitter van siempre indentadas, así que no
-/// pueden confundirse con esto aunque contengan `:` (`name: (identifier)`).
-fn looks_like_key(line: &str) -> bool {
-    if line.starts_with(char::is_whitespace) { return false; }
-    let Some(colon) = line.find(':') else { return false };
-    let key = &line[..colon];
-    !key.is_empty()
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-}
+    /// La aridad no se verifica: no se puede escribir otra cosa.
+    #[test]
+    fn the_arity_is_the_type() {
+        let three = "endpoint:\n  0: {link: capture a}\n  1: {link: capture b}\n  2: {link: capture c}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(three).unwrap_err().to_string();
+        assert!(err.contains('2'), "tres endpoints se rechaza: {err}");
 
-fn push_field(out: &mut String, key: &str, value: &str) {
-    out.push_str(key);
-    out.push_str(": ");
-    out.push_str(value);
-    out.push('\n');
-}
-
-pub fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut result = Vec::new();
-    if !dir.exists() {
-        return Ok(result);
+        let missing = "endpoint:\n  0: {link: capture a}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(missing).unwrap_err().to_string();
+        assert!(err.contains('1'), "que falte el 1 se rechaza: {err}");
     }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            result.extend(walkdir(&path)?);
-        } else {
-            result.push(path);
-        }
+
+    /// `accepted` está completo o ausente. No hay medio bloque.
+    #[test]
+    fn accepted_is_all_or_nothing() {
+        let no_hash = "endpoint:\n  0: {link: capture a, accepted: {link: capture a}}\n  1: {link: capture b}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(no_hash).unwrap_err().to_string();
+        assert!(err.contains("hash"), "accepted sin hash se rechaza: {err}");
+
+        let loose = "endpoint:\n  0: {link: capture a, hash: deadbeef}\n  1: {link: capture b}\n";
+        assert!(serde_yaml_ng::from_str::<BiLink>(loose).is_err(),
+            "un hash suelto fuera del bloque se rechaza");
     }
-    Ok(result)
+
+    /// Su ausencia *es* PENDING: no hay campo que lo diga.
+    #[test]
+    fn a_fresh_bilink_has_no_accepted() {
+        let bl = BiLink::new(ep("capture a"), ep("path >impl"));
+        assert!(bl.endpoint.zero.accepted.is_none());
+        let y = bl.to_yaml().unwrap();
+        assert!(!y.contains("accepted"), "sin aceptar, el bloque no se escribe:\n{y}");
+    }
+
+    /// Las claves `0` y `1` matchean por nombre, no por posición.
+    #[test]
+    fn the_endpoint_keys_match_by_name() {
+        let reversed = "endpoint:\n  1: {link: path >impl}\n  0: {link: capture a}\n";
+        let bl: BiLink = serde_yaml_ng::from_str(reversed).unwrap();
+        assert_eq!(bl.endpoint.zero.link, ep("capture a"));
+        assert_eq!(bl.endpoint.one.link, ep("path >impl"));
+    }
+
+    /// Un campo desconocido se rechaza con su nombre, nunca se descarta.
+    ///
+    /// Descartarlo en silencio es cómo un binario viejo vaciaría las aceptaciones.
+    #[test]
+    fn an_unknown_field_is_rejected_by_name() {
+        let raw = "endpoint:\n  0: {link: capture a}\n  1: {link: capture b}\nresolved_at: 2026-01-01\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
+        assert!(err.contains("resolved_at"), "{err}");
+    }
 }

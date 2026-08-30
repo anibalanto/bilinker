@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 accreta-migrate = { path = "../accreta-migrate" }
-bilink-format  = { path = "../bilink-format" }
+# Todavía el formato 1: el rewiring a v2 es lo que sigue. Los dos coexisten a
+# propósito —ADR-0003 § "El problema real es de bootstrap"— y el alias deja que
+# `bilinker` diga `bilink_format` sin saber cuál está linkeado.
+bilink-format  = { path = "../bilink-format-v1", package = "bilink-format-v1" }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 tree-sitter-java = "0.23"

@@ -1,260 +1,164 @@
-//! El archivo `.capture`: dónde está un fragmento, y cómo volver a encontrarlo.
+//! El archivo `capture/<id>.yaml`: una ubicación, y nada más.
 //!
-//! Sólo el formato. El algoritmo que *produce* un capture —el walk-up por el AST,
-//! la construcción de la query tree-sitter— vive en `bilinker::capture`, porque
-//! depende de tree-sitter y de las gramáticas, y el formato no depende de nada.
+//! El id es `H(file, query, offset)` — el hash de lo único que contiene. De ahí
+//! salen la inmutabilidad y la deduplicación por construcción.
 
-use std::fmt;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
+
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::link::{ByteRange, StructuralRef};
+use crate::link::ByteRange;
 
-/// Estado de resolución de un capture: ¿dónde está el fragmento?
+/// Dónde está un fragmento: qué archivo, qué nodo, y qué parte del nodo.
 ///
-/// Distinto de `EndpointState`, que responde si lo que hay coincide con lo
-/// aceptado. Un capture no sabe nada de hashes aceptados.
+/// **Es inmutable.** Cambiarle un campo le cambiaría el id, así que no se cambia:
+/// se acuña otro. Ningún comando modifica un capture existente.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub enum CaptureState {
-    /// La query matchea; `range` actualizado.
-    #[serde(rename = "RESOLVED")]
-    Resolved,
-    /// El archivo cambió de path (git rename ≥ 50%).
-    #[serde(rename = "MOVED")]
-    Moved,
-    /// Anchor renombrado; nodo del mismo tipo con nombre distinto.
-    #[serde(rename = "REANCHORED")]
-    Reanchored,
-    /// La query no matchea y no se localiza el anchor.
-    #[serde(rename = "UNANCHORED")]
-    Unanchored,
-    /// El archivo no existe; eliminación rastreable en git.
-    #[serde(rename = "DELETED")]
-    Deleted,
-    /// El archivo no se puede leer o parsear.
-    #[serde(rename = "BROKEN")]
-    Broken,
+#[serde(deny_unknown_fields)]
+pub struct Capture {
+    /// Path relativo a la raíz de la capa.
+    pub file: String,
+    /// Query tree-sitter con captura `@target`. Ausente = el archivo completo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Sub-rango relativo al nodo matcheado. Ausente = el nodo entero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<ByteRange>,
 }
 
-impl CaptureState {
-    /// Un capture que no está en este conjunto no permite evaluar a sus referentes.
-    pub fn is_resolved(&self) -> bool {
-        matches!(self, Self::Resolved)
+impl Capture {
+    /// `H(file, query, offset)` — el id, que es el nombre del archivo.
+    ///
+    /// Se calcula sobre los campos y no sobre el texto serializado: dos formas de
+    /// escribir el mismo YAML darían dos ids para la misma ubicación.
+    pub fn id(&self) -> String {
+        let mut h = Sha256::new();
+        h.update(self.file.as_bytes());
+        h.update([0]);
+        h.update(self.query.as_deref().unwrap_or("").as_bytes());
+        h.update([0]);
+        h.update(self.offset.as_ref().map(|o| o.to_string()).unwrap_or_default().as_bytes());
+        hex::encode(h.finalize())[..32].to_string()
     }
-}
 
-impl fmt::Display for CaptureState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Resolved   => write!(f, "RESOLVED"),
-            Self::Moved      => write!(f, "MOVED"),
-            Self::Reanchored => write!(f, "REANCHORED"),
-            Self::Unanchored => write!(f, "UNANCHORED"),
-            Self::Deleted    => write!(f, "DELETED"),
-            Self::Broken     => write!(f, "BROKEN"),
-        }
-    }
-}
-
-impl FromStr for CaptureState {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s.trim() {
-            "RESOLVED"   => Ok(Self::Resolved),
-            "MOVED"      => Ok(Self::Moved),
-            "REANCHORED" => Ok(Self::Reanchored),
-            "UNANCHORED" => Ok(Self::Unanchored),
-            "DELETED"    => Ok(Self::Deleted),
-            "BROKEN"     => Ok(Self::Broken),
-            other        => anyhow::bail!("estado de capture desconocido: '{other}'"),
-        }
-    }
-}
-
-/// Un capture: dónde está un fragmento, y cómo volver a encontrarlo.
-///
-/// No contiene hashes ni commits — eso es aceptación, y vive en el bilink.
-/// Varios bilinks pueden referenciar el mismo capture.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CaptureFile {
-    pub uuid: String,
-    /// `file`, `query` y `offset` (el `range` de `StructuralRef` es el offset
-    /// relativo al nodo matcheado, no el absoluto en el archivo).
-    pub sref: StructuralRef,
-    /// Cache: byte range absoluto de la última resolución.
-    pub range: Option<ByteRange>,
-    pub state: Option<CaptureState>,
-    pub resolved_at: Option<String>,
-}
-
-impl CaptureFile {
     /// `<layer>/.bilink/capture/`
     pub fn dir(layer: &Path) -> PathBuf {
         layer.join(".bilink").join("capture")
     }
 
-    pub fn path_in(layer: &Path, uuid: &str) -> PathBuf {
-        Self::dir(layer).join(format!("{uuid}.capture"))
+    pub fn path_in(layer: &Path, id: &str) -> PathBuf {
+        Self::dir(layer).join(format!("{id}.yaml"))
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let uuid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        Self::parse(&text, &uuid).with_context(|| format!("parsing {}", path.display()))
+    pub fn load_in(layer: &Path, id: &str) -> Result<Self> {
+        let path = Self::path_in(layer, id);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("leyendo el capture {}", path.display()))?;
+        serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("parseando {}", path.display()))
     }
 
-    /// Carga el capture `uuid` de la capa `layer`.
-    pub fn load_in(layer: &Path, uuid: &str) -> Result<Self> {
-        Self::load(&Self::path_in(layer, uuid))
-    }
-
-    pub fn parse(text: &str, uuid: &str) -> Result<Self> {
-        const KEYS: &[&str] = &["file", "query", "offset", "range", "state", "resolved_at"];
-
-        let mut file: Option<String> = None;
-        let mut query: Option<String> = None;
-        let mut offset: Option<String> = None;
-        let mut range: Option<String> = None;
-        let mut state: Option<String> = None;
-        let mut resolved_at: Option<String> = None;
-        let mut current_key: Option<&'static str> = None;
-
-        for line in text.lines() {
-            if line.trim().is_empty() || line.trim().starts_with('#') {
-                current_key = None;
-                continue;
-            }
-            let is_new_key = KEYS.iter().any(|k| {
-                line.starts_with(k) && line[k.len()..].starts_with(':')
-            });
-            if is_new_key {
-                let colon = line.find(':').unwrap();
-                let key   = line[..colon].trim();
-                let value = line[colon + 1..].trim().to_string();
-                current_key = Some(match key {
-                    "file"        => { file        = Some(value); "" }
-                    "query"       => { query       = Some(value); "query" }
-                    "offset"      => { offset      = Some(value); "" }
-                    "range"       => { range       = Some(value); "" }
-                    "state"       => { state       = Some(value); "" }
-                    "resolved_at" => { resolved_at = Some(value); "" }
-                    _             => ""
-                });
-            } else if current_key == Some("query") {
-                // Las queries tree-sitter son multilínea.
-                query.get_or_insert_default().push_str(&format!("\n  {}", line.trim()));
-            }
+    /// Escribe el capture bajo su propio id. No-op si ya existía.
+    ///
+    /// Devuelve `(id, path, ya_existía)`. Que exista no es una condición especial:
+    /// el id sale del contenido, así que el mismo fragmento es el mismo archivo.
+    pub fn write_in(&self, layer: &Path) -> Result<(String, PathBuf, bool)> {
+        let id   = self.id();
+        let path = Self::path_in(layer, &id);
+        if path.exists() {
+            return Ok((id, path, true));
         }
-
-        Ok(CaptureFile {
-            uuid: uuid.to_string(),
-            sref: StructuralRef {
-                file:  file.context("missing 'file' field")?,
-                query,
-                range: offset.as_deref().map(str::parse).transpose()
-                           .context("parsing offset")?,
-            },
-            range: range.as_deref().map(str::parse).transpose().context("parsing range")?,
-            state: state.as_deref().map(str::parse).transpose().context("parsing state")?,
-            resolved_at,
-        })
+        std::fs::create_dir_all(Self::dir(layer))?;
+        std::fs::write(&path, self.to_yaml()?)?;
+        Ok((id, path, false))
     }
 
-    pub fn write(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut out = String::new();
-        out.push_str(&format!("file:   {}\n", self.sref.file));
-        if let Some(q) = &self.sref.query {
-            out.push_str(&format!("query:  {q}\n"));
-        }
-        if let Some(o) = &self.sref.range {
-            out.push_str(&format!("offset: {o}\n"));
-        }
-
-        if self.range.is_some() || self.state.is_some() || self.resolved_at.is_some() {
-            out.push_str("\n# Cache\n");
-            if let Some(r) = &self.range       { out.push_str(&format!("range:       {r}\n")); }
-            if let Some(s) = &self.state       { out.push_str(&format!("state:       {s}\n")); }
-            if let Some(t) = &self.resolved_at { out.push_str(&format!("resolved_at: {t}\n")); }
-        }
-
-        std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
+    pub fn to_yaml(&self) -> Result<String> {
+        serde_yaml_ng::to_string(self).context("serializando el capture")
     }
 
-    pub fn write_in(&self, layer: &Path) -> Result<PathBuf> {
-        let path = Self::path_in(layer, &self.uuid);
-        self.write(&path)?;
-        Ok(path)
-    }
-
-    /// Todos los captures de una capa.
-    pub fn all_in(layer: &Path) -> Result<Vec<CaptureFile>> {
+    /// Todos los captures de la capa, con su id.
+    pub fn all_in(layer: &Path) -> Result<Vec<(String, Self)>> {
         let dir = Self::dir(layer);
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(out) };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("capture") { continue; }
-            if let Ok(c) = Self::load(&path) { out.push(c); }
+        for e in entries.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("yaml") { continue; }
+            let Some(id) = p.file_stem().and_then(|x| x.to_str()) else { continue };
+            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            if let Ok(cap) = serde_yaml_ng::from_str::<Self>(&text) {
+                out.push((id.to_string(), cap));
+            }
         }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
     }
 }
 
-/// Resuelve un endpoint a su referencia estructural, sin necesidad del bilink.
-///
-/// Carga el capture si el endpoint está migrado; usa la referencia embebida si
-/// todavía es legacy. `Ok(None)` si el endpoint no es estructural.
-pub fn sref_of(layer: &Path, endpoint: &crate::link::LinkEndpoint) -> Result<Option<StructuralRef>> {
-    use crate::link::LinkEndpoint;
-    match endpoint {
-        LinkEndpoint::Capture(uuid) => Ok(Some(CaptureFile::load_in(layer, uuid)?.sref)),
-        LinkEndpoint::LegacyStructural(sref) => Ok(Some(sref.clone())),
-        _ => Ok(None),
-    }
-}
-
 #[cfg(test)]
-mod capture_file_tests {
+mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn sref(file: &str, query: Option<&str>) -> StructuralRef {
-        StructuralRef { file: file.into(), query: query.map(String::from), range: None }
+    fn cap(file: &str, query: Option<&str>) -> Capture {
+        Capture { file: file.into(), query: query.map(String::from), offset: None }
     }
 
-    fn write_cap(layer: &Path, uuid: &str, s: StructuralRef) {
-        CaptureFile { uuid: uuid.into(), sref: s, range: None, state: None, resolved_at: None }
-            .write_in(layer).unwrap();
+    /// El id sale de la ubicación, así que la misma ubicación da el mismo id.
+    #[test]
+    fn the_id_is_reproducible() {
+        assert_eq!(cap("a.rs", Some("(x) @target")).id(), cap("a.rs", Some("(x) @target")).id());
+    }
+
+    /// Y una ubicación distinta da un id distinto, campo por campo.
+    #[test]
+    fn a_different_location_is_a_different_id() {
+        let base = cap("a.rs", Some("(x) @target"));
+        assert_ne!(base.id(), cap("b.rs", Some("(x) @target")).id());
+        assert_ne!(base.id(), cap("a.rs", Some("(y) @target")).id());
+        let mut with_offset = base.clone();
+        with_offset.offset = Some(ByteRange { start: 0, end: 10 });
+        assert_ne!(base.id(), with_offset.id());
+    }
+
+    /// Escribir dos veces la misma ubicación no duplica: es el mismo archivo.
+    #[test]
+    fn writing_twice_deduplicates_by_construction() {
+        let dir = tempdir().unwrap();
+        let (id1, _, existed1) = cap("a.rs", Some("(x) @target")).write_in(dir.path()).unwrap();
+        let (id2, _, existed2) = cap("a.rs", Some("(x) @target")).write_in(dir.path()).unwrap();
+        assert_eq!(id1, id2);
+        assert!(!existed1 && existed2);
+        assert_eq!(Capture::all_in(dir.path()).unwrap().len(), 1);
     }
 
     #[test]
-    fn roundtrip_preserves_query_and_offset() {
-        let dir  = tempdir().unwrap();
-        let path = dir.path().join("x.capture");
-        CaptureFile {
-            uuid: "x".into(),
-            sref: StructuralRef {
-                file:  "a.rs".into(),
-                query: Some("(function_item\n  name: (identifier) @n0) @target".into()),
-                range: Some(ByteRange { start: 4, end: 20 }),
-            },
-            range: Some(ByteRange { start: 100, end: 200 }),
-            state: Some(CaptureState::Resolved),
-            resolved_at: Some("2026-08-24T00:00:00Z".into()),
-        }.write(&path).unwrap();
+    fn a_capture_round_trips_through_yaml() {
+        let dir = tempdir().unwrap();
+        let mut c = cap("src/check.rs", Some("(function_item\n  name: (identifier) @n0) @target"));
+        c.offset = Some(ByteRange { start: 42, end: 118 });
+        let (id, _, _) = c.write_in(dir.path()).unwrap();
+        assert_eq!(Capture::load_in(dir.path(), &id).unwrap(), c);
+    }
 
-        let back = CaptureFile::load(&path).unwrap();
-        assert_eq!(back.sref.range, Some(ByteRange { start: 4, end: 20 }));
-        assert_eq!(back.range, Some(ByteRange { start: 100, end: 200 }));
-        assert_eq!(back.state, Some(CaptureState::Resolved));
-        assert!(back.sref.query.as_deref().unwrap().contains("name: (identifier)"));
+    /// La query multilínea va en bloque, sin escapes: el `git diff` es la superficie
+    /// de revisión del producto y `\n` la arruinaría.
+    #[test]
+    fn a_multiline_query_is_written_as_a_block() {
+        let c = cap("a.rs", Some("(function_item\n  name: (identifier) @n0) @target"));
+        let y = c.to_yaml().unwrap();
+        assert!(!y.contains("\\n"), "la query no debería llevar escapes:\n{y}");
+    }
+
+    /// Un campo que el formato no conoce se rechaza con su nombre.
+    #[test]
+    fn an_unknown_field_is_rejected() {
+        let err = serde_yaml_ng::from_str::<Capture>("file: a.rs\nresolved_at: 2026-01-01\n")
+            .unwrap_err().to_string();
+        assert!(err.contains("resolved_at"), "el error tiene que nombrar el campo: {err}");
     }
 }
-
