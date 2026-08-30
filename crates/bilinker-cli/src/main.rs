@@ -866,8 +866,8 @@ Eliminar? [y/N] ");
         }
 
         Command::Remove { uuid } => {
-            let bilink_dir = cwd.join(".bilink");
-            let path = bilinker::accept::find_bilink_path(&bilink_dir, &uuid)?;
+            // `find_bilink_path` recibe la **capa** y le agrega `.bilink` sola.
+            let path = bilinker::accept::find_bilink_path(&cwd, &uuid)?;
             std::fs::remove_file(&path)?;
             let rel = path.strip_prefix(&cwd).unwrap_or(&path);
             eprintln!("removed: {}", rel.display());

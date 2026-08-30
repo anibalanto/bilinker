@@ -985,3 +985,18 @@ fn capture_without_a_selection_takes_the_whole_file() {
     assert!(!cap.contains("offset:"), "el archivo entero no lleva offset:\n{cap}");
 }
 
+
+/// `remove` encuentra el bilink por prefijo, como todos los demás comandos.
+#[test]
+fn remove_finds_a_bilink_by_its_prefix() {
+    let (_t, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java:2:5"]);
+    let uuid = std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .find_map(|e| e.file_name().to_str()?.strip_suffix(".yaml").map(str::to_owned))
+        .unwrap();
+
+    let (_o, err, ok) = run_in(&root, &["remove", &uuid[..8]]);
+    assert!(ok, "remove no encontró un bilink que existe:\n{err}");
+    assert!(!root.join(format!(".bilink/{uuid}.yaml")).exists(), "no lo borró");
+}
