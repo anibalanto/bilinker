@@ -25,9 +25,11 @@ use accreta_migrate::Migration;
 
 /// Las migraciones de bilinker, en orden.
 ///
-/// **El orden importa y no es el obvio.** La partición va primera: mientras
-/// `range`, `state` y `resolved_at` sigan dentro del capture, no se le puede
-/// calcular un id estable.
+/// Hay una sola, y `bilinker-001-capture-split` no está: se retiró. Sigue en el
+/// ledger de todos los repos que la corrieron —eso registra qué les pasó, no qué
+/// sabe hacer este binario— pero su código ya no existe, porque `002` lee la
+/// forma embebida además de la que `001` producía. Un repo que nunca corrió
+/// `001` se migra igual, en un paso.
 pub fn all() -> Vec<Migration> {
     vec![
         Migration {
