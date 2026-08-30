@@ -85,58 +85,80 @@ fn bilink_path(root: &Path, layer: &Path, uuid: &str) -> PathBuf {
     BiLink::path_in(&root.join(layer), uuid)
 }
 
+/// El endpoint `path` que, parado en `from_layer`, nombra a `to_layer`.
+///
+/// **No es el path relativo del filesystem.** `<` no sube dos componentes: sube un
+/// nivel de capa y de ahí camina hasta la raíz verdadera de esa capa —el `.git` o
+/// `.bilink` que la delimita—, atravesando los directorios comunes que haya en el
+/// medio. Contar `../..` de a pares, que es lo que hace un diff de paths, toma
+/// `subsystems/bilinker` por un nivel de capa y produce `<<` donde va `<`.
+///
+/// Así que se cuentan capas: tantos `<` como niveles tenga `from_layer` —hasta la
+/// raíz— y de ahí el descenso a `to_layer`.
 fn layer_endpoint(from_layer: &Path, to_layer: &Path) -> Result<LinkEndpoint> {
-    let rel = diff_paths(to_layer, from_layer);
-    let tokens = filesystem_to_stratum_tokens(&rel)?;
+    use stratum::PathToken;
+
+    let ups = normalize(from_layer).components()
+        .filter(|c| matches!(c, Component::Normal(n) if *n == std::ffi::OsStr::new(".stratum")))
+        .count();
+
+    let mut tokens: stratum::StratumPath = std::iter::repeat(PathToken::Up).take(ups).collect();
+    let down = normalize(to_layer);
+    if down.components().next().is_some() {
+        tokens.extend(filesystem_to_stratum_tokens(&down)?);
+    }
+    if tokens.is_empty() {
+        bail!("no hay path de capa entre '{}' y '{}'", from_layer.display(), to_layer.display());
+    }
     format!("path {}", stratum::format_path(&tokens)).parse()
 }
 
-/// Converts a filesystem relative path (as produced by `diff_paths`) into stratum tokens.
+/// Convierte un path de filesystem —siempre descendente— en tokens Stratum.
 ///
-/// - Leading `../..` pairs → `PathToken::Up` (one stratum level = 2 fs components)
-/// - Following `.stratum/<name>` pairs → `PathToken::Down`
-/// - Any remaining components → `PathToken::Simple`
+/// Alterna dos formas sin orden fijo: `.stratum/<name>` es un descenso de capa y
+/// cualquier otra cosa es un componente común. `subsystems/bilinker>impl` es una
+/// de cada una, y esa mezcla es la forma de este proyecto, no un caso raro.
 fn filesystem_to_stratum_tokens(rel: &Path) -> Result<stratum::StratumPath> {
     use stratum::PathToken;
 
     let components: Vec<Component> = rel.components().collect();
     let mut tokens = Vec::new();
+    let mut plain: Vec<&std::ffi::OsStr> = Vec::new();
+
+    let flush = |plain: &mut Vec<&std::ffi::OsStr>, tokens: &mut stratum::StratumPath| {
+        if !plain.is_empty() {
+            tokens.push(PathToken::Simple(plain.iter().collect()));
+            plain.clear();
+        }
+    };
+
     let mut i = 0;
-
-    while i + 1 < components.len()
-        && components[i] == Component::ParentDir
-        && components[i + 1] == Component::ParentDir
-    {
-        tokens.push(PathToken::Up);
-        i += 2;
-    }
-    if i < components.len() && components[i] == Component::ParentDir {
-        anyhow::bail!("malformed stratum path: odd number of `..` in {}", rel.display());
-    }
-
-    while i + 1 < components.len() {
-        if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1]) {
+    while i < components.len() {
+        if let (Some(Component::Normal(a)), Some(Component::Normal(b))) =
+            (components.get(i), components.get(i + 1))
+        {
             if *a == std::ffi::OsStr::new(".stratum") {
+                flush(&mut plain, &mut tokens);
                 let name = b.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF8 layer name"))?;
                 tokens.push(PathToken::Down(name.to_string()));
                 i += 2;
                 continue;
             }
         }
-        break;
+        match components[i] {
+            Component::Normal(n) => plain.push(n),
+            other => bail!("componente inesperado en un path de capa: {other:?}"),
+        }
+        i += 1;
     }
-
-    if i < components.len() {
-        let remaining: std::path::PathBuf = components[i..].iter().collect();
-        tokens.push(PathToken::Simple(remaining));
-    }
+    flush(&mut plain, &mut tokens);
 
     if tokens.is_empty() {
-        anyhow::bail!("empty stratum path for {}", rel.display());
+        bail!("empty stratum path for {}", rel.display());
     }
-
     Ok(tokens)
 }
+
 
 fn diff_paths(to: &Path, from: &Path) -> PathBuf {
     let to_norm   = normalize(to);
@@ -176,6 +198,35 @@ mod tests {
     use tempfile::tempdir;
 
     fn ep(raw: &str) -> LinkEndpoint { raw.parse().unwrap() }
+
+    fn inverse(from: &str, to: &str) -> String {
+        layer_endpoint(Path::new(from), Path::new(to)).unwrap().to_string()
+    }
+
+    /// El endpoint inverso se cuenta en capas, no en componentes de path.
+    ///
+    /// Con `subsystems/bilinker>impl` en el medio, un diff de paths ve cuatro `..`
+    /// y escribe `<<`. Pero sólo se cruzó una capa: `subsystems/bilinker` son
+    /// directorios comunes, y `<` los atraviesa solo al buscar la raíz verdadera.
+    #[test]
+    fn plain_directories_do_not_count_as_layer_levels() {
+        assert_eq!(inverse("subsystems/bilinker/.stratum/impl", ""), "path <");
+        assert_eq!(inverse("", "subsystems/bilinker/.stratum/impl"),
+                   "path subsystems/bilinker>impl");
+    }
+
+    /// El caso sin directorios comunes sigue igual.
+    #[test]
+    fn a_layer_directly_below_inverts_to_one_up() {
+        assert_eq!(inverse(".stratum/impl", ""), "path <");
+        assert_eq!(inverse("", ".stratum/impl"), "path >impl");
+    }
+
+    /// Dos niveles de capa sí son dos `<`.
+    #[test]
+    fn nested_layers_count_once_each() {
+        assert_eq!(inverse("a/.stratum/mid/.stratum/impl", ""), "path <<");
+    }
 
     /// Una cadena entre dos capas: un bilink en cada una, con el mismo uuid.
     #[test]
