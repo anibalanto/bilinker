@@ -17,7 +17,11 @@ pub struct SyncResult {
     pub branch:      String,
     pub from:        String,
     pub to:          String,
+    /// El commit del proyecto que **este** acto absorbió.
     pub absorbed:    Option<String>,
+    /// Contra qué commit del proyecto quedó la ref. Con `absorbed` en `None`, es el
+    /// que ya tenía.
+    pub at:          Option<String>,
     pub commits:     usize,
     pub pushed:      bool,
 }
@@ -36,7 +40,10 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
             branch,
             from: ref_tip.clone(),
             to: ref_tip,
+            // `None` es "no se absorbió nada acá"; `at` es contra qué commit del
+            // proyecto la ref ya estaba, que es lo que hay que reportar.
             absorbed: None,
+            at: Some(project_tip),
             commits: 0,
             pushed: false,
         });
@@ -48,7 +55,8 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
             branch,
             from: ref_tip.clone(),
             to: ref_tip,
-            absorbed: Some(project_tip),
+            absorbed: Some(project_tip.clone()),
+            at: Some(project_tip),
             commits: 1,
             pushed: false,
         });
@@ -70,7 +78,8 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
         branch,
         from: ref_tip,
         to: sha,
-        absorbed: got,
+        absorbed: got.clone(),
+        at: got.or(Some(project_tip)),
         commits: usize::from(wrote),
         pushed,
     })

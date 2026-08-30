@@ -1134,7 +1134,8 @@ fn print_sync(r: bilinker::sync::SyncResult, dry_run: bool) {
     match (&r.absorbed, r.commits) {
         (None, 0) => println!(
             "refs/bilink/{} ya absorbió {} @ {} — nada que hacer",
-            r.branch, r.branch, short(&r.from)
+            r.branch, r.branch,
+            r.at.as_deref().map(short).unwrap_or("—")
         ),
         (Some(tip), _) => {
             println!("absorbe:  {}  → {}", r.branch, short(tip));
