@@ -1,8 +1,0 @@
-file:   crates/bilink-format/src/link.rs
-query:  (enum_item
-  name: (type_identifier) @n0 (#eq? @n0 "LinkEndpoint")) @target
-
-# Cache
-range:       4011~4654
-state:       RESOLVED
-resolved_at: 2026-08-30T02:17:55Z

@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/apply.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "scan_fixeable")) @target
-
-# Cache
-range:       2922~4521
-state:       RESOLVED
-resolved_at: 2026-08-29T23:41:11Z

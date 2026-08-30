@@ -1,8 +1,0 @@
-file:   crates/bilinker-cli/src/main.rs
-query:  (enum_item
-  name: (type_identifier) @n0 (#eq? @n0 "Command")) @target
-
-# Cache
-range:       269~4984
-state:       RESOLVED
-resolved_at: 2026-08-29T23:39:40Z

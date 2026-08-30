@@ -1,7 +1,0 @@
-file:   crates/bilink-format/src/bilink.rs
-query:  (struct_item name: (type_identifier) @n0 (#eq? @n0 "BiLinkFile")) @target
-
-# Cache
-range:       279~767
-state:       RESOLVED
-resolved_at: 2026-08-30T02:17:55Z

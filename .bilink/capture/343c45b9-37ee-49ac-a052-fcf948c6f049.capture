@@ -1,7 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_marks_new_chain_as_pending")) @target
-
-# Cache
-range:       7908~8360
-state:       RESOLVED
-resolved_at: 2026-08-24T23:33:00Z

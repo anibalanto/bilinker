@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/capture.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "verify_query_identifies")) @target
-
-# Cache
-range:       12144~13255
-state:       RESOLVED
-resolved_at: 2026-08-30T02:16:44Z

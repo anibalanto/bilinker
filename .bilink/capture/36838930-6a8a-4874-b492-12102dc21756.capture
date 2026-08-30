@@ -1,8 +1,0 @@
-file:   crates/bilink-format/src/capture.rs
-query:  (enum_item
-  name: (type_identifier) @n0 (#eq? @n0 "CaptureState")) @target
-
-# Cache
-range:       831~1477
-state:       RESOLVED
-resolved_at: 2026-08-30T02:18:21Z

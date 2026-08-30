@@ -1,0 +1,4 @@
+file: crates/bilinker/src/migrations.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "all")) @target

@@ -1,8 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "capture_writes_a_capture_with_the_stable_anchor")) @target
-
-# Cache
-range:       1040~1833
-state:       RESOLVED
-resolved_at: 2026-08-26T16:07:49Z

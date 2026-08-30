@@ -1,8 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "capturing_the_same_fragment_twice_reuses_the_capture")) @target
-
-# Cache
-range:       2786~3492
-state:       RESOLVED
-resolved_at: 2026-08-26T16:07:49Z

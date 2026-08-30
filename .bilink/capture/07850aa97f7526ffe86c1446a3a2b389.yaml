@@ -1,0 +1,2 @@
+file: crates/bilinker-cli/tests/integration.rs
+query: '(function_item name: (identifier) @n0 (#eq? @n0 "index_gitignore_contains_index_entry")) @target'

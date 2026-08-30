@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/query.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "find_target")) @target
-
-# Cache
-range:       229~420
-state:       RESOLVED
-resolved_at: 2026-08-29T23:41:11Z

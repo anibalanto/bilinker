@@ -1,6 +1,0 @@
-file:   crates/bilinker/src/accept.rs
-
-# Cache
-range:       0~9110
-state:       RESOLVED
-resolved_at: 2026-08-30T01:56:04Z

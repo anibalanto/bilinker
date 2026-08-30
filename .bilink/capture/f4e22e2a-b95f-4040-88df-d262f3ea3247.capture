@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/grammar.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "stable_anchor_kinds")) @target
-
-# Cache
-range:       1246~2580
-state:       RESOLVED
-resolved_at: 2026-08-30T02:21:33Z

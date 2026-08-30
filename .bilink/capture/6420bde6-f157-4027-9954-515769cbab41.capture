@@ -1,8 +1,0 @@
-file:   crates/bilink-format/src/capture.rs
-query:  (struct_item
-  name: (type_identifier) @n0 (#eq? @n0 "CaptureFile")) @target
-
-# Cache
-range:       2935~3328
-state:       RESOLVED
-resolved_at: 2026-08-30T02:18:21Z

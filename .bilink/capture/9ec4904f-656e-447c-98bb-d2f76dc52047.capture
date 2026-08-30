@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/issue.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "resolve_issue_path")) @target
-
-# Cache
-range:       874~2025
-state:       RESOLVED
-resolved_at: 2026-08-30T02:00:16Z

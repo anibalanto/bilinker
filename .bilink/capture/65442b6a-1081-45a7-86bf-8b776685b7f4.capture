@@ -1,7 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item name: (identifier) @n0 (#eq? @n0 "index_status_ok_after_build")) @target
-
-# Cache
-range:       13723~14166
-state:       RESOLVED
-resolved_at: 2026-08-24T23:33:00Z

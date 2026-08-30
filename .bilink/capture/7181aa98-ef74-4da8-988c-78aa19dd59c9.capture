@@ -1,8 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "the_reference_survives_a_content_change")) @target
-
-# Cache
-range:       3692~4470
-state:       RESOLVED
-resolved_at: 2026-08-26T16:07:49Z

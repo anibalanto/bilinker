@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/check.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "check_file")) @target
-
-# Cache
-range:       2046~4756
-state:       RESOLVED
-resolved_at: 2026-08-30T01:56:04Z

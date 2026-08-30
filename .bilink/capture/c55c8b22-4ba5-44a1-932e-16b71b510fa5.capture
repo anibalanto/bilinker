@@ -1,8 +1,0 @@
-file:   crates/bilinker/src/index.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "layer_roots")) @target
-
-# Cache
-range:       2499~2638
-state:       RESOLVED
-resolved_at: 2026-08-29T23:39:40Z

@@ -1,7 +1,0 @@
-file:   crates/bilinker-cli/tests/integration.rs
-query:  (function_item name: (identifier) @n0 (#eq? @n0 "index_gitignore_contains_index_entry")) @target
-
-# Cache
-range:       13242~13713
-state:       RESOLVED
-resolved_at: 2026-08-24T23:33:00Z

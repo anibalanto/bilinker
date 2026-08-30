@@ -1,8 +1,0 @@
-file:   crates/accreta-migrate/src/lib.rs
-query:  (function_item
-  name: (identifier) @n0 (#eq? @n0 "repo_root_of")) @target
-
-# Cache
-range:       4820~5119
-state:       RESOLVED
-resolved_at: 2026-08-29T23:39:41Z

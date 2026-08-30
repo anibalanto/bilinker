@@ -1,7 +1,0 @@
-file:   crates/bilinker/src/index.rs
-query:  (function_item name: (identifier) @n0 (#eq? @n0 "build")) @target
-
-# Cache
-range:       350~1267
-state:       RESOLVED
-resolved_at: 2026-08-26T18:50:30Z
