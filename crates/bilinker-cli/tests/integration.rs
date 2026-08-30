@@ -935,3 +935,52 @@ fn apply_silently_skips_a_fix_that_is_no_longer_needed() {
     assert!(!out.contains("EXPANDED"), "el fix ya no hace falta:\n{out}");
     assert!(!err.contains("warn"), "y que algo se arregle solo no es una anomalía:\n{err}");
 }
+
+
+// ─── task `y`: crear una cadena entre subsistemas ───────────────────────────
+
+/// Un tip puede atravesar directorios comunes antes de bajar a una capa.
+///
+/// `subsystems/bilinker>impl` es la forma de este proyecto: la capa raíz tiene
+/// las specs de varios subsistemas y cada uno su impl abajo. Sin esto no se puede
+/// crear una sola cadena de accreta desde la raíz.
+#[test]
+fn a_tip_can_cross_plain_directories_before_a_layer() {
+    let (_t, root) = isolated_git_workspace();
+    let sub = root.join("subsystems/thing");
+    fs::create_dir_all(sub.join(".stratum/impl/src")).unwrap();
+    fs::create_dir_all(sub.join("concepts")).unwrap();
+    fs::write(sub.join("concepts/spec.md"), "# Spec\n\nContenido.\n").unwrap();
+    fs::write(sub.join(".stratum/impl/src/lib.rs"), "pub fn run() {}\n").unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "sub"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+
+    let (out, err, ok) = run_in(&root, &[
+        "chain", "new",
+        "--tip", "subsystems/thing/concepts/spec.md",
+        "--tip", "subsystems/thing>impl/src/lib.rs:1:1",
+    ]);
+    assert!(ok, "chain new no alcanzó la capa del subsistema:\n{err}");
+    assert!(out.contains("Created chain"), "{out}{err}");
+    assert!(sub.join(".stratum/impl/.bilink").exists(),
+        "no escribió el bilink del otro extremo");
+}
+
+/// `capture` sin selección captura el archivo entero.
+///
+/// El formato lo contempla desde siempre —`query` ausente— y es la forma más
+/// usada del lado de las specs, donde el fragmento suele ser el documento.
+#[test]
+fn capture_without_a_selection_takes_the_whole_file() {
+    let (_t, root) = isolated_git_workspace();
+
+    let (out, err, ok) = run_in(&root, &["capture", "docs/spec.md"]);
+    assert!(ok, "capture sin selección falló:\n{err}");
+
+    let id = out.trim();
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{id}.yaml"))).unwrap();
+    assert!(cap.contains("file: docs/spec.md"), "{cap}");
+    assert!(!cap.contains("query:"),  "el archivo entero no lleva query:\n{cap}");
+    assert!(!cap.contains("offset:"), "el archivo entero no lleva offset:\n{cap}");
+}

@@ -1,0 +1,3 @@
+file: crates/bilinker-cli/tests/integration.rs
+query: (source_file) @target
+offset: 12712~13207

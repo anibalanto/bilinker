@@ -291,8 +291,12 @@ fn layer_tokens_to_fs_path(tokens: &[stratum::PathToken]) -> anyhow::Result<Path
         match token {
             PathToken::Down(name)  => path = path.join(".stratum").join(name),
             PathToken::Up          => path = path.join("..").join(".."),
+            // Un componente de path corriente. Sin esto no se puede atravesar un
+            // directorio común antes de bajar a una capa, que es la forma de este
+            // proyecto: `subsystems/bilinker>impl`.
+            PathToken::Simple(p)   => path = path.join(p),
             PathToken::TopRoot     => anyhow::bail!("`*` (TopRoot) not supported in chain new tips"),
-            other => anyhow::bail!("unexpected token in layer navigation: {other:?}"),
+            PathToken::Root        => anyhow::bail!("`<*` (Root) not supported in chain new tips"),
         }
     }
     Ok(path)
@@ -389,10 +393,27 @@ Eliminar? [y/N] ");
                 }
 
                 None => {
-                    let (Some(file), Some(start), Some(end)) = (file, start, end) else {
-                        anyhow::bail!("uso: bilinker capture <file> <start> <end>");
+                    let Some(file) = file else {
+                        anyhow::bail!("uso: bilinker capture <file> [<start> <end>]");
                     };
                     let root = project_root(&cwd)?;
+
+                    // Sin selección, el fragmento es el archivo entero: no hay nodo
+                    // que buscar, así que tampoco ancla que verificar ni gramática
+                    // que haga falta. Es la forma más usada del lado de las specs.
+                    let (Some(start), Some(end)) = (start, end) else {
+                        if dry_run {
+                            eprintln!("[dry-run] no se escribió nada");
+                            eprintln!("file:   {file}");
+                            eprintln!("query:  (ausente — el archivo completo)");
+                            return Ok(());
+                        }
+                        let (uuid, path, reused) =
+                            bilinker::capture::capture_file_whole(&root, &file)?;
+                        println!("{uuid}");
+                        eprintln!("{}: {}", if reused { "reusado" } else { "creado" }, path.display());
+                        return Ok(());
+                    };
                     let (s, e) = (parse_pos(&start)?, parse_pos(&end)?);
 
                     if dry_run {

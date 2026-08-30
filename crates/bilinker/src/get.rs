@@ -366,8 +366,13 @@ fn resolve(
     })
 }
 
+/// Cuenta sobre bytes y no sobre `&str`: un offset puede caer en medio de un
+/// carácter multibyte —una `ó` en una spec en castellano alcanza— y cortar el
+/// `&str` ahí es un panic. `\n` es ASCII, así que nunca aparece adentro de una
+/// secuencia multibyte y contar bytes da lo mismo que contar caracteres.
 fn byte_to_line(source: &str, byte: usize) -> usize {
-    source[..byte.min(source.len())].chars().filter(|&c| c == '\n').count()
+    let end = byte.min(source.len());
+    source.as_bytes()[..end].iter().filter(|&&b| b == b'\n').count()
 }
 
 fn count_lines(source: &str) -> usize {
@@ -381,4 +386,26 @@ fn extract_lines(source: &str, from: usize, to: usize) -> String {
         .map(|(_, line)| line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El offset de un capture se mide contra el nodo y se aplica contra el
+    /// archivo. Cuando las dos cosas no coinciden —el nodo se movió, la query
+    /// matchea otro— el byte resultante puede caer adentro de un carácter, y en
+    /// una spec en castellano eso pasa con cualquier `ó`.
+    ///
+    /// Es un dato posible, no una corrupción: tiene que resolver, no explotar.
+    #[test]
+    fn byte_to_line_survives_a_non_boundary_byte() {
+        let source = "# Especificación\nsegunda\ntercera\n";
+        let inside  = source.find('ó').unwrap() + 1;
+        assert!(!source.is_char_boundary(inside), "el test no está partiendo nada");
+
+        assert_eq!(byte_to_line(source, inside), 0);
+        assert_eq!(byte_to_line(source, source.len()), 3);
+        assert_eq!(byte_to_line(source, usize::MAX), 3);
+    }
 }
