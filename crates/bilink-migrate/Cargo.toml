@@ -1,0 +1,19 @@
+[package]
+name    = "bilink-migrate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow          = "1"
+accreta-migrate = { path = "../accreta-migrate" }
+
+# Una migración **depende de los dos formatos que puentea** (ADR-0006, decisión 2).
+# Es la única forma de que un componente lea los dos, y es lo que hace que la
+# verificación de que la migración no perdió nada la haga la migración.
+bilink-format-v1 = { path = "../bilink-format-v1" }
+bilink-format    = { path = "../bilink-format" }
+
+stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
+
+[dev-dependencies]
+tempfile = "3"

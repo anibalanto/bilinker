@@ -3,6 +3,7 @@ members = [
     "crates/accreta-migrate",
     "crates/bilink-format",
     "crates/bilink-format-v1",
+    "crates/bilink-migrate",
     "crates/bilinker",
     "crates/bilinker-cli",
     "crates/bilinker-lsp",
