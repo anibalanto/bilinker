@@ -2548,3 +2548,315 @@ fn a_false_ok_would_silently_skip_the_acceptance() {
                "con el estado bien reportado, accept escribe la decisión");
     assert!(check_states(&root).trim().is_empty(), "y queda limpio");
 }
+
+// ─── La frontera entre proyectos ───────────────────────────────────────────
+//
+// US `h`. Los 18 escenarios de `scenarios/frontier.yaml`, todos entre **dos repos
+// locales**: que el proveedor de verdad sea `hsi` es una circunstancia, no un
+// requisito.
+
+/// Un proveedor con una abstracción publicada y su ref cortada, más un consumidor
+/// que la declara. Devuelve `(tmp, proveedor, consumidor, uuid)`.
+fn provider_and_consumer() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = tmp.path().join("hsi");
+    let consumer = tmp.path().join("retinar");
+
+    // ── el proveedor publica ────────────────────────────────────────────────
+    fs::create_dir_all(provider.join("src")).unwrap();
+    fs::write(provider.join("src/Perm.java"),
+              "public class Perm {\n    public boolean can(String op) { return true; }\n}\n").unwrap();
+    git_init(&provider);
+    git_commit_all(&provider, "init");
+
+    let (stdout, stderr, ok) = run_in(&provider, &[
+        "chain", "new", "--tip", "src/Perm.java:2:5", "--tip", "abstract",
+    ]);
+    assert!(ok, "publicar una abstracción falló:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    run_in(&provider, &["check", "."]);
+    run_in(&provider, &["accept", "."]);
+    git_commit_all(&provider, "el bilink abstracto");
+    corte(&provider);
+
+    // ── el consumidor declara ───────────────────────────────────────────────
+    fs::create_dir_all(consumer.join("src")).unwrap();
+    fs::write(consumer.join("src/permissions.ts"),
+              "export function can(op: string) { return true; }\n").unwrap();
+    git_init(&consumer);
+    git_commit_all(&consumer, "init");
+
+    // El alias: **el único lugar del consumidor que sabe algo del otro repo.**
+    fs::create_dir_all(consumer.join(".bilink")).unwrap();
+    fs::write(consumer.join(".bilink/.hsi.toml"),
+              format!("remote = \"{}\"\nbranch = \"{}\"\n",
+                      provider.display(), branch_of(&provider))).unwrap();
+
+    (tmp, provider, consumer, uuid)
+}
+
+/// Enlaza el consumidor con la abstracción, y trae el repo del proveedor.
+fn consume(consumer: &Path, uuid: &str) {
+    let (_, stderr, ok) = run_in(consumer, &[
+        "chain", "new", "--from-repo", &format!("hsi:{uuid}"),
+        "--tip", "src/permissions.ts:1:1",
+    ]);
+    assert!(ok, "consumir la abstracción falló:\n{stderr}");
+
+    let (_, stderr, ok) = run_in(consumer, &["fetch", "hsi"]);
+    assert!(ok, "fetch falló:\n{stderr}");
+}
+
+/// `abstract-endpoint-is-open` + `provider-detects-own-drift`.
+#[test]
+fn the_abstract_endpoint_is_open_and_the_provider_still_sees_its_own_drift() {
+    let (_t, provider, _c, _uuid) = provider_and_consumer();
+
+    let (out, _, ok) = run_in(&provider, &["check", "."]);
+    assert!(ok, "el proveedor arranca limpio:\n{out}");
+
+    // Lo publicado deja de coincidir con lo aprobado. Es una pregunta puramente
+    // local, y es la razón por la que al proveedor no le alcanzan los captures.
+    fs::write(provider.join("src/Perm.java"),
+              "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
+    commit(&provider, "el fragmento publicado cambia");
+
+    let states = check_states(&provider);
+    assert!(states.contains("ALTERED"), "el proveedor ve su propio drift:\n{states}");
+    assert!(states.contains("OPEN"), "y la punta abierta sigue OPEN:\n{states}");
+}
+
+/// `accept-bulk-skips-open` — `accept .` nunca toca la punta abstracta.
+#[test]
+fn accept_bulk_never_touches_the_abstract_endpoint() {
+    let (_t, provider, _c, uuid) = provider_and_consumer();
+
+    fs::write(provider.join("src/Perm.java"),
+              "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
+    commit(&provider, "el fragmento cambia");
+    run_in(&provider, &["check", "."]);
+    run_in(&provider, &["accept", "."]);
+
+    let bl = fs::read_to_string(provider.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    let after_abstract = bl.split("link: abstract").nth(1).unwrap_or("");
+    assert!(!after_abstract.contains("accepted"),
+            "la punta abierta no lleva `accepted`: no hay nada que bendecir ahí:\n{bl}");
+}
+
+/// `remote-unreachable-is-not-an-error` — y `check` **no hace red**.
+#[test]
+fn an_uncloned_provider_is_reported_and_does_not_break_the_check() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+
+    let (_, stderr, ok) = run_in(&consumer, &[
+        "chain", "new", "--from-repo", &format!("hsi:{uuid}"),
+        "--tip", "src/permissions.ts:1:1",
+    ]);
+    assert!(ok, "chain new falló:\n{stderr}");
+
+    let states = check_states(&consumer);
+    assert!(states.contains("REMOTE_UNREACHABLE"),
+            "el repo ajeno no está clonado, y eso se reporta:\n{states}");
+    assert!(!consumer.join(".bilink/hsi").exists(),
+            "check no clona: es masivo y no puede hacer red como efecto colateral");
+}
+
+/// `remote-ok-when-accepted-pair-unchanged` + `consumer-stores-nothing-about-provider`.
+#[test]
+fn the_consumer_stores_two_opaque_hashes_and_an_alias() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+
+    run_in(&consumer, &["check", "."]);
+    let (_, stderr, ok) = run_in(&consumer, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+    assert!(check_states(&consumer).trim().is_empty(), "y queda OK");
+
+    let bl = fs::read_to_string(consumer.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    assert!(bl.contains("link: repo hsi"), "el endpoint nombra el alias:\n{bl}");
+    for leak in ["http", "git@", "/tmp", ".java"] {
+        assert!(!bl.contains(leak),
+                "el bilink no contiene nada del proveedor salvo el alias ({leak}):\n{bl}");
+    }
+}
+
+/// `remote-drift-after-provider-accepts` — y que `check` no lo vea hasta el fetch.
+#[test]
+fn the_consumer_sees_drift_only_after_bringing_the_provider() {
+    let (_t, provider, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    // El proveedor cambia lo publicado y lo acepta.
+    fs::write(provider.join("src/Perm.java"),
+              "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
+    commit(&provider, "el fragmento cambia");
+    run_in(&provider, &["check", "."]);
+    let (_, stderr, ok) = run_in(&provider, &["accept", "."]);
+    assert!(ok, "accept del proveedor falló:\n{stderr}");
+
+    // Sin traer nada, el consumidor sigue viendo lo que trajo la última vez.
+    assert!(check_states(&consumer).trim().is_empty(),
+            "check no hace red: lo que no se trajo, no se ve");
+
+    let (_, stderr, ok) = run_in(&consumer, &["fetch", "hsi"]);
+    assert!(ok, "fetch falló:\n{stderr}");
+    let states = check_states(&consumer);
+    assert!(states.contains("CHAIN_DIRTY"),
+            "tras traerlo, el drift del proveedor se ve:\n{states}");
+}
+
+/// `rejected-when-remote-stops-being-abstract`.
+///
+/// Es un hecho distinto de "el fragmento cambió", y por eso no comparte token.
+#[test]
+fn the_link_is_rejected_when_the_other_end_stops_being_abstract() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    let remote = consumer.join(format!(".bilink/hsi/.bilink/{uuid}.yaml"));
+    let text = fs::read_to_string(&remote).unwrap();
+    fs::write(&remote, text.replace("link: abstract", "link: issue 1")).unwrap();
+
+    let states = check_states(&consumer);
+    assert!(states.contains("REJECTED"),
+            "la otra punta ya no admite ser ampliada:\n{states}");
+
+    // Y aceptar se niega: fijaría el vínculo contra algo que dejó de sostenerlo.
+    let (_, stderr, ok) = run_in(&consumer, &["accept", &format!("{}.0", &uuid[..8])]);
+    assert!(!ok, "aceptar un REJECTED tiene que fallar");
+    assert!(stderr.contains("abstract"), "y decir por qué:\n{stderr}");
+}
+
+/// `broken-when-remote-bilink-gone` — distinguirlo de `REMOTE_UNREACHABLE` es la
+/// razón del desdoblamiento: uno se arregla trayendo, el otro investigando.
+#[test]
+fn a_removed_remote_bilink_is_broken_and_not_unreachable() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    fs::remove_file(consumer.join(format!(".bilink/hsi/.bilink/{uuid}.yaml"))).unwrap();
+
+    let states = check_states(&consumer);
+    assert!(states.contains("BROKEN"), "el clon está y el bilink no:\n{states}");
+    assert!(!states.contains("UNREACHABLE"),
+            "no es una ausencia que se arregle trayendo algo:\n{states}");
+}
+
+/// `sparse-set-is-derived-and-incremental` — el conjunto sale de los bilinks.
+#[test]
+fn the_sparse_set_is_derived_from_the_bilinks() {
+    let (_t, provider, consumer, uuid) = provider_and_consumer();
+
+    // Un archivo del proveedor que **ningún** bilink referencia.
+    fs::write(provider.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&provider, "otro archivo, que nadie consume");
+    run_in(&provider, &["sync"]);
+
+    consume(&consumer, &uuid);
+
+    let clone = consumer.join(".bilink/hsi");
+    assert!(clone.join("src/Perm.java").exists(),
+            "el archivo del fragmento referenciado sí se trae");
+    assert!(!clone.join("src/Other.java").exists(),
+            "y el que nadie referencia no: el conjunto se calcula, no se declara");
+    assert!(clone.join(".bilink").is_dir(), "más los .bilink, que son el paso previo");
+}
+
+/// `remote-fan-out-is-independent` — el proveedor tiene **un** archivo, y no cambia.
+#[test]
+fn two_consumers_share_one_provider_file_that_never_changes() {
+    let (tmp, provider, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+
+    let before = rev(&provider, &format!("refs/bilink/{}", branch_of(&provider)));
+
+    // Un segundo consumidor, en otro repo, sobre la misma abstracción.
+    let otro = tmp.path().join("otro");
+    fs::create_dir_all(otro.join("src")).unwrap();
+    fs::write(otro.join("src/perm.ts"), "export function can(op: string) { return true; }\n").unwrap();
+    git_init(&otro);
+    git_commit_all(&otro, "init");
+    fs::create_dir_all(otro.join(".bilink")).unwrap();
+    fs::write(otro.join(".bilink/.hsi.toml"),
+              format!("remote = \"{}\"\nbranch = \"{}\"\n",
+                      provider.display(), branch_of(&provider))).unwrap();
+
+    let (_, stderr, ok) = run_in(&otro, &[
+        "chain", "new", "--from-repo", &format!("hsi:{uuid}"), "--tip", "src/perm.ts:1:1",
+    ]);
+    assert!(ok, "el segundo consumidor falló:\n{stderr}");
+    run_in(&otro, &["fetch", "hsi"]);
+    run_in(&otro, &["check", "."]);
+    run_in(&otro, &["accept", "."]);
+    assert!(check_states(&otro).trim().is_empty(), "y queda OK");
+
+    // El uuid es el mismo de los dos lados: **es el rendezvous**.
+    assert!(otro.join(format!(".bilink/{uuid}.yaml")).exists());
+    assert!(consumer.join(format!(".bilink/{uuid}.yaml")).exists());
+
+    // Y el proveedor no se enteró de ninguno de los dos.
+    assert_eq!(before, rev(&provider, &format!("refs/bilink/{}", branch_of(&provider))),
+               "sumar un consumidor no toca el repo del proveedor");
+    let files = fs::read_dir(provider.join(".bilink")).unwrap()
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+        .count();
+    assert_eq!(files, 1, "un fragmento publicado es UN archivo, con C consumidores");
+    let mentions = std::process::Command::new("grep")
+        .args(["-rl", "retinar", "."])
+        .current_dir(provider.join(".bilink"))
+        .output().unwrap();
+    assert!(mentions.stdout.is_empty(),
+            "el proveedor no nombra a ningún consumidor: {}",
+            String::from_utf8_lossy(&mentions.stdout));
+}
+
+/// La verificación de versión: **el consumidor se niega en vez de malinterpretar.**
+#[test]
+fn the_consumer_refuses_a_provider_format_it_does_not_understand() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+    assert!(check_states(&consumer).trim().is_empty(), "arranca limpio");
+
+    let version = consumer.join(".bilink/hsi/.bilink/version");
+    fs::write(&version, "4.0.0\n").unwrap();
+
+    let (out, stderr, _) = run_in(&consumer, &["check", "."]);
+    assert!(stderr.contains("4.0.0") || out.contains("4.0.0"),
+            "se dice qué versión publica y cuál se lee:\n{out}\n{stderr}");
+    assert!(!out.contains("OK") && !out.contains("ALTERED"),
+            "no se reporta ningún estado sobre archivos que no se entendieron:\n{out}");
+
+    // Un minor distinto sí se entiende: lo aditivo no rompe al que lee más nuevo.
+    fs::write(&version, "3.0.0\n").unwrap();
+    let (_, _, ok) = run_in(&consumer, &["check", "."]);
+    assert!(ok, "un minor distinto del mismo major se lee igual");
+}
+
+/// `frontier-needs-no-migration` — los dos tipos son aditivos.
+#[test]
+fn the_frontier_is_additive_and_needs_no_migration() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+
+    let ledger = consumer.join(".accreta/migrations");
+    let before = fs::read_to_string(&ledger).unwrap_or_default();
+
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    assert_eq!(before, fs::read_to_string(&ledger).unwrap_or_default(),
+               "ningún archivo existente usa los tipos nuevos: no hay qué migrar");
+    let _ = uuid;
+}

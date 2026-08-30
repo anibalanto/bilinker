@@ -181,6 +181,16 @@ enum Command {
         dry_run: bool,
     },
 
+    /// Trae el repo de un proveedor declarado en .bilink/.{alias}.toml
+    ///
+    /// Es la operación de red de la frontera, y es explícita a propósito: `check`
+    /// corre sobre todo y no puede clonar como efecto colateral. El clon arranca
+    /// superficial y con sparse-checkout derivado de los bilinks.
+    Fetch {
+        /// Alias del proveedor. Sin argumento, todos los declarados
+        alias: Option<String>,
+    },
+
     /// Show status of all bilinks in the current layer (like git status)
     Status {
         /// Layer directory to inspect (default: current directory)
@@ -269,6 +279,13 @@ enum ChainCommand {
         /// Intermediate layer (can repeat, order matters)
         #[arg(long = "mid", action = ArgAction::Append)]
         mid: Vec<String>,
+        /// Consumir una abstracción de otro repo: `<alias>:<uuid>`
+        ///
+        /// Toma el uuid del bilink remoto en vez de generar uno, y arma el endpoint
+        /// repo. Es la única forma de `chain new` que no genera uuid: el uuid
+        /// compartido es lo que hace el rendezvous entre los dos repos.
+        #[arg(long = "from-repo", value_name = "ALIAS:UUID")]
+        from_repo: Option<String>,
         /// El `kind` del bilink: qué clase de relación declara
         #[arg(long)]
         kind: Option<String>,
@@ -321,6 +338,13 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bilinker::link::LinkEndpoint)> {
     use bilinker::link::LinkEndpoint;
     use stratum::PathToken;
+
+    // `abstract` es un tip, no un path: la punta que publica el proveedor. Vive en
+    // la capa actual —el bilink es suyo— y no captura nada, porque no hay fragmento
+    // de este lado que aprobar.
+    if tip_str.trim() == "abstract" {
+        return Ok((PathBuf::from("."), LinkEndpoint::Abstract));
+    }
 
     // Extract optional :line:col suffix
     let parts: Vec<&str> = tip_str.rsplitn(3, ':').collect();
@@ -1018,6 +1042,21 @@ Eliminar? [y/N] ");
             if r.conflicts() > 0 { std::process::exit(1); }
         }
 
+        Command::Fetch { alias } => {
+            let aliases = match alias {
+                Some(a) => vec![a],
+                None => bilinker::frontier::declared_aliases(&cwd),
+            };
+            if aliases.is_empty() {
+                eprintln!("no hay ningún proveedor declarado (.bilink/.{{alias}}.toml)");
+            }
+            for a in aliases {
+                let r = bilinker::frontier::fetch(&cwd, &a)?;
+                println!("{}: refs/bilink/{} · {} archivo(s) en el sparse",
+                         r.alias, r.branch, r.files);
+            }
+        }
+
         Command::Status { path, porcelain } => {
             let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
@@ -1045,21 +1084,45 @@ Eliminar? [y/N] ");
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid, kind, name0, name1 } => {
-                if tip.len() != 2 {
-                    anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
-                }
+            ChainCommand::New { tip, mid, kind, name0, name1, from_repo } => {
                 let root = project_root(&cwd)?;
-                let (layer0, ep0) = parse_stratum_tip(&root, &tip[0])?;
-                let (layer1, ep1) = parse_stratum_tip(&root, &tip[1])?;
-                let tips = vec![(layer0, ep0), (layer1, ep1)];
+
+                // Con `--from-repo`, el tip del proveedor lo aporta el flag: quien
+                // consume escribe **un solo** `--tip`, el suyo.
+                let (from_repo_uuid, tips) = match &from_repo {
+                    Some(spec) => {
+                        if tip.len() != 1 {
+                            anyhow::bail!(
+                                "con --from-repo va un solo --tip: el del lado local. \
+                                 El otro es el repo del proveedor."
+                            );
+                        }
+                        let (alias, uuid) = spec.split_once(':').ok_or_else(|| {
+                            anyhow::anyhow!("--from-repo se escribe `<alias>:<uuid>`")
+                        })?;
+                        let (layer, ep) = parse_stratum_tip(&root, &tip[0])?;
+                        let remote = (
+                            layer.clone(),
+                            bilink_format::LinkEndpoint::Repo(alias.to_string()),
+                        );
+                        (Some(uuid.to_string()), vec![remote, (layer, ep)])
+                    }
+                    None => {
+                        if tip.len() != 2 {
+                            anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
+                        }
+                        let (layer0, ep0) = parse_stratum_tip(&root, &tip[0])?;
+                        let (layer1, ep1) = parse_stratum_tip(&root, &tip[1])?;
+                        (None, vec![(layer0, ep0), (layer1, ep1)])
+                    }
+                };
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
                 // `kind` y `name` son declaración, y todo archivo de bilinker sale
                 // de un comando: sin estos flags la única forma de poblarlos sería
                 // abrir el YAML, que es lo que el formato no le pide a nadie.
                 let decl = bilinker::chain::Declaration {
-                    kind, name: [name0, name1],
+                    kind, name: [name0, name1], uuid: from_repo_uuid,
                 };
                 let result = bilinker::chain::chain_new(&cwd, &tips, &mids, &decl)?;
 

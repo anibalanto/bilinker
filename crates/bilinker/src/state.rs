@@ -55,8 +55,40 @@ pub enum EndpointState {
     Todo,
     /// Sólo endpoint `path`: el vecino fue re-aceptado.
     ChainDirty,
-    /// La capa desapareció, o el vecino no tiene endpoint estructural aceptado.
+    /// La capa existe y el `.bilink` del uuid no, o el vecino no tiene endpoint
+    /// estructural aceptado. **Es una regresión**, y por eso no comparte nombre con
+    /// las ausencias que se arreglan trayendo o declarando algo.
     Broken,
+    /// Sólo endpoint `path`: la capa está **declarada y no clonada**.
+    ///
+    /// Es normal —trabajar sin clonar todas las capas es lo esperado— y se arregla
+    /// con `stratum pull`.
+    LayerUnreachable,
+    /// Sólo endpoint `path`: ni declarada ni presente, **con aceptación previa**.
+    ///
+    /// Lo que falta es la declaración. Sin aceptación previa el estado sería `Todo`:
+    /// una capa que todavía no existe es una intención, no una ausencia.
+    LayerUnconfigured,
+    /// Sólo endpoint repo: el clon del proveedor no está.
+    ///
+    /// **`check` no lo resuelve**: es masivo y no hace red. Lo trae un comando
+    /// puntual, y mientras tanto esto se reporta y se sigue.
+    RemoteUnreachable,
+    /// Sólo endpoint repo: la otra punta **dejó de ser `abstract`**.
+    ///
+    /// Es un hecho distinto de que el fragmento cambió, y no se mezcla en el mismo
+    /// token. El nombre describe la condición desde el lado que la sufre, que es el
+    /// único que puede observarla: el proveedor no rechaza a nadie en particular,
+    /// ni sabe que hay alguien.
+    Rejected,
+    /// Sólo endpoint `abstract`: la punta está abierta a quien la consuma.
+    ///
+    /// **Constante y siempre sana**: no hay contra qué compararla, así que no puede
+    /// tomar otro valor. Se le da un nombre en vez de dejar el slot vacío porque la
+    /// tupla `(state.0, state.1)` la consumen `check`, `accept .`, `status` y
+    /// lattice: un valor constante lo maneja cada uno sin ramas, un hueco obliga a
+    /// todos a tratar el caso nulo.
+    Open,
 }
 
 impl EndpointState {
@@ -72,8 +104,12 @@ impl EndpointState {
     /// cerraba solo; ahora repuntar no aprueba, y un vínculo apuntando a un
     /// fragmento que nadie miró es trabajo pendiente.
     pub fn is_clean(&self) -> bool {
-        matches!(self, Self::Ok | Self::Expanded | Self::Restyled)
+        matches!(self, Self::Ok | Self::Expanded | Self::Restyled | Self::Open
+                     | Self::Todo | Self::LayerUnreachable | Self::RemoteUnreachable)
     }
+
+    /// La punta abierta, que `accept .` nunca toca.
+    pub fn is_open(&self) -> bool { *self == Self::Open }
 }
 
 impl CaptureState {
@@ -115,6 +151,11 @@ state_str!(EndpointState,
     Todo       => "TODO",
     ChainDirty => "CHAIN_DIRTY",
     Broken     => "BROKEN",
+    LayerUnreachable  => "LAYER_UNREACHABLE",
+    LayerUnconfigured => "LAYER_UNCONFIGURED",
+    RemoteUnreachable => "REMOTE_UNREACHABLE",
+    Rejected   => "REJECTED",
+    Open       => "OPEN",
 );
 
 state_str!(CaptureState,
@@ -134,7 +175,9 @@ mod tests {
     fn every_state_round_trips() {
         use EndpointState::*;
         for s in [Pending, Ok, Relocated, Expanded, Restyled,
-                  Altered, Unresolved, Todo, ChainDirty, Broken] {
+                  Altered, Unresolved, Todo, ChainDirty, Broken,
+                  LayerUnreachable, LayerUnconfigured, RemoteUnreachable,
+                  Rejected, Open] {
             assert_eq!(s.to_string().parse::<EndpointState>().unwrap(), s);
         }
         use CaptureState as C;

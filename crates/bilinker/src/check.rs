@@ -79,6 +79,9 @@ fn check_endpoint(
     match &e.link {
         LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.as_ref()),
         LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.as_ref()),
+        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.as_ref()),
+        // Constante: no hay contra qué comparar. Nunca pide acción.
+        LinkEndpoint::Abstract  => Ok(EndpointState::Open),
         LinkEndpoint::Capture(cap_id) => {
             let cap = match Capture::load_in(layer, cap_id) {
                 Ok(c) => c,
@@ -297,12 +300,19 @@ fn check_path(
     uuid: &str,
     accepted: Option<&bilink_format::Accepted>,
 ) -> Result<EndpointState> {
-    // Sin `accepted` y sin capa, es una intención declarada: TODO, no un error.
-    let absent = if accepted.is_none() { EndpointState::Todo } else { EndpointState::Broken };
+    let Ok(target) = stratum::resolve(layer, layer, p.tokens()) else {
+        return Ok(absent_layer(layer, None, accepted));
+    };
+    let dir = layer.join(&target);
+    if !dir.is_dir() {
+        return Ok(absent_layer(layer, Some(&target), accepted));
+    }
 
-    let Ok(target) = stratum::resolve(layer, layer, p.tokens()) else { return Ok(absent) };
-    let adj_path = layer.join(&target).join(".bilink").join(format!("{uuid}.yaml"));
-    if !adj_path.exists() { return Ok(absent); }
+    // La capa está y el bilink del uuid no: **es una regresión**, no una ausencia.
+    let adj_path = dir.join(".bilink").join(format!("{uuid}.yaml"));
+    if !adj_path.exists() {
+        return Ok(if accepted.is_none() { EndpointState::Todo } else { EndpointState::Broken });
+    }
 
     let Ok(adj) = BiLink::load(&adj_path) else { return Ok(EndpointState::Broken) };
     let Some(adj_accepted) = adj.structural_accepted() else {
@@ -314,6 +324,70 @@ fn check_path(
     // Los dos valores, no uno: la ubicación aprobada del vecino y su contenido.
     let same = mine.hash == adj_accepted.hash && mine.link == adj_accepted.link;
     Ok(if same { EndpointState::Ok } else { EndpointState::ChainDirty })
+}
+
+/// Las tres ausencias de una capa, que se arreglan distinto y por eso no comparten
+/// nombre.
+///
+/// Un solo `UNREACHABLE` no distinguía *"me falta traer algo"* de *"algo se rompió"*,
+/// que es la diferencia que decide si alguien tiene que mirar. Y separar en dos no
+/// alcanza: a una capa **declarada** le falta traerla, a una sin declarar le falta
+/// declararla, y las dos se arreglan con comandos distintos.
+fn absent_layer(
+    layer: &Path,
+    target: Option<&Path>,
+    accepted: Option<&bilink_format::Accepted>,
+) -> EndpointState {
+    let declared = target
+        .and_then(|t| t.file_name())
+        .map(|name| {
+            let parent = target.and_then(|t| t.parent()).unwrap_or(Path::new(""));
+            layer.join(parent).join(format!(".{}.toml", name.to_string_lossy())).exists()
+        })
+        .unwrap_or(false);
+
+    match (declared, accepted.is_some()) {
+        // Declarada y ausente: falta traerla, y eso es normal.
+        (true, _)      => EndpointState::LayerUnreachable,
+        // Ni declarada ni presente, con aceptación previa: falta la declaración.
+        (false, true)  => EndpointState::LayerUnconfigured,
+        // Sin aceptación previa es una intención, no una ausencia.
+        (false, false) => EndpointState::Todo,
+    }
+}
+
+/// Un endpoint repo: el `path` con la dirección resuelta por alias, y **sin red**.
+///
+/// Se leen dos cosas del proveedor y son dos hechos distintos: si su punta sigue
+/// siendo `abstract`, y qué aceptó. Mezclarlos en el mismo token perdería cuál de
+/// los dos pasó.
+fn check_repo(
+    layer: &Path,
+    alias: &str,
+    uuid: &str,
+    accepted: Option<&bilink_format::Accepted>,
+) -> Result<EndpointState> {
+    use crate::frontier::Resolution;
+
+    // El paso de la versión **no devuelve un estado**: no poder leer los archivos no
+    // es drift, y reportar cualquier estado sobre eso sería inventar.
+    match crate::frontier::resolve(layer, alias, uuid)? {
+        Resolution::NotCloned  => Ok(EndpointState::RemoteUnreachable),
+        Resolution::BilinkGone => Ok(EndpointState::Broken),
+        Resolution::Found(view) => {
+            if !view.still_abstract {
+                return Ok(EndpointState::Rejected);
+            }
+            let Some(theirs) = view.accepted else {
+                // El proveedor nunca aceptó lo que publica.
+                return Ok(EndpointState::Pending);
+            };
+            let Some(mine) = accepted else { return Ok(EndpointState::Pending) };
+
+            let same = mine.hash == theirs.hash && mine.link == theirs.link;
+            Ok(if same { EndpointState::Ok } else { EndpointState::ChainDirty })
+        }
+    }
 }
 
 /// Un endpoint `issue` se hashea como el contenido del archivo del ítem.

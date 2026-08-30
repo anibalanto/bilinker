@@ -29,6 +29,23 @@ pub fn read_version(layer: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// La declara si falta, con la versión de este binario.
+///
+/// **La escribe quien crea el `.bilink/`**, en la misma operación — igual que la
+/// regla de `.gitignore`. Que sea un paso aparte es lo que la vuelve olvidable, y
+/// una capa sin versión es indistinguible de una anterior a que el campo existiera:
+/// del otro lado de la frontera, eso significa *"no puedo interpretar lo que
+/// publica"*, y sería una capa nacida hoy.
+///
+/// No pisa una versión ya declarada: puede ser más vieja que este binario a
+/// propósito, y decidir eso es de `migrate`, no de quien crea un bilink.
+pub fn ensure_version(layer: &Path) -> Result<()> {
+    if read_version(layer).is_some() {
+        return Ok(());
+    }
+    write_version(layer, crate::VERSION)
+}
+
 pub fn write_version(layer: &Path, version: &str) -> Result<()> {
     let path = version_path(layer);
     if let Some(p) = path.parent() { std::fs::create_dir_all(p)?; }

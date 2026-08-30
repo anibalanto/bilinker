@@ -54,6 +54,14 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // un campo no es aditivo, así que sube el major — y con él se va `DISPLACED`,
     // el único estado que hablaba de un sub-rango.
     ("3.0.0", "faf08a34795e9915d0e9dc7b0c881936e8446f1c027849bb8f9e6ae5702db9e0"),
+    // 3.1.0 agrega los endpoints `repo <alias>` y `abstract` — la frontera entre
+    // proyectos. **Es aditivo y sube la versión igual**, que es lo contraintuitivo
+    // y la razón de fondo de que este registro exista además del ledger: ningún
+    // archivo existente los usa, no hubo migración que registrar, y sin embargo un
+    // parser de 3.0.0 leería `abstract` como un path de capa — en silencio y sin
+    // fallar. Entre proyectos con releases independientes, ése es *el* modo de
+    // falla que importa.
+    ("3.1.0", "70d09000aaf76f14664c49e71a4307b7f8dd0077712683d08c3e4d32175f134e"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

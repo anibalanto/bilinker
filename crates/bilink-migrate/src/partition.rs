@@ -160,6 +160,12 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
                 v2::LinkEndpoint::Capture(_) => Some(link.clone()),
                 v2::LinkEndpoint::Path(_)    => neighbour_capture(layer, old_link, &old.uuid, p)?,
                 v2::LinkEndpoint::Issue(_)   => None,
+                // La frontera es aditiva: ningún archivo del formato 1 la usa, así
+                // que la migración nunca ve estos dos. Se enumeran igual, porque
+                // el compilador es quien garantiza que un tipo nuevo obligue a
+                // decidir acá en vez de caer en un `_` silencioso.
+                v2::LinkEndpoint::Repo(_)    => None,
+                v2::LinkEndpoint::Abstract   => None,
             },
             hash: h.clone(),
             hash_ast: hash_ast.clone(),
