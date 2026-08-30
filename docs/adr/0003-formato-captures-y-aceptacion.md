@@ -1,6 +1,6 @@
 # ADR-0003: bilinker — El formato: captures inmutables y aceptación explícita
 
-**Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-29
+**Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-30
 
 **Parte de** [la épica del MVP](../../../../../../.stratum/worklist/1.epic.md), que lleva la motivación de entrega. Los otros dos ADRs de la misma tanda: [ADR-0004](0004-bilinks-en-ref-paralela.md), dónde viven los bilinks, y [ADR-0005](0005-frontera-entre-proyectos.md), la frontera entre proyectos. Éste va primero: los otros dos usan su vocabulario.
 
@@ -70,12 +70,12 @@ Un campo cada uno, y la frontera deja de ser una convención de nombres para ser
 |---|---|
 | `capture <uuid>` | un id de capture de esta capa |
 | `path <stratum-path>` | un path Stratum |
-| `task <id>` | un id de worklist |
+| `issue <id>` | un id de worklist |
 | `repo <alias>` | un alias de repo ajeno ([ADR-0005](0005-frontera-entre-proyectos.md)) |
 | `bilink <uuid>` | otro bilink (`proposals/bilink-endpoint.md`) |
 | `abstract` | nada — no lleva valor |
 
-El prefijo no nombra el destino sino **en qué lenguaje está el resto**, que es lo que el parser necesita saber. `path` sale de Stratum, cuya spec se titula *"lenguaje de paths Stratum"* y cuya regla raíz es `stratum-path`; `layer` habría afirmado de más, porque un stratum-path también cruza a sub-proyectos —`*/subsystems/lattice`— que `layer-model.md` distingue de las capas internas.
+El prefijo no nombra el destino sino **en qué lenguaje está el resto**, que es lo que el parser necesita saber. `issue` se llamaba `task` cuando se escribió este ADR: apunta a cualquier ítem del worklist, y `task` es además el nombre del tipo hoja de ahí, así que la palabra significaba dos cosas. El renombre está en la task `z`. `path` sale de Stratum, cuya spec se titula *"lenguaje de paths Stratum"* y cuya regla raíz es `stratum-path`; `layer` habría afirmado de más, porque un stratum-path también cruza a sub-proyectos —`*/subsystems/lattice`— que `layer-model.md` distingue de las capas internas.
 
 Y elimina una regla: [ADR-0005](0005-frontera-entre-proyectos.md) ya no necesita enunciar una **precedencia del parser**, que existía porque el endpoint layer era el fallback. Sin fallback no hay desempate.
 
