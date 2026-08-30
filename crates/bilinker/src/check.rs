@@ -121,7 +121,6 @@ fn check_endpoint(
             // EXPANDED, DISPLACED y REANCHORED degradan todos a ALTERED — o sea,
             // un clon fresco perdería las tres distinciones.
             let cached_commit = cache.commit(uuid, n).map(str::to_string);
-            let cached_state  = cache.endpoint_state(uuid, n);
             let mut derived: Option<Option<String>> = None;
             let state = {
                 let mut derive = || -> Option<String> {
@@ -132,11 +131,8 @@ fn check_endpoint(
                         })
                         .clone()
                 };
-                let mut src = CommitSource {
-                    cached: cached_commit.as_deref(),
-                    derive: &mut derive,
-                };
-                compare_content(layer, &cap, accepted, range.as_ref(), &mut src, cached_state)?
+                let mut src = CommitSource { derive: &mut derive };
+                compare_content(layer, &cap, accepted, range.as_ref(), &mut src)?
             };
             // Lo derivado se guarda: el walk cuesta un `git show` por commit y el
             // mismo endpoint se consulta más de una vez en una corrida.
@@ -208,39 +204,45 @@ pub(crate) fn resolve_capture(
 
 // ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
 
-/// De dónde sale el commit del contenido aceptado.
+/// De dónde sale el commit del contenido aceptado, cuando hace falta.
 ///
-/// Son dos cosas distintas y por eso van separadas: el que la cache **ya tenía**
-/// habilita el fast path y nada más, y el derivado cuesta un walk por la historia
-/// del archivo. Derivarlo antes de saber si hace falta lo cobraría también sobre
-/// los endpoints OK, que son los que nunca lo necesitan —el hash decide antes—, y
-/// el costo dejaría de estar acotado por lo que está roto.
+/// Es **perezoso a propósito**: derivarlo antes de saber si hace falta lo cobraría
+/// también sobre los endpoints OK, que son los que nunca lo necesitan —el hash
+/// decide antes—, y el costo dejaría de estar acotado por lo que está roto.
+///
+/// Adentro puede salir de la cache o de un walk por la historia; a quien compara no
+/// le cambia nada, y por eso ya no son dos campos. Lo fueron mientras el cacheado
+/// habilitaba un fast-path, que se sacó por infundado.
 pub(crate) struct CommitSource<'a> {
-    pub cached: Option<&'a str>,
     /// Se llama a lo sumo una vez, y sólo después de que el hash dijo que hay drift.
     pub derive: &'a mut dyn FnMut() -> Option<String>,
 }
 
+/// Qué dice el fragmento contra lo que se aprobó.
+///
+/// **No hay fast-path, y no puede haberlo por el camino que parecía obvio.** Hubo
+/// uno: si el archivo no cambió desde el commit donde vivía el contenido aceptado,
+/// conservar el `OK` cacheado sin volver a hashear. Su premisa es un *proxy* —"¿el
+/// archivo cambió?"— de la pregunta real —"¿el fragmento sigue hasheando a lo
+/// aceptado?"—, y las dos dejan de coincidir apenas cambia **cómo se resuelve el
+/// rango**: el mismo archivo produce otro fragmento, y el proxy no se entera nunca.
+///
+/// Pasó, y quedó escondido. La migración `18` cambió los bordes del rango; los
+/// endpoints aceptados antes quedaron con un `accepted.hash` que ya no coincide, y
+/// el fast-path los reportó `OK` durante toda una sesión — con `accept` creyéndole
+/// y no aceptando nada, que es la falla que `cache.md` llama *"una decisión
+/// perdida"*.
+///
+/// Y no compraba nada: el `git diff` que corría cuesta lo mismo que leer el archivo
+/// y hashearlo, porque es un subproceso contra una lectura. Se pagaba un proceso
+/// para ahorrarse un `read`.
 pub(crate) fn compare_content(
     layer: &Path,
     cap: &Capture,
     accepted: &bilink_format::Accepted,
     range: Option<&ByteRange>,
     commit: &mut CommitSource<'_>,
-    cached: Option<EndpointState>,
 ) -> Result<EndpointState> {
-    // Fast path: el archivo no cambió desde el commit del contenido aceptado.
-    //
-    // **Sólo vale para conservar un OK.** La cache se escribe leyendo el árbol de
-    // trabajo, no el commit, así que un estado no-OK pudo calcularse sobre una
-    // edición que después se revirtió: el diff sale vacío y el estado viejo
-    // describiría un contenido que ya no está.
-    if let (Some(c), Some(EndpointState::Ok)) = (commit.cached, cached) {
-        if !git_file_changed(layer, &cap.file, c) {
-            return Ok(EndpointState::Ok);
-        }
-    }
-
     let source = std::fs::read_to_string(layer.join(&cap.file))?;
     let Some(r) = range else { return Ok(EndpointState::Unresolved) };
     let fragment = &source[r.start..r.end.min(source.len())];
@@ -439,23 +441,6 @@ fn git_fragment_vanished(layer_root: &Path, file: &str, hash: Option<&str>) -> b
         .unwrap_or(false)
 }
 
-/// ¿El archivo cambió desde `commit`?
-///
-/// Ante la duda, `true`: si git no puede resolver la comparación —commit
-/// inexistente, repo sin historial— no se puede concluir que el archivo no
-/// cambió, y asumirlo saltea la verificación y reporta un estado obsoleto.
-fn git_file_changed(layer_root: &Path, file: &str, commit: &str) -> bool {
-    std::process::Command::new("git")
-        // `<commit>` sin `..HEAD`: compara contra el árbol de trabajo, no contra
-        // HEAD. Con `..HEAD` los cambios sin commitear quedaban invisibles y el
-        // fast-path devolvía el estado cacheado.
-        .args(["-C", &layer_root.to_string_lossy(), "diff", "--name-only",
-               commit, "--", file])
-        .output()
-        .map(|o| !o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(true)
-}
-
 /// Finds all bilinks referencing `file_path` across all layers under `root`.
 /// Returns `(bilink_path, endpoint_index, absolute_range)`.
 /// Uses `.bilink/.index` per layer when valid; falls back to O(N) scan.
@@ -523,8 +508,8 @@ mod tests {
         let range = ByteRange { start: 0, end: after.len() };
 
         let mut derive = || None;
-        let mut src = CommitSource { cached: None, derive: &mut derive };
-        let state = compare_content(d.path(), &cap, &accepted, Some(&range), &mut src, None).unwrap();
+        let mut src = CommitSource { derive: &mut derive };
+        let state = compare_content(d.path(), &cap, &accepted, Some(&range), &mut src).unwrap();
         assert_eq!(state, EndpointState::Altered,
                    "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
     }
