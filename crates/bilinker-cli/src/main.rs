@@ -168,10 +168,47 @@ enum Command {
         from: Option<String>,
     },
 
+    /// Trae a esta rama las decisiones que otra rama aceptó
+    ///
+    /// Después de un rebase: el código del vecino entró a la rama, y si el vecino
+    /// aceptó algo sobre ese código, los bilinks heredados reportarían drift que ya
+    /// está resuelto. Asimétrico: ninguna decisión de acá va para allá.
+    Adopt {
+        /// Rama del proyecto de la que traer decisiones (origin/main y main son lo mismo)
+        branch: String,
+        /// Calcular y reportar lo mismo, sin escribir un solo archivo
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Show status of all bilinks in the current layer (like git status)
     Status {
         /// Layer directory to inspect (default: current directory)
         path: Option<PathBuf>,
+        /// Qué cambió en .bilink/ respecto del commit de la ref, en vez de los estados
+        ///
+        /// Es el `git status` de bilinker: esos cambios no aparecen en el del
+        /// proyecto, que los tiene excluidos.
+        #[arg(long)]
+        porcelain: bool,
+    },
+
+    /// El registro de decisiones: los commits propios de refs/bilink/<branch>
+    ///
+    /// Quién aceptó qué y cuándo, sin una sola línea del historial del proyecto de
+    /// por medio.
+    Log {
+        /// Rama cuya ref leer. Default: la rama actual
+        branch: Option<String>,
+        /// Excluir los commits que la ref de esta otra rama ya tiene
+        #[arg(long, value_name = "RAMA")]
+        not: Option<String>,
+    },
+
+    /// El diff de .bilink/ contra el commit de la ref del que salió
+    Diff {
+        /// Commit de la ref contra el cual comparar. Default: el que head nombra
+        against: Option<String>,
     },
 
     /// Remove a bilink file from the current layer
@@ -692,17 +729,20 @@ Eliminar? [y/N] ");
             let body    = bullet_lines.join("\n");
             let message = format!("{summary}\n\n{body}");
 
-            match git_commit(&root, &applied, &message) {
+            // El acto se cierra con un commit. Sobre la ref si el repo ya cortó;
+            // sobre la rama del proyecto si todavía no, que es donde viven ahí.
+            let committed = match bilinker::bilink_ref::commit_act(&cwd, &message) {
+                Ok(Some(c)) => Ok(c.sha),
+                Ok(None)    => git_commit(&root, &applied, &message),
+                Err(e)      => Err(e),
+            };
+
+            match committed {
                 Ok(hash) => {
                     let n = fixes.len() - errors;
                     println!("\nRepuntados {n} endpoint(s). Los {n} quedan en RELOCATED.");
                     println!("  Revisar con `bilinker get <uuid>.<N>` y aprobar con `bilinker accept --place`.");
-                    let needs_accept: Vec<String> = Vec::new();
-                    if !needs_accept.is_empty() {
-                        println!("  {} requiere(n) `bilinker accept` — el contenido cambió: {}",
-                                 needs_accept.len(), needs_accept.join(", "));
-                    }
-                    println!("Committed: {hash} \"{summary}\"");
+                    println!("Committed: {} \"{summary}\"", short(&hash));
                     if errors > 0 {
                         eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
                         std::process::exit(1);
@@ -882,6 +922,7 @@ Eliminar? [y/N] ");
                 let (uuid, n) = parse_accept_target(&target)?;
                 let r = bilinker::accept::accept(&cwd, &uuid, n, what)?;
                 print_accept_result(&r);
+                seal(&cwd, &format!("accept {uuid}.{n}"))?;
             } else if is_path {
                 // Bulk: all PENDING under path filter
                 let filter = if target == "." { None } else { Some(target.trim_end_matches('/')) };
@@ -894,6 +935,13 @@ Eliminar? [y/N] ");
                         print_accept_result(r);
                     }
                     eprintln!("accepted {} endpoint(s)", results.len());
+                    let endpoints: Vec<String> = results.iter()
+                        .map(|r| format!("{}.{}", &r.uuid[..8.min(r.uuid.len())], r.n))
+                        .collect();
+                    seal(&cwd, &format!(
+                        "accept {}: {} endpoint(s)\n\n{}",
+                        target, results.len(), endpoints.join("\n")
+                    ))?;
                 }
             } else {
                 // UUID prefix: accept both endpoints
@@ -906,6 +954,7 @@ Eliminar? [y/N] ");
                 }
                 if count > 0 {
                     eprintln!("note: adjacent node will detect CHAIN_DIRTY on next check");
+                    seal(&cwd, &format!("accept {target}: {count} endpoint(s)"))?;
                 }
             }
         }
@@ -948,10 +997,36 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Status { path } => {
+        Command::Adopt { branch, dry_run } => {
+            let r = bilinker::adopt::adopt(&cwd, &branch, dry_run)?;
+            print_adopt(&r, dry_run);
+            if r.conflicts() > 0 { std::process::exit(1); }
+        }
+
+        Command::Status { path, porcelain } => {
             let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
-            print_status(&layer)?;
+            if porcelain {
+                for (change, file) in bilinker::review::status(&layer)? {
+                    println!("{} {file}", change.letter());
+                }
+            } else {
+                print_status(&layer)?;
+            }
+        }
+
+        Command::Log { branch, not } => {
+            let lines = bilinker::review::log(&cwd, branch.as_deref(), not.as_deref())?;
+            if lines.is_empty() {
+                eprintln!("ningún acto registrado en la ref");
+            }
+            for line in lines {
+                println!("{line}");
+            }
+        }
+
+        Command::Diff { against } => {
+            print!("{}", bilinker::review::diff(&cwd, against.as_deref())?);
         }
 
         Command::Chain { sub } => match sub {
@@ -1067,6 +1142,97 @@ fn print_sync(r: bilinker::sync::SyncResult, dry_run: bool) {
 
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
+}
+
+/// Cierra un acto con su commit sobre la ref.
+///
+/// **Un commit por invocación, no por aceptación**: la granularidad sigue al acto.
+/// No hace nada en un repo que todavía no cortó a la ref, donde los bilinks viven en
+/// la rama del proyecto y commitearlos es de quien trabaja.
+fn seal(cwd: &Path, message: &str) -> anyhow::Result<()> {
+    match bilinker::bilink_ref::commit_act(cwd, message)? {
+        Some(c) if c.wrote => {
+            eprintln!("commit:  refs/bilink/… @ {}{}", short(&c.sha),
+                      match &c.absorbed {
+                          Some(a) => format!("  (absorbe {})", short(a)),
+                          None    => String::new(),
+                      });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Las tres filas de `adopt`, agrupadas. Son las únicas posibles: `accepted` son
+/// campos con nombre, por endpoint, así que el merge a tres puntas los compara de a
+/// uno.
+fn print_adopt(r: &bilinker::adopt::AdoptResult, dry_run: bool) {
+    use bilinker::adopt::Row;
+
+    if r.changes.is_empty() && r.commits == 0 {
+        println!("refs/bilink/{} no avanzó desde la base — nada que adoptar", r.neighbour);
+        return;
+    }
+
+    match &r.base {
+        Some(b) => println!("base {} · {} de {}\n", short(b), plural(r.changes.len()), r.neighbour),
+        None => println!("sin base de merge con {} — toda diferencia es conflicto\n", r.neighbour),
+    }
+
+    let mut last = None;
+    for (row, label) in [(Row::Clean, "entra limpio"), (Row::Converged, "ya coincidía"),
+                         (Row::Conflict, "conflicto   ")] {
+        for c in r.changes.iter().filter(|c| c.row == row) {
+            let head = if last == Some(row) { "            " } else { label };
+            last = Some(row);
+            match row {
+                Row::Conflict => println!(
+                    "{head}     {}.{}   {}    {} {}  ·  acá {}",
+                    &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension, r.neighbour,
+                    trunc(c.theirs.as_deref()), trunc(c.mine.as_deref())
+                ),
+                Row::Converged => println!(
+                    "{head}     {}.{}   {}    — mismo valor de los dos lados",
+                    &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension
+                ),
+                Row::Clean => println!(
+                    "{head}     {}.{}   {}",
+                    &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension
+                ),
+            }
+        }
+    }
+
+    let conflicts = r.conflicts();
+    if conflicts > 0 {
+        println!(
+            "\n{conflicts} conflicto(s): no se escribió nada.\n  \
+             Revisar con `bilinker get <uuid>.<N> --diff` y decidir con `bilinker accept`."
+        );
+        return;
+    }
+    if dry_run {
+        println!("\ndry-run: no se escribió nada");
+        return;
+    }
+    if let Some(a) = &r.absorbed {
+        println!("\nabsorbe:  {} → {}", r.branch, short(a));
+    }
+    if r.commits > 0 {
+        println!("commit:   refs/bilink/{}  +{} endpoint(s)", r.branch, r.adopted());
+    }
+}
+
+fn plural(n: usize) -> String {
+    if n == 1 { "1 diferencia".into() } else { format!("{n} diferencias") }
+}
+
+fn trunc(s: Option<&str>) -> String {
+    match s {
+        Some(v) if v.len() > 8 => format!("{}…", &v[..8]),
+        Some(v) => v.to_string(),
+        None => "—".into(),
+    }
 }
 
 /// El estado de una cadena, recorriendo sus nodos.

@@ -34,7 +34,12 @@ impl CheckResult {
 /// Verifica una capa y deja el resultado en la cache.
 pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
     let layer = if path.join(".bilink").is_dir() { path.to_path_buf() } else { root.to_path_buf() };
-    let mut cache = Cache::load_for(&layer, None);
+    // **La cache se invalida sola al cambiar de rama.** Sin esto una capa devuelve
+    // estados de la rama anterior en silencio: `git checkout` no toca `.bilink/`, y
+    // los estados cacheados describen bilinks que ya no están en el árbol.
+    let ref_commit = Cache::ref_commit_of(&layer);
+    let mut cache = Cache::load_for(&layer, ref_commit.as_deref());
+    cache.ref_commit = ref_commit;
     let mut out = Vec::new();
 
     // Un mismo capture se resuelve **una sola vez**, aunque lo referencien varios

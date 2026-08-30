@@ -83,6 +83,21 @@ impl Cache {
             .unwrap_or_default()
     }
 
+    /// El commit de `refs/bilink/<branch>` al que corresponde el `.bilink/` de esta
+    /// capa, leído de [`head`](crate::bilink_ref).
+    ///
+    /// Sale de `head` y no de git: `head` es un hecho sobre el árbol, y es
+    /// exactamente la pregunta *"¿de qué commit salieron estos bilinks?"* que la
+    /// cache necesita para saber si sus estados siguen valiendo. Leerlo no cuesta un
+    /// proceso de git, y en una capa sin `head` —antes del corte— devuelve `None`,
+    /// que deja la cache como estaba.
+    pub fn ref_commit_of(layer: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(layer.join(".bilink").join("head")).ok()?;
+        text.lines()
+            .find_map(|l| l.strip_prefix("commit "))
+            .map(|c| c.trim().to_string())
+    }
+
     /// La cache, sólo si corresponde a este commit de la ref.
     ///
     /// Si no coincide, se descarta entera: describe otra rama.

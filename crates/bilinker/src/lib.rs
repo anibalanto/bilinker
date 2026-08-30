@@ -7,6 +7,7 @@
 pub use bilink_format::{bilink, link, VERSION as FORMAT_VERSION};
 
 pub mod accept;
+pub mod adopt;
 pub mod apply;
 pub mod bilink_ref;
 pub mod cache;
@@ -22,6 +23,7 @@ pub mod index;
 pub mod init;
 pub mod issue;
 pub mod query;
+pub mod review;
 pub mod state;
 pub mod sync;
 pub mod track;

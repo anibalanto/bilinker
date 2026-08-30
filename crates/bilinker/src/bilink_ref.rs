@@ -529,6 +529,56 @@ impl Repo {
         Ok(want.len())
     }
 
+    /// La rama del proyecto que un nombre escrito a mano nombra.
+    ///
+    /// `origin/main` y `main` son la misma rama, y la ref es una sola. Pero
+    /// `feature/x` **también** lleva una barra, así que partir por la última no
+    /// sirve: dejaría `x`. El prefijo se saca sólo si es el nombre de un remoto de
+    /// este repo, que es la única forma de distinguir los dos casos.
+    pub fn resolve_branch_name(&self, name: &str) -> String {
+        if self.ref_tip(name).is_some() {
+            return name.to_string();
+        }
+        for remote in crate::config::remotes(&self.root).unwrap_or_default() {
+            if let Some(rest) = name.strip_prefix(&format!("{remote}/")) {
+                return rest.to_string();
+            }
+        }
+        name.to_string()
+    }
+
+    /// Como [`Self::git`], pero devuelve stdout aunque git salga con error.
+    ///
+    /// Para los comandos cuyo código de salida no significa falla: `diff --no-index`
+    /// sale con 1 cuando los archivos difieren, que es el caso que interesa.
+    pub fn git_lenient(&self, args: &[&str]) -> String {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.root)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Si el repo tiene alguna `refs/bilink/*`. Distingue un repo que ya cortó de
+    /// uno que todavía lleva los bilinks en la rama.
+    pub fn has_any_ref(&self) -> Result<bool> {
+        Ok(!self.git(&["for-each-ref", "--format=%(refname)", "refs/bilink/"])?.trim().is_empty())
+    }
+
+    /// La base de merge entre dos commits, o `None` si no la tienen.
+    ///
+    /// Entre dos refs de bilinks sale gratis: es la base real, porque `track` pone
+    /// el commit del que hereda como **primer padre** en vez de copiar archivos.
+    pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
+        Ok(self.git(&["merge-base", a, b]).ok().map(|s| s.trim().to_string()))
+    }
+
+    /// Los paths de `.bilink/` de un commit.
+    pub fn bilink_paths_in(&self, commit: &str) -> Result<Vec<String>> {
+        Ok(self.bilink_blobs(commit)?.into_iter().map(|(p, _)| p).collect())
+    }
+
     /// Los blobs de `.bilink/` de un commit de la ref: `(path, oid)`.
     fn bilink_blobs(&self, ref_commit: &str) -> Result<Vec<(String, String)>> {
         let out = self.git(&["ls-tree", "-r", ref_commit])?;
@@ -614,6 +664,38 @@ impl Repo {
 pub struct Head {
     pub branch: String,
     pub commit: String,
+}
+
+/// El commit de la ref que cierra un acto.
+///
+/// **La granularidad sigue al acto, no al objeto**: una invocación de `accept` o de
+/// `apply`, no una aceptación. `accept .` da un commit, con el mensaje enumerando
+/// los endpoints, porque es una persona mirando y decidiendo **una vez**, y partirlo
+/// en N commits firmados no agrega verdad.
+///
+/// **No hace nada cuando la rama no tiene ref.** Es el estado de un repo antes del
+/// corte `005`: los bilinks todavía viven en la rama, git los ve como siempre, y
+/// commitearlos es de quien trabaja. Que el corte sea lo que enciende esto es lo que
+/// permite que el binario nuevo corra sobre repos que todavía no cortaron.
+pub fn commit_act(dir: &Path, message: &str) -> Result<Option<Commit>> {
+    let repo = Repo::open(dir)?;
+
+    let Some(branch) = repo.branch() else {
+        // En `HEAD` desacoplado los comandos que commitean sobre la ref se niegan —
+        // pero sólo si este repo ya está en la ref.
+        if repo.has_any_ref()? {
+            bail!(
+                "HEAD está desacoplado: no se puede commitear sobre la ref.\n  \
+                 Volver a una rama; lo que se escribió en .bilink/ sigue en el árbol."
+            );
+        }
+        return Ok(None);
+    };
+
+    if repo.ref_tip(&branch).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(repo.commit(&branch, message)?))
 }
 
 /// Qué pasó con el `.bilink/` del árbol al empezar un comando.

@@ -149,8 +149,8 @@ fn existing_refs(repo: &Repo) -> Result<Vec<String>> {
 /// `--from` nombra la **rama del proyecto**, no su ref de bilinks: una sola fuente
 /// de verdad, y nadie tipeando namespaces de refs. La traducción la hace acá.
 fn resolve_from(repo: &Repo, from: &str) -> Result<Candidate> {
-    let name = from.rsplit('/').next().unwrap_or(from);
-    let commit = repo.require_ref_tip(name)?;
+    let name = repo.resolve_branch_name(from);
+    let commit = repo.require_ref_tip(&name)?;
     let absorbed = repo.absorbed(&commit)?.unwrap_or_else(|| commit.clone());
     Ok(Candidate { commit, absorbed })
 }

@@ -1590,25 +1590,59 @@ fn switching_branches_rematerializes_the_bilinks_of_the_new_branch() {
 
 /// `cache-invalidates-on-branch-change` es la otra mitad del par: `head` protege a
 /// la fuente y el commit anotado en la cache protege al derivado.
+///
+/// Sin esto la cache devuelve estados de la rama anterior **en silencio**, y lo
+/// peor no es el reporte: `accept` le cree y no acepta nada, así que la rama se
+/// queda con un `accepted` viejo sin que nadie se entere.
 #[test]
 fn the_cache_does_not_return_states_from_the_previous_branch() {
     let (_t, root, uuid, _x) = cut_over();
     let main = branch_of(&root);
 
-    run_in(&root, &["check", "."]);
-    second_branch_without(&root, &uuid);
+    // Una segunda rama trackeada, con los mismos bilinks.
+    git(&root, &["checkout", "-q", "-b", "otra"]);
+    run_in(&root, &["track", "otra"]);
+
+    // En main el fragmento cambia y alguien lo acepta.
     git(&root, &["checkout", "-q", &main]);
     run_in(&root, &["init"]);
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    run_in(&root, &["sync"]);
+    let accepted_in_main = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
 
-    let cache = root.join(".bilink/cache/state");
-    if cache.exists() {
-        let text = fs::read_to_string(&cache).unwrap();
-        let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
-        let commit = head.lines()
-            .find_map(|l| l.strip_prefix("commit ")).unwrap().trim();
-        assert!(!text.contains("ref_commit") || text.contains(commit),
-                "la cache tiene que anotar el commit de la ref al que corresponde:\n{text}");
-    }
+    // En la otra rama el mismo cambio, sobre bilinks que todavía dicen lo viejo.
+    git(&root, &["checkout", "-q", "otra"]);
+    run_in(&root, &["init"]);
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el mismo cambio, del otro lado");
+
+    let states = check_states(&root);
+    assert!(states.contains("ALTERED"),
+            "la cache de main no puede contestar por otra: el fragmento acá sí cambió:\n{states}");
+
+    run_in(&root, &["accept", "."]);
+    assert_eq!(fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap(),
+               accepted_in_main,
+               "aceptar el mismo contenido en dos HEADs escribe los mismos valores");
+}
+
+/// El commit anotado en la cache sale de `head`, que es un hecho sobre el árbol.
+#[test]
+fn the_cache_records_the_ref_commit_it_was_computed_against() {
+    let (_t, root, _uuid, _x) = cut_over();
+    run_in(&root, &["check", "."]);
+
+    let cache = fs::read_to_string(root.join(".bilink/cache/state")).unwrap();
+    let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
+    let commit = head.lines().find_map(|l| l.strip_prefix("commit ")).unwrap().trim();
+
+    assert!(cache.contains(commit),
+            "la cache tiene que anotar de qué commit de la ref salió:\n{cache}");
 }
 
 /// `branch-switch-refuses-on-dirty-bilinks` — la guarda es la de git.
@@ -1684,4 +1718,341 @@ fn track_refuses_when_the_branch_already_has_a_ref() {
     let (_, stderr, ok) = run_in(&root, &["track", &branch]);
     assert!(!ok, "la ref ya existe");
     assert!(stderr.contains("sync"), "y el arreglo es sync:\n{stderr}");
+}
+
+// ─── adopt ─────────────────────────────────────────────────────────────────
+
+/// Dos ramas trackeadas que salen del mismo punto, para ejercer el merge a tres
+/// puntas de `adopt`.
+///
+/// La base sale gratis: es la base de merge real, porque `track` puso el commit
+/// heredado como **primer padre** en vez de copiar archivos.
+fn two_tracked_branches() -> (tempfile::TempDir, PathBuf, String, String) {
+    let (tmp, root, uuid, _x) = cut_over();
+    let main = branch_of(&root);
+
+    git(&root, &["checkout", "-q", "-b", "feature/x"]);
+    let (_, stderr, ok) = run_in(&root, &["track", "feature/x"]);
+    assert!(ok, "track feature/x falló:\n{stderr}");
+
+    (tmp, root, main, uuid)
+}
+
+/// Acepta de nuevo el endpoint estructural tras cambiar el fragmento, y commitea
+/// sobre la ref. Es lo que produce una decisión del otro lado.
+fn decide_on(root: &Path, branch: &str, content: &str) {
+    git(root, &["checkout", "-q", branch]);
+    run_in(root, &["init"]);
+    fs::write(root.join("src/Service.java"), content).unwrap();
+    commit(root, "el fragmento cambia");
+    run_in(root, &["check", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "."]);
+    assert!(ok, "accept falló en {branch}:\n{stderr}");
+    let (_, stderr, ok) = run_in(root, &["sync"]);
+    assert!(ok, "sync falló en {branch}:\n{stderr}");
+}
+
+/// `adopt-brings-neighbour-decisions` — las aceptaciones del vecino entran.
+#[test]
+fn adopt_brings_the_decisions_of_the_neighbour_branch() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    decide_on(&root, &main, "public class Service {\n    public void run() { int x = 1; }\n}\n");
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    // La rama rebasea sobre main: el código del vecino entra acá.
+    git(&root, &["rebase", "-q", &main]);
+    run_in(&root, &["init"]);
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", &main]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("entra limpio"), "las decisiones de main entran:\n{stdout}");
+
+    let bl = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    let main_bl = git_out(&root, &["show",
+        &format!("refs/bilink/{main}:.bilink/{uuid}.yaml")]);
+    assert_eq!(bl.trim(), main_bl.trim(),
+               "el accepted del vecino llegó entero");
+}
+
+/// `adopt-dry-run-is-inert-and-exact`.
+#[test]
+fn adopt_dry_run_writes_nothing() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+    decide_on(&root, &main, "public class Service {\n    public void run() { int x = 1; }\n}\n");
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    git(&root, &["rebase", "-q", &main]);
+    run_in(&root, &["init"]);
+
+    let before_ref = rev(&root, "refs/bilink/feature/x");
+    let before_bl = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", &main, "--dry-run"]);
+    assert!(ok, "dry-run falló:\n{stderr}");
+    assert!(stdout.contains("no se escribió nada"), "y lo dice:\n{stdout}");
+    assert_eq!(before_ref, rev(&root, "refs/bilink/feature/x"), "la ref no se movió");
+    assert_eq!(before_bl,
+               fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap(),
+               "ni el bilink del árbol");
+}
+
+/// `adopt-converges-without-conflict` — lo que las dos ramas aceptaron igual no
+/// conflictúa, y es la fila "ya coincidía".
+#[test]
+fn what_both_branches_accepted_alike_does_not_conflict() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+    let same = "public class Service {\n    public void run() { int x = 1; }\n}\n";
+
+    decide_on(&root, &main, same);
+    // La misma decisión, del otro lado y sobre otro HEAD.
+    decide_on(&root, "feature/x", same);
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", &main, "--dry-run"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(!stdout.contains("conflicto"),
+            "dos personas que aceptan el mismo contenido escriben los mismos valores:\n{stdout}");
+}
+
+/// Los conflictos paran el comando, y no se escribe nada — ni siquiera la absorción.
+#[test]
+fn a_conflict_stops_adopt_without_writing_anything() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+
+    decide_on(&root, &main, "public class Service {\n    public void run() { int x = 1; }\n}\n");
+    decide_on(&root, "feature/x", "public class Service {\n    public void run() { int y = 2; }\n}\n");
+
+    let before = rev(&root, "refs/bilink/feature/x");
+    let (stdout, _, ok) = run_in(&root, &["adopt", &main]);
+    assert!(!ok, "con conflicto el comando falla:\n{stdout}");
+    assert!(stdout.contains("conflicto"), "y los enumera:\n{stdout}");
+    assert!(stdout.contains("no se escribió nada"), "y lo dice:\n{stdout}");
+    assert_eq!(before, rev(&root, "refs/bilink/feature/x"), "todo o nada");
+}
+
+/// `adopt` es asimétrico: lo que sólo yo decidí se queda como está.
+#[test]
+fn adopt_never_overwrites_a_decision_only_this_branch_made() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    // Sólo feature/x decide. main no tocó nada.
+    decide_on(&root, "feature/x", "public class Service {\n    public void run() { int y = 2; }\n}\n");
+    let mine = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", &main]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert_eq!(mine, fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap(),
+               "ninguna decisión propia se pisa");
+}
+
+/// Adoptar de la rama actual no tiene sentido y se dice.
+#[test]
+fn adopt_refuses_the_current_branch() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let (_, stderr, ok) = run_in(&root, &["adopt", &branch]);
+    assert!(!ok, "no hay nada que adoptar de uno mismo");
+    assert!(stderr.contains("rama actual"), "y se dice:\n{stderr}");
+}
+
+// ─── accept y apply commitean sobre la ref ─────────────────────────────────
+
+/// `accept-absorbs-before-committing` — absorber es precondición, no comportamiento.
+#[test]
+fn accept_absorbs_the_commit_it_accepted_against() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    let e = rev(&root, "HEAD");
+
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
+    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+    assert_eq!(parents.len(), 2, "el accept absorbió en el mismo commit:\n{parents:?}");
+    assert_eq!(parents[1], e, "el segundo padre es el commit contra el que se aceptó");
+
+    // La invariante de fidelidad se verifica sola.
+    let diff = git_out(&root, &["diff-tree", "-r", "--name-only", &e, &bref]);
+    let strays: Vec<&str> = diff.lines()
+        .filter(|l| !l.trim().is_empty() && !l.contains(".bilink/")).collect();
+    assert!(strays.is_empty(), "el árbol de código es el del commit absorbido:\n{strays:?}");
+}
+
+/// `act-without-new-code-has-one-parent` — el merge es la forma de ponerse al día,
+/// no la forma del acto.
+#[test]
+fn an_accept_with_the_project_still_has_a_single_parent() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);          // este absorbe
+
+    let tree_before = rev(&root, &format!("{bref}^{{tree}}"));
+
+    // Segundo acto, con el proyecto quieto: nada nuevo que traer.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 2; }\n}\n").unwrap();
+    commit(&root, "otra vez");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);          // este también absorbe
+    run_in(&root, &["accept", "."]);          // y este no tiene nada que hacer
+
+    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
+    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+    assert_eq!(parents.len(), 2, "el último accept con cambios absorbió");
+    assert_ne!(tree_before, rev(&root, &format!("{bref}^{{tree}}")), "y escribió algo");
+}
+
+/// La granularidad sigue al acto: `accept .` da **un** commit, no N.
+#[test]
+fn accept_writes_one_commit_per_invocation_not_per_endpoint() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Los dos endpoints cambian a la vez.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "los dos lados cambian");
+
+    let before = git_out(&root, &["rev-list", "--count", &bref]);
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+    let after = git_out(&root, &["rev-list", "--count", &bref]);
+
+    let grew: usize = after.trim().parse::<usize>().unwrap()
+        - before.trim().parse::<usize>().unwrap();
+    assert_eq!(grew, 2, "un commit del acto más el del proyecto absorbido, no uno por endpoint");
+
+    let subject = git_out(&root, &["log", "-1", "--format=%s", &bref]);
+    assert!(subject.contains("2 endpoint"), "y el mensaje los enumera:\n{subject}");
+}
+
+/// En un repo que todavía no cortó, `accept` no commitea nada: los bilinks viven en
+/// la rama y commitearlos es de quien trabaja.
+#[test]
+fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
+    let (_t, root, _uuid) = accepted_layer();
+    let before = rev(&root, "HEAD");
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    let after_project_commit = rev(&root, "HEAD");
+
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    assert_ne!(before, after_project_commit);
+    assert_eq!(after_project_commit, rev(&root, "HEAD"),
+               "sin ref, accept no escribe ningún commit");
+    assert!(git_out(&root, &["for-each-ref", "refs/bilink/"]).trim().is_empty(),
+            "y no crea ninguna ref por su cuenta");
+}
+
+// ─── La superficie de revisión ─────────────────────────────────────────────
+
+/// `bilinker-has-its-own-status` — los cambios de bilinker se ven en su índice, no
+/// en el del proyecto.
+#[test]
+fn the_bilink_changes_are_visible_to_bilinker_and_invisible_to_git() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    // Un cambio en .bilink/ sin commitear sobre la ref.
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    fs::write(&path, format!("{}# a mano\n", fs::read_to_string(&path).unwrap())).unwrap();
+
+    let (mine, stderr, ok) = run_in(&root, &["status", "--porcelain"]);
+    assert!(ok, "status --porcelain falló:\n{stderr}");
+    assert!(mine.contains(&format!("M .bilink/{uuid}.yaml")),
+            "el índice propio lo ve:\n{mine}");
+
+    let theirs = git_out(&root, &["status", "--porcelain"]);
+    assert!(!theirs.contains(".bilink"),
+            "el índice del proyecto no, porque los tiene excluidos:\n{theirs}");
+}
+
+/// `first-parent-shows-only-bilinks` — el registro de decisiones no lleva una sola
+/// línea del historial del proyecto.
+#[test]
+fn log_shows_only_the_acts_of_the_ref() {
+    let (_t, root, _uuid, _x) = cut_over();
+
+    for (content, msg) in [
+        ("public class Service {\n    public void run() { int x = 1; }\n}\n", "uno"),
+        ("public class Service {\n    public void run() { int x = 2; }\n}\n", "dos"),
+    ] {
+        fs::write(root.join("src/Service.java"), content).unwrap();
+        commit(&root, msg);
+        run_in(&root, &["check", "."]);
+        run_in(&root, &["accept", "."]);
+    }
+
+    let (out, stderr, ok) = run_in(&root, &["log"]);
+    assert!(ok, "log falló:\n{stderr}");
+
+    for line in out.lines() {
+        assert!(!line.contains(" uno") && !line.contains(" dos"),
+                "el log de la ref no muestra commits del proyecto:\n{out}");
+    }
+    assert!(out.lines().any(|l| l.contains("corte")), "y llega hasta el corte:\n{out}");
+    assert_eq!(out.lines().filter(|l| l.contains("accept")).count(), 2,
+               "un acto por invocación:\n{out}");
+}
+
+/// El log se corta en el corte: sin freno seguiría por la historia del proyecto.
+#[test]
+fn log_stops_at_the_cut() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let (out, _, ok) = run_in(&root, &["log"]);
+    assert!(ok);
+    assert_eq!(out.lines().count(), 1, "sólo el corte, no la historia del proyecto:\n{out}");
+}
+
+/// `bilinker log <suya> --not <mía>` es lo que contesta qué actos hubo del otro lado.
+#[test]
+fn log_can_exclude_what_this_branch_already_has() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+    decide_on(&root, &main, "public class Service {\n    public void run() { int x = 1; }\n}\n");
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+
+    let (out, stderr, ok) = run_in(&root, &["log", &main, "--not", "feature/x"]);
+    assert!(ok, "log falló:\n{stderr}");
+    assert!(out.lines().any(|l| l.contains("accept")),
+            "el acto de main que feature/x no tiene:\n{out}");
+    assert!(!out.lines().any(|l| l.contains("corte")),
+            "y no lo que las dos comparten:\n{out}");
+}
+
+/// `bilinker diff` muestra lo que `git diff` no puede mostrar.
+#[test]
+fn diff_shows_the_uncommitted_bilink_changes() {
+    let (_t, root, uuid, _x) = cut_over();
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    fs::write(&path, format!("{}# a mano\n", fs::read_to_string(&path).unwrap())).unwrap();
+
+    let (out, stderr, ok) = run_in(&root, &["diff"]);
+    assert!(ok, "diff falló:\n{stderr}");
+    assert!(out.contains("# a mano"), "el diff propio lo muestra:\n{out}");
+
+    let theirs = git_out(&root, &["diff"]);
+    assert!(!theirs.contains("a mano"), "el del proyecto no:\n{theirs}");
 }
