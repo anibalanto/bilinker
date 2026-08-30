@@ -98,9 +98,13 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
                             &uuid[..8.min(uuid.len())]);
                         continue;
                     }
-                    match compute_offset(layer, &bl, uuid, n, &cap, cached)? {
-                        Some(c) => (c, if cached == EndpointState::Expanded { "EXPANDED" } else { "DISPLACED" }),
-                        None => continue,
+                    match compute_offset(layer, &bl, uuid, n, &cap, cached) {
+                        Ok(c) => (c, if cached == EndpointState::Expanded { "EXPANDED" } else { "DISPLACED" }),
+                        Err(why) => {
+                            eprintln!("warn: {}… endpoint.{n}: {why}",
+                                      &uuid[..8.min(uuid.len())]);
+                            continue;
+                        }
                     }
                 }
                 _ => continue,
@@ -188,21 +192,36 @@ fn compute_reanchored(
 }
 
 /// DISPLACED y EXPANDED: el offset se corre o se amplía.
+/// La ubicación nueva de un DISPLACED o un EXPANDED, o **por qué no la hay**.
+///
+/// `check` dice que hay un fix disponible; acá se produce, y a veces no se puede.
+/// Devolver `None` en cada uno de esos casos dejaba a `check` reportando un estado
+/// con fix y a `apply` contestando que no hay nada que hacer, sin nadie que
+/// explicara la contradicción. El `Err` es el motivo, y `apply` lo imprime.
 fn compute_offset(
     layer: &Path, bl: &BiLink, uuid: &str, n: u8, cap: &Capture, state: EndpointState,
-) -> Result<Option<Capture>> {
-    let Some(accepted) = bl.endpoint.get(n).accepted.as_ref() else { return Ok(None) };
+) -> Result<Capture> {
+    let Some(accepted) = bl.endpoint.get(n).accepted.as_ref() else {
+        bail!("{state}, pero el endpoint no tiene nada aprobado que buscar");
+    };
     let cache = Cache::load(layer);
-    let Some(commit) = cache.commit(uuid, n) else { return Ok(None) };
+    let Some(commit) = cache.commit(uuid, n) else {
+        bail!("{state}, pero no hay commit del contenido aceptado en la cache — \
+               correr `bilinker check`");
+    };
     let Some(text) = crate::capture::accepted_text(layer, cap, commit, Some(&accepted.hash)) else {
-        return Ok(None);
+        bail!("{state}, pero git no entrega el texto aceptado en {commit} — sin él no \
+               hay qué buscar");
     };
 
     let source = std::fs::read_to_string(layer.join(&cap.file))?;
-    let Some(q) = &cap.query else { return Ok(None) };
+    let Some(q) = &cap.query else {
+        bail!("{state} sobre un capture de archivo completo: no hay nodo al que \
+               referir un offset");
+    };
     let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
     let Some((node_start, node_end, _)) = query::find_target_with_sexp(language, &source, q)? else {
-        return Ok(None);
+        bail!("{state}, pero la query ya no resuelve — repuntar con `bilinker recapture`");
     };
     let node = &source[node_start..node_end.min(source.len())];
 
@@ -210,11 +229,17 @@ fn compute_offset(
         // Creció alrededor de lo aceptado: el offset abarca el nodo entero.
         EndpointState::Expanded => None,
         // Se corrió: el offset apunta a donde está ahora.
-        EndpointState::Displaced => {
-            let pos = node.find(&text).map(|p| ByteRange { start: p, end: p + text.len() });
-            match pos { Some(r) => Some(r), None => return Ok(None) }
-        }
-        _ => return Ok(None),
+        //
+        // `check` busca el texto en todo el archivo y acá se busca dentro del
+        // nodo, que es donde un offset puede nombrarlo. Cuando el texto quedó
+        // fuera del nodo los dos tienen razón y no hay offset que sirva.
+        EndpointState::Displaced => match node.find(&text) {
+            Some(p) => Some(ByteRange { start: p, end: p + text.len() }),
+            None => bail!("DISPLACED, pero el texto aceptado no está dentro del nodo \
+                           — un offset no puede nombrarlo. Repuntar con \
+                           `bilinker recapture`"),
+        },
+        other => bail!("{other} no es un estado con fix de offset"),
     };
-    Ok(Some(Capture { offset, ..cap.clone() }))
+    Ok(Capture { offset, ..cap.clone() })
 }

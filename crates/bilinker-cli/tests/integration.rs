@@ -1000,3 +1000,37 @@ fn remove_finds_a_bilink_by_its_prefix() {
     assert!(ok, "remove no encontró un bilink que existe:\n{err}");
     assert!(!root.join(format!(".bilink/{uuid}.yaml")).exists(), "no lo borró");
 }
+
+/// Un estado con fix que `apply` no puede calcular se reporta, no se omite.
+///
+/// Un `offset` es relativo al nodo, así que un capture de archivo completo —que
+/// no tiene nodo— no puede recibir uno. `check` igual dice EXPANDED, que es un
+/// estado con fix. Callarse deja a `check` reportando un fix disponible y a
+/// `apply` contestando que no hay nada que hacer, sin nadie que lo explique.
+#[test]
+fn apply_says_why_it_cannot_compute_a_fix() {
+    let (_t, root) = isolated_git_workspace();
+
+    // Sin posición, el tip captura el archivo entero: el capture sale sin query.
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java:2:5"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    let spec = fs::read_to_string(root.join("docs/spec.md")).unwrap();
+    fs::write(root.join("docs/spec.md"), format!("{spec}\nY algo más.\n")).unwrap();
+    commit(&root, "creció");
+
+    let states = check_states(&root);
+    assert!(states.contains("EXPANDED"), "el escenario no se armó:\n{states}");
+
+    let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(err.contains("warn"),
+            "apply se calló un fix que no puede calcular:\n{out}{err}");
+    assert!(err.contains("archivo completo"), "y no dijo por qué:\n{err}");
+}
+
+fn commit(root: &Path, msg: &str) {
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", msg]] {
+        std::process::Command::new("git").current_dir(root).args(&args).output().unwrap();
+    }
+}
