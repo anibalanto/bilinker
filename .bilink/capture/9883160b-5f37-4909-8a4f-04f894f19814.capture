@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "resolve_task_path")) @target
 
 # Cache
-range:       356~933
+range:       855~2005
 state:       RESOLVED
-resolved_at: 2026-08-29T23:41:11Z
+resolved_at: 2026-08-30T01:35:08Z

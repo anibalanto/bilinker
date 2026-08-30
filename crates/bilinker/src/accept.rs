@@ -104,12 +104,18 @@ fn compute_hash_and_commit(
         }
 
         LinkEndpoint::Task(id) => {
-            let (task_path, project_root) = resolve_task_path(layer_root, id);
+            let (task_path, project_root) = resolve_task_path(layer_root, id)?;
+            let task_path = task_path
+                .ok_or_else(|| anyhow::anyhow!("no hay ítem de worklist con id '{id}'"))?;
             let source = std::fs::read_to_string(&task_path)
                 .with_context(|| format!("reading task {}", task_path.display()))?;
             let frag_hash = hash::sha256(source.as_bytes());
             let h = hash_override.map(String::from).unwrap_or(frag_hash);
-            let rel = format!(".stratum/worklist/{id}.task");
+            // El path relativo al repo raíz sale del archivo que se encontró: componerlo
+            // a mano exigiría saber el tipo del ítem, que el endpoint no lleva.
+            let rel = task_path.strip_prefix(&project_root)
+                .unwrap_or(&task_path)
+                .display().to_string();
             let c = commit_override.map(String::from)
                 .unwrap_or_else(|| try_head_commit_for_file(&project_root, &rel)
                     .unwrap_or_default());

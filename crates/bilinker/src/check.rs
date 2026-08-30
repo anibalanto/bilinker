@@ -468,7 +468,13 @@ fn check_task(
     task_id: &str,
     stored_hash: Option<&str>,
 ) -> Result<(EndpointState, Option<ByteRange>)> {
-    let (task_path, _) = resolve_task_path(layer_root, task_id);
+    let (task_path, _) = resolve_task_path(layer_root, task_id)?;
+    // Mismo criterio que un endpoint layer: sin hash aceptado el ítem todavía no
+    // existe (TODO); con hash aceptado, existía y desapareció (BROKEN).
+    let Some(task_path) = task_path else {
+        let absent = if stored_hash.is_none() { EndpointState::Todo } else { EndpointState::Broken };
+        return Ok((absent, None));
+    };
     let task_dir = match task_path.parent() {
         Some(d) => d.to_path_buf(),
         None => return Ok((EndpointState::Broken, None)),
