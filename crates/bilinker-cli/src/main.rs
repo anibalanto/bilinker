@@ -528,14 +528,19 @@ Eliminar? [y/N] ");
             let check_path = if path.is_absolute() { path } else { cwd.join(path) };
             let results = bilinker::check::check(&root, &check_path)?;
 
+            // Se imprime todo lo que no está OK; solo falla lo que no tiene auto-fix.
             let mut exit_code = 0;
+            let mut shown     = 0;
             for r in &results {
-                if !r.is_clean() {
-                    exit_code = 1;
+                if !r.all_ok() {
+                    shown += 1;
                     println!("{}  ({}, {})", &r.uuid[..8], r.state0, r.state1);
                 }
+                if !r.is_clean() {
+                    exit_code = 1;
+                }
             }
-            if exit_code == 0 {
+            if shown == 0 {
                 eprintln!("all clean ({} bilink(s))", results.len());
             }
             std::process::exit(exit_code);

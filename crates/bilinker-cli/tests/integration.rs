@@ -456,5 +456,76 @@ fn index_recursive_covers_all_layers() {
     assert_eq!(stdout.lines().count(), 2, "expected two index lines in output:\n{stdout}");
 }
 
+// ─── 8. la salida de check es fiel al estado ───────────────────────────────
+
+/// Crea una cadena sobre `docs/spec.md`, la acepta, y devuelve `(root, uuid8)`.
+fn accepted_chain_on_spec(root: &std::path::Path) -> String {
+    let (stdout, stderr, ok) = run_in(root, &[
+        "chain", "new",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(ok, "chain new failed:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid en la salida de chain new")
+        .trim()
+        .to_string();
+
+    run_in(root, &["check", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "."]);
+    assert!(ok, "accept failed:\n{stderr}");
+
+    uuid[..8].to_string()
+}
+
+/// EXPANDED no está OK, así que se imprime — aunque no haga fallar a `check`.
+///
+/// Fija la separación entre "qué se muestra" y "qué código de salida se
+/// devuelve": el filtro de salida excluye OK, no enumera estados. Si volviera a
+/// enumerarlos, cada estado con auto-fix quedaría mudo.
+#[test]
+fn check_reports_an_expanded_endpoint() {
+    let (_tmp, root) = isolated_git_workspace();
+    let uuid8 = accepted_chain_on_spec(&root);
+
+    // La sección crece alrededor de lo aceptado, sin tocarlo → EXPANDED.
+    let spec = root.join("docs/spec.md");
+    let grown = fs::read_to_string(&spec).unwrap() + "\nUna línea más.\n";
+    fs::write(&spec, grown).unwrap();
+
+    let (stdout, _stderr, ok) = run_in(&root, &["check", "."]);
+    assert!(stdout.contains(&uuid8),
+        "un endpoint EXPANDED tiene que aparecer en la salida:\n{stdout}");
+    assert!(stdout.contains("EXPANDED"),
+        "esperaba EXPANDED en la salida:\n{stdout}");
+    assert!(ok, "EXPANDED tiene auto-fix: no debe cambiar el código de salida");
+}
+
+/// Revertir la edición devuelve el endpoint a OK, sin pasar por `accept`.
+///
+/// El fast-path de `check` pregunta si el archivo cambió desde `commit.N`. Una
+/// edición y su reversión se cancelan, así que la respuesta es "no" — y el
+/// estado cacheado, calculado sobre el árbol de trabajo sucio, describiría un
+/// contenido que ya no está. Por eso solo se conserva un OK.
+#[test]
+fn check_clears_a_stale_state_when_the_edit_is_reverted() {
+    let (_tmp, root) = isolated_git_workspace();
+    let uuid8 = accepted_chain_on_spec(&root);
+
+    let spec = root.join("docs/spec.md");
+    let original = fs::read_to_string(&spec).unwrap();
+
+    fs::write(&spec, original.clone() + "\nUna línea más.\n").unwrap();
+    let (stdout, _, _) = run_in(&root, &["check", "."]);
+    assert!(stdout.contains(&uuid8), "el estado sucio tiene que verse primero:\n{stdout}");
+
+    fs::write(&spec, &original).unwrap();
+    let (stdout, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!stdout.contains(&uuid8),
+        "revertir la edición tiene que devolver el endpoint a OK:\n{stdout}");
+    assert!(ok);
+}
+
 // ─── helpers ───────────────────────────────────────────────────────────────
 

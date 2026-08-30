@@ -19,6 +19,18 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
+    /// Los dos endpoints en OK. Decide **qué se imprime**.
+    ///
+    /// Distinto de `is_clean`, que decide el código de salida. Un endpoint con
+    /// auto-fix no está OK —hay trabajo— pero no obliga a fallar, porque `apply`
+    /// lo resuelve sin decisión humana. Enumerar estados para decidir qué mostrar
+    /// hace que cada estado nuevo nazca mudo; acá se excluye OK y nada más.
+    pub fn all_ok(&self) -> bool {
+        self.state0 == EndpointState::Ok && self.state1 == EndpointState::Ok
+    }
+
+    /// El criterio de código de salida de `commands/check.md` § "Código de salida":
+    /// los estados con auto-fix no hacen fallar a `check`.
     pub fn is_clean(&self) -> bool {
         use EndpointState::*;
         matches!(self.state0, Ok | Moved | Displaced | Reanchored | Expanded | Todo | Restyled)
@@ -302,8 +314,14 @@ pub(crate) fn check_structural(
         return Ok((EndpointState::Broken, None));
     }
 
-    // Fast path: if file unchanged since accepted commit, reuse cached state.
-    if let (Some(commit), Some(state)) = (commit, cached_state) {
+    // Fast path: el archivo no cambió desde el commit aceptado.
+    //
+    // Solo vale para conservar un OK. La cache se escribe leyendo el árbol de
+    // trabajo, no el commit, así que un estado no-OK pudo calcularse sobre una
+    // edición que después se revirtió: el diff sale vacío y el estado viejo
+    // describiría un contenido que ya no está. Recalcular lo no-OK cuesta
+    // proporcionalmente a lo que está roto.
+    if let (Some(commit), Some(state @ EndpointState::Ok)) = (commit, cached_state) {
         if !git_file_changed(root, &sref.file, commit) {
             return Ok((state.clone(), stored_range.cloned()));
         }
