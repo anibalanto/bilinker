@@ -3,6 +3,6 @@ query:  (enum_item
   name: (type_identifier) @n0 (#eq? @n0 "LinkEndpoint")) @target
 
 # Cache
-range:       3355~3815
+range:       3356~3999
 state:       RESOLVED
-resolved_at: 2026-08-29T23:37:22Z
+resolved_at: 2026-08-30T01:56:04Z

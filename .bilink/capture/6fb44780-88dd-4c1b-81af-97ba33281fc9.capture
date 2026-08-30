@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "check_structural")) @target
 
 # Cache
-range:       11632~16937
+range:       11635~16940
 state:       RESOLVED
-resolved_at: 2026-08-30T00:27:19Z
+resolved_at: 2026-08-30T01:56:04Z

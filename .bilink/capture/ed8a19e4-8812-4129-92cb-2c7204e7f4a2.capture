@@ -5,6 +5,6 @@ query:  (impl_item
   name: (identifier) @n0 (#eq? @n0 "all_ok")) @target))
 
 # Cache
-range:       892~1005
+range:       894~1007
 state:       RESOLVED
-resolved_at: 2026-08-30T00:28:06Z
+resolved_at: 2026-08-30T01:56:04Z

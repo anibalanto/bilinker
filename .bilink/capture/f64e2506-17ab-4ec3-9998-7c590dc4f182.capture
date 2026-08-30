@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "find_renamed_anchor")) @target
 
 # Cache
-range:       8661~10087
+range:       8664~10090
 state:       RESOLVED
-resolved_at: 2026-08-30T00:27:19Z
+resolved_at: 2026-08-30T01:56:04Z

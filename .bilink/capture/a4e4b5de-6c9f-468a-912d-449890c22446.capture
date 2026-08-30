@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "check_layer")) @target
 
 # Cache
-range:       16939~18258
+range:       16942~18261
 state:       RESOLVED
-resolved_at: 2026-08-30T00:27:19Z
+resolved_at: 2026-08-30T01:56:04Z

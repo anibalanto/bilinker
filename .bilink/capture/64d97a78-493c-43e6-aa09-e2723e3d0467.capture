@@ -2,6 +2,6 @@ file:   crates/bilinker/src/accept.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "accept_layer")) @target
 
 # Cache
-range:       6198~8191
+range:       6210~8203
 state:       RESOLVED
-resolved_at: 2026-08-30T01:35:08Z
+resolved_at: 2026-08-30T01:56:04Z

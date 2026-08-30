@@ -2,6 +2,6 @@ file:   crates/bilinker/src/check.rs
 query:  (function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_ok_when_hash_matches")) @target
 
 # Cache
-range:       21532~22604
+range:       21546~22618
 state:       RESOLVED
-resolved_at: 2026-08-30T01:35:07Z
+resolved_at: 2026-08-30T01:56:04Z

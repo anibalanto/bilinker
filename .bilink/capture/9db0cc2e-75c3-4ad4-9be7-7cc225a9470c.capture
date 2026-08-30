@@ -3,6 +3,6 @@ query:  (function_item
   name: (identifier) @n0 (#eq? @n0 "git_file_changed")) @target
 
 # Cache
-range:       11085~11630
+range:       11088~11633
 state:       RESOLVED
-resolved_at: 2026-08-30T00:27:20Z
+resolved_at: 2026-08-30T01:56:04Z
