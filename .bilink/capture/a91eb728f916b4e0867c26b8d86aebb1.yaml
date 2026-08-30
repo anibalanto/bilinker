@@ -1,2 +1,0 @@
-file: crates/bilinker/src/check.rs
-query: '(function_item name: (identifier) @n0 (#eq? @n0 "check_whole_file_altered_when_hash_differs")) @target'

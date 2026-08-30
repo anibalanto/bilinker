@@ -1,5 +1,0 @@
-file: crates/bilinker/src/apply.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "apply_fix")) @target
-offset: 291~498

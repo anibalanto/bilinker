@@ -1,5 +1,0 @@
-file: crates/bilinker/src/apply.rs
-query: |-
-  (function_item
-    name: (identifier) @n0 (#eq? @n0 "scan_fixeable")) @target
-offset: 1309~2520
