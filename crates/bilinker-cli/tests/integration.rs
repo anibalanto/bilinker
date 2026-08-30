@@ -1160,3 +1160,44 @@ fn sole_uuid(root: &Path) -> String {
         .find_map(|e| e.file_name().to_str()?.strip_suffix(".yaml").map(str::to_owned))
         .expect("un bilink")
 }
+
+/// El diff aproximado también funciona desde una capa que no es la raíz del repo.
+///
+/// Cuando el texto aceptado no se puede verificar por hash en el commit cacheado,
+/// `get --diff` cae a mostrar el fragmento por su range: para un diff informativo
+/// es mejor algo aproximado que nada. Ese camino tiene su propio `git show`, y
+/// `git show <commit>:<path>` resuelve el path contra la raíz del **repo**, no
+/// contra el `-C`. Una capa anidada —`subsystems/lattice` dentro de accreta—
+/// guarda paths relativos a sí misma, y sin traducirlos el comando falla.
+#[test]
+fn the_approximate_diff_works_from_a_nested_layer() {
+    let (_t, root) = isolated_git_workspace();
+    let nested = root.join("subsystems/thing");
+    fs::create_dir_all(nested.join("docs")).unwrap();
+    fs::create_dir_all(nested.join(".stratum/impl/src")).unwrap();
+    fs::write(nested.join("docs/spec.md"), "# Spec\n\nContenido original.\n").unwrap();
+    fs::write(nested.join(".stratum/impl/src/lib.rs"), "pub fn run() {}\n").unwrap();
+    // Lo que la hace una capa: su propio `.bilink/` sin su propio `.git/`.
+    fs::create_dir_all(nested.join(".bilink")).unwrap();
+    commit(&root, "capa anidada");
+
+    run_in(&nested, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", ">impl/src/lib.rs:1:1"]);
+    run_in(&nested, &["check", "."]);
+    run_in(&nested, &["accept", "."]);
+    let uuid = sole_uuid(&nested);
+
+    // El hash aceptado deja de verificar en ese commit: es lo que empuja al
+    // camino aproximado, y es lo que pasa cuando el fragmento derivó de verdad.
+    let bl_path = nested.join(format!(".bilink/{uuid}.yaml"));
+    let bl = fs::read_to_string(&bl_path).unwrap();
+    let cut = bl.find("      hash: ").unwrap() + "      hash: ".len();
+    let end = bl[cut..].find('\n').unwrap() + cut;
+    fs::write(&bl_path, format!("{}{}{}", &bl[..cut], "0".repeat(64), &bl[end..])).unwrap();
+
+    fs::write(nested.join("docs/spec.md"), "# Spec\n\nContenido nuevo.\n").unwrap();
+
+    let (out, err, ok) = run_in(&nested, &["get", &format!("{uuid}.0"), "--diff"]);
+    assert!(ok, "el diff aproximado falló desde una capa anidada:\n{err}");
+    assert!(out.contains("Contenido original"),
+            "no recuperó de git el fragmento de antes:\n{out}{err}");
+}

@@ -139,6 +139,10 @@ fn diff_structural(
 }
 
 fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&ByteRange>) -> Result<String> {
+    // `git show <commit>:<path>` resuelve el path contra la raíz del **repo**, no
+    // contra el `-C`. Una capa que no sea la raíz de su repo —`subsystems/lattice`
+    // dentro de accreta— necesita la traducción o el comando falla.
+    let file = &crate::capture::git_path_from_repo_root(root, file);
     let output = std::process::Command::new("git")
         .args(["-C", &root.to_string_lossy(), "show", &format!("{commit}:{file}")])
         .output()

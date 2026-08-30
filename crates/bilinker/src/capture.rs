@@ -72,7 +72,7 @@ pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
     Ok(Capture::all_in(layer)?.into_iter().filter(|(id, _)| !alive.contains(id)).collect())
 }
 
-fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
+pub(crate) fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
     let top = std::process::Command::new("git")
         .args(["-C", &layer.to_string_lossy(), "rev-parse", "--show-toplevel"])
         .output().ok()
@@ -82,7 +82,12 @@ fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
     match top {
         Some(t) => {
             let root = Path::new(t.trim());
-            match layer.strip_prefix(root) {
+            // Los dos absolutos: `layer` puede venir relativo, y ahí el
+            // `strip_prefix` falla en silencio y devuelve el path relativo a la
+            // capa — que git resuelve contra la raíz del repo y no encuentra.
+            let abs  = layer.canonicalize().unwrap_or_else(|_| layer.to_path_buf());
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            match abs.strip_prefix(&root) {
                 Ok(rel) if !rel.as_os_str().is_empty() =>
                     format!("{}/{file}", rel.display()),
                 _ => file.to_string(),
