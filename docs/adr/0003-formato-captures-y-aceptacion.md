@@ -316,6 +316,16 @@ Ningún archivo de bilinker se escribe a mano: todos salen de un comando.
 
 Como `commit` no es propiedad de la ubicación, tampoco entra en el id del capture: la procedencia de una decisión no es parte de dónde está un fragmento. Es `capture.md` inv. 1 dicha por el otro lado.
 
+> **Pregunta abierta (2026-08-30): ¿y por qué no en `accepted`?**
+>
+> El criterio de la Decisión 5 —lo derivable no va en el bilink— lo manda a la cache, pero el formato ya guarda `accepted.hash_ast`, que también es derivable **y que necesita `commit` para derivarse**: se guarda el derivado y se tira el dato que lo deriva. Y sin `commit`, `accepted.hash` es un hash que no se puede resolver a texto, así que un clon fresco pierde las tres distinciones que dependen de él —`EXPANDED`, `DISPLACED`, `REANCHORED`— y todo cambio degrada a `ALTERED`.
+>
+> El único argumento fuerte a favor de la cache era que un sha de la rama del proyecto es **reescribible**: un rebase lo hace desaparecer y el valor guardado queda colgado. **[ADR-0004](0004-bilinks-en-ref-paralela.md) lo disuelve**: la ref absorbe con un merge el commit del proyecto contra el que se aceptó, y esa ref no se rebasea nunca, así que git conserva ese commit por alcanzabilidad aunque la rama principal lo deje atrás.
+>
+> Con esa objeción caída, la pregunta se puede contestar sobre su costo real. Se decide con la ref implementada — task `16`.
+>
+> Aparte y antes: `cache.md` promete que `commit` "con cache fría cuesta más, nunca falta", y esa derivación **no está implementada**. Sin ella la decisión de sacarlo del formato no se sostiene, viva donde viva — task `17`.
+
 Consecuencia: el texto aceptado se recupera con `git show <commit>:<file>` dentro de un repo. Cruzando la frontera **no se recupera por defecto**, porque el clon del proveedor es superficial. Lo que se pierde ahí es exactamente lo que necesita el texto viejo y no sólo su hash: `EXPANDED`, `DISPLACED` y `REANCHORED` no se distinguen, y todo cambio de contenido se reporta como `ALTERED`. La dimensión de ubicación **no** se degrada: se decide comparando dos ids copiados, sin abrir nada del clon. No es un límite del modelo sino del clon, y se levanta a pedido (Decisión 4, § "Profundidad a pedido").
 
 #### `cache/state` — dos clases de derivado

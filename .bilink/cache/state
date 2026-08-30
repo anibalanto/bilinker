@@ -276,7 +276,7 @@ endpoints:
   01e13be3-d12c-4ca5-91e9-60a70eda49b0.0:
     state: OK
   01e13be3-d12c-4ca5-91e9-60a70eda49b0.1:
-    state: UNRESOLVED
+    state: RELOCATED
   0396ebf8-42e6-4054-89d4-6d388dad2a25.0:
     state: OK
   0396ebf8-42e6-4054-89d4-6d388dad2a25.1:
@@ -284,7 +284,7 @@ endpoints:
   052ba6ee-eaf7-4dcc-bac3-24892a6f2a84.0:
     state: OK
   052ba6ee-eaf7-4dcc-bac3-24892a6f2a84.1:
-    state: UNRESOLVED
+    state: RELOCATED
   060713e5-3197-4e64-941a-272e35272f8e.0:
     state: OK
   060713e5-3197-4e64-941a-272e35272f8e.1:
@@ -304,7 +304,7 @@ endpoints:
   1379f134-cb74-41de-b997-37e2e0755a51.0:
     state: OK
   1379f134-cb74-41de-b997-37e2e0755a51.1:
-    state: UNRESOLVED
+    state: RELOCATED
   14877d01-428c-4135-af40-489b8381927b.0:
     state: OK
   14877d01-428c-4135-af40-489b8381927b.1:
@@ -380,7 +380,7 @@ endpoints:
   3ac0bfd6-6dc5-415d-a03b-9a30ef6fda08.0:
     state: OK
   3ac0bfd6-6dc5-415d-a03b-9a30ef6fda08.1:
-    state: UNRESOLVED
+    state: RELOCATED
   3c489ad7-ed51-4ee8-a53b-a83ef50b1a27.0:
     state: OK
   3c489ad7-ed51-4ee8-a53b-a83ef50b1a27.1:
@@ -396,7 +396,7 @@ endpoints:
   3eab0797-8922-4319-b7b5-ec8f17c9e94f.0:
     state: OK
   3eab0797-8922-4319-b7b5-ec8f17c9e94f.1:
-    state: UNRESOLVED
+    state: RELOCATED
   42fb317e-fdb5-4481-ac67-96703344334d.0:
     state: OK
   42fb317e-fdb5-4481-ac67-96703344334d.1:
@@ -404,7 +404,7 @@ endpoints:
   4303daea-9efe-437f-905a-f7f674aa70a0.0:
     state: OK
   4303daea-9efe-437f-905a-f7f674aa70a0.1:
-    state: UNRESOLVED
+    state: RELOCATED
   430a5d51-e1b0-4b43-afb0-bfd3d9de0ff3.0:
     state: OK
   430a5d51-e1b0-4b43-afb0-bfd3d9de0ff3.1:
@@ -424,7 +424,7 @@ endpoints:
   5fce5ef8-c1f5-45dd-9f6f-e340ab6f5ff8.0:
     state: OK
   5fce5ef8-c1f5-45dd-9f6f-e340ab6f5ff8.1:
-    state: UNRESOLVED
+    state: RELOCATED
   6273424e-8e5c-4758-8767-d1d28a803e68.0:
     state: OK
   6273424e-8e5c-4758-8767-d1d28a803e68.1:
@@ -460,7 +460,7 @@ endpoints:
   74b44dc2-25a9-411c-b750-67fbe5489b31.0:
     state: OK
   74b44dc2-25a9-411c-b750-67fbe5489b31.1:
-    state: UNRESOLVED
+    state: RELOCATED
   7707a618-69f1-499f-bbd6-164a1066696a.0:
     state: OK
   7707a618-69f1-499f-bbd6-164a1066696a.1:
@@ -532,7 +532,7 @@ endpoints:
   990486fd-ecd9-43e2-b3ee-9cf2ee7e806d.0:
     state: OK
   990486fd-ecd9-43e2-b3ee-9cf2ee7e806d.1:
-    state: UNRESOLVED
+    state: RELOCATED
   9e844273-afe6-4e48-9fca-5f268ad960d3.0:
     state: OK
   9e844273-afe6-4e48-9fca-5f268ad960d3.1:
@@ -540,7 +540,7 @@ endpoints:
   9f0dfe2e-6ab5-4c7d-a044-9332f1d2bf85.0:
     state: OK
   9f0dfe2e-6ab5-4c7d-a044-9332f1d2bf85.1:
-    state: UNRESOLVED
+    state: RELOCATED
   a1961c5a-0a44-47cd-a71a-b1b1aa68bd4f.0:
     state: OK
   a1961c5a-0a44-47cd-a71a-b1b1aa68bd4f.1:
@@ -564,7 +564,7 @@ endpoints:
   a758d3b8-43ab-4cbe-9dd2-d45cc2d1dc1e.0:
     state: OK
   a758d3b8-43ab-4cbe-9dd2-d45cc2d1dc1e.1:
-    state: UNRESOLVED
+    state: RELOCATED
   a7e30f3d-2872-43f4-835c-dae8e1bfe610.0:
     state: OK
   a7e30f3d-2872-43f4-835c-dae8e1bfe610.1:
@@ -580,7 +580,7 @@ endpoints:
   ab6862fd-66ac-4603-bac8-add641f590e4.0:
     state: OK
   ab6862fd-66ac-4603-bac8-add641f590e4.1:
-    state: UNRESOLVED
+    state: RELOCATED
   aff652d2-397a-49bf-aaf7-6a91a25c342a.0:
     state: OK
   aff652d2-397a-49bf-aaf7-6a91a25c342a.1:
@@ -632,7 +632,7 @@ endpoints:
   c4b8d57e-1682-49c2-b248-cc47cef331b7.0:
     state: OK
   c4b8d57e-1682-49c2-b248-cc47cef331b7.1:
-    state: UNRESOLVED
+    state: RELOCATED
   c7d0be86-87b8-4105-9b38-6b9340e2fcf2.0:
     state: OK
   c7d0be86-87b8-4105-9b38-6b9340e2fcf2.1:
@@ -640,7 +640,7 @@ endpoints:
   c83bd15d-9a86-4532-9f8c-1372cddec2b3.0:
     state: OK
   c83bd15d-9a86-4532-9f8c-1372cddec2b3.1:
-    state: UNRESOLVED
+    state: RELOCATED
   c8f348d4-2e62-47c9-88a7-3036aa5ee83a.0:
     state: OK
   c8f348d4-2e62-47c9-88a7-3036aa5ee83a.1:
@@ -664,7 +664,7 @@ endpoints:
   d57188d6-604f-4ee1-9db2-de14f4d8c5fc.0:
     state: OK
   d57188d6-604f-4ee1-9db2-de14f4d8c5fc.1:
-    state: UNRESOLVED
+    state: RELOCATED
   d74dbfa7-5a7d-4367-a49b-f68d99f880f8.0:
     state: OK
   d74dbfa7-5a7d-4367-a49b-f68d99f880f8.1:
@@ -696,7 +696,7 @@ endpoints:
   e55c1d04-3b7f-45f0-90fe-d94ee906d8c0.0:
     state: OK
   e55c1d04-3b7f-45f0-90fe-d94ee906d8c0.1:
-    state: UNRESOLVED
+    state: RELOCATED
   e9182ea1-a6b1-474c-99cb-cc8ca82daf1d.0:
     state: OK
   e9182ea1-a6b1-474c-99cb-cc8ca82daf1d.1:
@@ -720,7 +720,7 @@ endpoints:
   f6552825-5ab3-4605-9606-20f004eb22b3.0:
     state: OK
   f6552825-5ab3-4605-9606-20f004eb22b3.1:
-    state: UNRESOLVED
+    state: RELOCATED
   f715f67e-9d94-4488-a9d2-87fa79edd5f7.0:
     state: OK
   f715f67e-9d94-4488-a9d2-87fa79edd5f7.1:
