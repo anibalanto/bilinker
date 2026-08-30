@@ -53,11 +53,36 @@ pub fn is_initialized(repo: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// El id del corte a la ref en el ledger de migraciones.
+pub const REF_CUTOVER: &str = "bilinker-005-ref-cutover";
+
+/// Si este repo ya movió sus bilinks a la ref.
+///
+/// **Lo dice el ledger y no el filesystem**, y ésa es la diferencia que importa: el
+/// ledger está commiteado, así que un clon fresco de un repo que cortó lo sabe antes
+/// de tener una sola `refs/bilink/*` local — que es exactamente el caso en el que
+/// hace falta exigir `init`. Mirar si hay refs daría la respuesta contraria justo
+/// ahí, y el clon seguiría de largo sin bilinks y sin decir nada.
+///
+/// Se lee el archivo directo en vez de depender del runner de migraciones: es una
+/// lista de ids, una por línea, y bilinker no tiene por qué depender de quien las
+/// aplica.
+pub fn has_cut_over(repo: &Path) -> bool {
+    std::fs::read_to_string(repo.join(".accreta").join("migrations"))
+        .map(|text| text.lines().any(|l| l.trim() == REF_CUTOVER))
+        .unwrap_or(false)
+}
+
 /// El error que ve quien no corrió `init`.
 ///
-/// Que un comando de lectura configurara el repo de callado sería peor que fallar.
+/// Que un comando de lectura configurara el repo de callado sería peor que fallar:
+/// **bilinker arregla solo lo que es suyo, y pide lo que es del repo del usuario.**
+///
+/// Sólo se exige en un repo que ya cortó. Antes del corte los bilinks viven en la
+/// rama, no hace falta ni exclude ni refspec, y exigirlos rompería todos los repos
+/// que todavía no cortaron — incluida la herramienta con la que se corta.
 pub fn require_initialized(repo: &Path) -> Result<()> {
-    if is_initialized(repo) {
+    if !has_cut_over(repo) || is_initialized(repo) {
         return Ok(());
     }
     anyhow::bail!("el repo no está inicializado para bilinker.\n  Correr `bilinker init`.")

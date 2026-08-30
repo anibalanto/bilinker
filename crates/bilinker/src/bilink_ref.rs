@@ -713,6 +713,9 @@ pub enum Materialization {
     /// `HEAD` desacoplado: los comandos de lectura corren contra lo que `head` dice,
     /// avisando; los que commitean se niegan.
     Detached,
+    /// No hay repo git. bilinker corre igual: la raíz cae al cwd, que es lo que
+    /// permite usarlo en un proyecto nuevo sin ningún paso de inicialización.
+    NoGit,
 }
 
 /// El resultado de commitear sobre la ref.

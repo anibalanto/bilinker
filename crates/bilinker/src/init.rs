@@ -88,3 +88,35 @@ fn materialize_step(repo: &Repo, branch: Option<&str>, dry_run: bool) -> Result<
         }
     }
 }
+
+/// Lo que corre **antes de todo comando**, salvo `init` mismo.
+///
+/// Dos cosas, y las dos salen de [la ref](crate::bilink_ref):
+///
+/// 1. **Exigir `init`** en un repo que ya cortó a la ref. Sin exclude ni refspec,
+///    los bilinks del árbol no tienen procedencia y `git fetch` no trae la ref.
+/// 2. **Materializar el `.bilink/` de la rama actual** si `head` no coincide.
+///    `git checkout` no lo toca —para el índice del proyecto son archivos
+///    ignorados— así que cambiar de rama deja el código de `B` con los bilinks de
+///    `A` y nada avisa.
+///
+/// La corrección del punto 2 es **automática y sin ceremonia**: no hay comando de
+/// más que tipear ni pregunta que contestar, porque no hay nada que decidir. Lo
+/// único que la frena es la guarda: con trabajo sin commitear en `.bilink/`, se
+/// para, igual que `git checkout` se niega a pisar cambios.
+///
+/// En un repo que todavía no cortó no hace nada: no hay ref de la cual materializar.
+///
+/// **Y fuera de un repo git tampoco hace nada.** La raíz se resuelve caminando hacia
+/// arriba desde cwd y cae al cwd si no encuentra marcador, así que bilinker corre en
+/// un proyecto nuevo sin ningún paso de inicialización — ver
+/// [`configuration`](crate::config). Un preludio que exigiera git rompería eso.
+pub fn prelude(dir: &Path) -> Result<Materialization> {
+    let Ok(repo) = Repo::open(dir) else {
+        return Ok(Materialization::NoGit);
+    };
+    crate::config::require_initialized(&repo.root)?;
+    repo.ensure_current()
+}
+
+pub use crate::bilink_ref::Materialization;

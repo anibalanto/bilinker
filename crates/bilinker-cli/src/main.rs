@@ -401,6 +401,21 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
 
+    // `init` se configura a sí mismo; `migrate` corre en repos que todavía no
+    // cortaron y no puede exigir una ref que no existe.
+    if !matches!(cli.command, Command::Init { .. } | Command::Migrate { .. }) {
+        match bilinker::init::prelude(&cwd)? {
+            bilinker::init::Materialization::Rematerialized { from, to } => {
+                eprintln!("materializado: {} → refs/bilink/… @ {}",
+                          from.branch, short(&to));
+            }
+            bilinker::init::Materialization::Detached => {
+                eprintln!("aviso: HEAD desacoplado — se opera contra lo que .bilink/head dice");
+            }
+            _ => {}
+        }
+    }
+
     match cli.command {
         Command::Capture { sub, file, start, end, dry_run } => {
             match sub {

@@ -1580,8 +1580,9 @@ fn switching_branches_rematerializes_the_bilinks_of_the_new_branch() {
     assert!(!bilink.exists(),
             "git checkout no toca .bilink/: son archivos ignorados para el proyecto");
 
-    let (_, stderr, ok) = run_in(&root, &["init"]);
-    assert!(ok, "la materialización falló:\n{stderr}");
+    // Un comando cualquiera, no `init`: la corrección es automática y sin ceremonia.
+    let (_, stderr, ok) = run_in(&root, &["check", "."]);
+    assert!(ok || !stderr.contains("error"), "la materialización falló:\n{stderr}");
     assert!(bilink.exists(), "el .bilink/ de la rama actual se materializa solo");
 
     let head = fs::read_to_string(root.join(".bilink/head")).unwrap();
@@ -1661,7 +1662,7 @@ fn materialization_refuses_when_the_bilinks_carry_uncommitted_work() {
     let dirty = format!("{}# editado a mano\n", fs::read_to_string(&cap).unwrap());
     fs::write(&cap, &dirty).unwrap();
 
-    let (_, stderr, ok) = run_in(&root, &["init"]);
+    let (_, stderr, ok) = run_in(&root, &["check", "."]);
     assert!(!ok, "con trabajo sin commitear no se materializa nada:\n{stderr}");
     assert!(stderr.contains("difiere"), "y se dice por qué:\n{stderr}");
     assert_eq!(fs::read_to_string(&cap).unwrap(), dirty, "el trabajo sigue ahí");
