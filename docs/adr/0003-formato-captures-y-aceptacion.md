@@ -316,15 +316,19 @@ Ningún archivo de bilinker se escribe a mano: todos salen de un comando.
 
 Como `commit` no es propiedad de la ubicación, tampoco entra en el id del capture: la procedencia de una decisión no es parte de dónde está un fragmento. Es `capture.md` inv. 1 dicha por el otro lado.
 
-> **Pregunta abierta (2026-08-30): ¿y por qué no en `accepted`?**
+> **Resuelta (2026-08-30, task `16`): `commit` se queda en la cache.**
 >
-> El criterio de la Decisión 5 —lo derivable no va en el bilink— lo manda a la cache, pero el formato ya guarda `accepted.hash_ast`, que también es derivable **y que necesita `commit` para derivarse**: se guarda el derivado y se tira el dato que lo deriva. Y sin `commit`, `accepted.hash` es un hash que no se puede resolver a texto, así que un clon fresco pierde las tres distinciones que dependen de él —`EXPANDED`, `DISPLACED`, `REANCHORED`— y todo cambio degrada a `ALTERED`.
+> La pregunta era si convenía subirlo a `accepted`, y quedaba a la espera de dos cosas que ya pasaron: la derivación (task `17`) y la ref (ADR-0004).
 >
-> El único argumento fuerte a favor de la cache era que un sha de la rama del proyecto es **reescribible**: un rebase lo hace desaparecer y el valor guardado queda colgado. **[ADR-0004](0004-bilinks-en-ref-paralela.md) lo disuelve**: la ref absorbe con un merge el commit del proyecto contra el que se aceptó, y esa ref no se rebasea nunca, así que git conserva ese commit por alcanzabilidad aunque la rama principal lo deje atrás.
+> **La objeción del rebase está muerta, y no por donde se creía.** Se dio por sentado que la ref protege al `commit` guardado *y* a su derivación. Lo primero es cierto por alcanzabilidad. Lo segundo no lo era: `derive_commit` caminaba `git log` sobre la **rama**, así que la reescritura la afectaba igual. Y de paso, un rebase a secas nunca fue el problema — preserva el contenido, así que el fragmento aceptado aparece igual en el commit reescrito; lo que rompe es un squash o un `filter-branch`, donde el contenido intermedio deja de existir en la historia de la rama. Caminar `refs/bilink/<branch>` en vez de `HEAD` lo cierra: la ref alcanza todo commit alguna vez absorbido, así que su historia es un superconjunto de la de la rama. Verificado con un test que aplasta la rama por encima del commit aceptado, con la cache borrada, y comprueba que `get --diff` lo sigue recuperando — más el control negativo, que sin ref lo pierde.
 >
-> Con esa objeción caída, la pregunta se puede contestar sobre su costo real. Se decide con la ref implementada — task `16`.
+> Con la objeción caída por los dos lados, lo que quedaba a favor de `accepted` era el costo del walk. Y en contra apareció algo que cuando se escribió esta pregunta no existía: **[`adopt`](../../../../commands/adopt.md)**.
 >
-> Aparte y antes: `cache.md` promete que `commit` "con cache fría cuesta más, nunca falta", y esa derivación **no está implementada**. Sin ella la decisión de sacarlo del formato no se sostiene, viva donde viva — task `17`.
+> **`commit` en `accepted` rompería la convergencia.** `adopt` es un merge a tres puntas campo por campo, y descansa en que dos personas que aceptan el mismo contenido en HEADs distintos escriban **los mismos valores** — es la fila *"ya coincidía"*, y es lo que hace que el caso común de un rebase no conflictúe nada. `hash` y `link` cumplen eso porque direccionan por contenido. `commit` no: el mismo contenido, aceptado en dos ramas, vive en dos commits distintos. Subirlo a `accepted` metería en el merge un campo que **siempre** diverge, y `adopt` reportaría un conflicto por cada endpoint aceptado de los dos lados — sobre algo que nadie decidió.
+>
+> Eso es más fuerte que el argumento de la Decisión 5 y apunta en la misma dirección: `commit` no es una decisión, es un hecho sobre la historia. Los campos de `accepted` son lo que alguien aprobó, y se comparan entre ramas. `commit` no se aprueba y no se compara.
+>
+> Queda en pie la observación que abrió la pregunta —`hash_ast` es derivable y sí está en `accepted`— y la respuesta ahora se puede dar: `hash_ast` **sí** es parte de la decisión (es el mismo contenido mirado por el AST, y converge igual que `hash`), y `commit` no lo es. La línea no es "derivable o no", es **"decisión o hecho"**, y las dos veces da lo mismo salvo acá.
 
 Consecuencia: el texto aceptado se recupera con `git show <commit>:<file>` dentro de un repo. Cruzando la frontera **no se recupera por defecto**, porque el clon del proveedor es superficial. Lo que se pierde ahí es exactamente lo que necesita el texto viejo y no sólo su hash: `EXPANDED`, `DISPLACED` y `REANCHORED` no se distinguen, y todo cambio de contenido se reporta como `ALTERED`. La dimensión de ubicación **no** se degrada: se decide comparando dos ids copiados, sin abrir nada del clon. No es un límite del modelo sino del clon, y se levanta a pedido (Decisión 4, § "Profundidad a pedido").
 

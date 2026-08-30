@@ -2057,3 +2057,163 @@ fn diff_shows_the_uncommitted_bilink_changes() {
     let theirs = git_out(&root, &["diff"]);
     assert!(!theirs.contains("a mano"), "el del proyecto no:\n{theirs}");
 }
+
+// ─── La ref vuelve inmutable el commit de una aceptación ───────────────────
+//
+// Task `16`. Es la clase de propiedad que se cree evidente y falla por un detalle
+// de plumbing, así que se verifica, no se supone.
+
+/// Deja la rama con `A · B(aceptado) · C`, acepta en `B`, y devuelve `(uuid, B, A)`.
+fn accepted_then_changed() -> (tempfile::TempDir, PathBuf, String, String, String) {
+    let (tmp, root, uuid, _x) = cut_over();
+
+    fs::write(root.join("docs/otro.md"), "# Otro\n").unwrap();
+    commit(&root, "A — un commit intermedio");
+    let a = rev(&root, "HEAD");
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "B — el contenido que se acepta");
+    let b = rev(&root, "HEAD");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    // El fragmento cambia después, para que el endpoint quede no-OK y `--diff`
+    // tenga que recuperar el texto aceptado de la historia.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 99; }\n}\n").unwrap();
+    commit(&root, "C — y después cambia");
+
+    (tmp, root, uuid, b, a)
+}
+
+/// Rebasea `A..<rama>` sobre una línea nueva, reescribiendo `B` y `C`.
+///
+/// Un rebase a secas **preserva el contenido**: `B'` tiene el mismo fragmento que
+/// `B`, así que la derivación lo reencuentra en otro commit. Lo que rompe de verdad
+/// es aplastar `B` y `C` en uno solo, donde el contenido intermedio no queda en
+/// ningún commit de la historia reescrita — que es lo que `squash_over` hace.
+fn rebase_over(root: &Path, branch: &str, a: &str) {
+    git(root, &["checkout", "-q", "-b", "lado", a]);
+    fs::write(root.join("docs/lado.md"), "# Lado\n").unwrap();
+    commit(root, "D — otra línea");
+    git(root, &["checkout", "-q", branch]);
+    git(root, &["rebase", "-q", "--onto", "lado", a, branch]);
+}
+
+/// Aplasta `A..<rama>` en un solo commit sobre `A`.
+///
+/// El contenido intermedio —el que se aceptó— deja de existir en la historia de la
+/// rama: el archivo salta de lo que tenía en `A` a lo que tiene al final.
+fn squash_over(root: &Path, branch: &str, a: &str) {
+    git(root, &["reset", "-q", "--soft", a]);
+    git(root, &["commit", "-qm", "B+C aplastados"]);
+    let _ = branch;
+}
+
+/// Sin la ref, un rebase de la rama del proyecto por encima del commit aceptado
+/// deja `accepted.hash` siendo un hash **que no se puede resolver a texto**: el
+/// commit cacheado desapareció, y la derivación tampoco lo encuentra porque el
+/// rebase reescribió los commits donde el fragmento tenía ese contenido.
+///
+/// Con la ref tiene que funcionar por cualquiera de los dos caminos: la ref absorbe
+/// el commit del proyecto como segundo padre y **no se rebasea nunca**, así que git
+/// lo conserva por ser alcanzable — deja de estar en la rama y sigue existiendo.
+#[test]
+fn a_rebase_does_not_destroy_the_text_of_an_acceptance() {
+    let (_t, root, uuid, b, a) = accepted_then_changed();
+    let main = branch_of(&root);
+
+    // 2. Borrar cache/state: sin ella, el `commit` guardado no está y hay que
+    //    derivarlo caminando la historia del archivo.
+    let _ = fs::remove_dir_all(root.join(".bilink/cache"));
+
+    // 3. Aplastar la rama por encima del commit aceptado.
+    squash_over(&root, &main, &a);
+    let after = git_out(&root, &["log", "--format=%H", &main]);
+    assert!(!after.contains(&b), "el rebase sacó el commit aceptado de la rama");
+
+    // Y sin embargo sigue existiendo, porque la ref lo alcanza.
+    let kind = git_out(&root, &["cat-file", "-t", &b]);
+    assert_eq!(kind.trim(), "commit",
+               "la ref lo absorbió como segundo padre y no se rebasea nunca");
+
+    // 4. El texto aceptado se sigue recuperando.
+    run_in(&root, &["check", "."]);
+    let (out, stderr, _) = run_in(&root, &["get", &format!("{}.1", &uuid[..8]), "--diff"]);
+    assert!(out.contains("int x = 1"),
+            "el texto aceptado se perdió tras el rebase:\n{out}\n{stderr}");
+    assert!(out.contains("int x = 99"), "y el actual está del otro lado:\n{out}");
+}
+
+/// La otra mitad: la ref no sólo protege al `commit` guardado, protege también a la
+/// **derivación**, que camina la historia del archivo y necesita que esos commits
+/// sigan existiendo.
+#[test]
+fn the_ref_keeps_the_accepted_commit_reachable_after_a_rebase() {
+    let (_t, root, _uuid, b, a) = accepted_then_changed();
+    let main = branch_of(&root);
+    let bref = format!("refs/bilink/{main}");
+
+    squash_over(&root, &main, &a);
+
+    let is_ancestor = |of: &str| {
+        std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["merge-base", "--is-ancestor", &b, of])
+            .output().unwrap().status.success()
+    };
+
+    assert!(is_ancestor(&bref),
+            "todo commit alguna vez absorbido queda alcanzable desde la ref para siempre");
+    assert!(!is_ancestor(&main),
+            "y la rama no lo protege: se rebasea, se force-pushea, se cambia");
+}
+
+/// El control negativo, sin el cual los dos tests de arriba no dicen nada.
+///
+/// El mismo escenario en un repo que **no** cortó a la ref: no hay nada que alcance
+/// el commit aceptado, git lo deja inalcanzable, y el texto aceptado deja de poder
+/// recuperarse. Es la objeción que ADR-0003 dejó abierta, reproducida.
+#[test]
+fn without_the_ref_the_same_rebase_loses_the_accepted_text() {
+    let (_t, root, uuid) = accepted_layer();
+    let main = branch_of(&root);
+
+    fs::write(root.join("docs/otro.md"), "# Otro\n").unwrap();
+    commit(&root, "A");
+    let a = rev(&root, "HEAD");
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "B — el contenido que se acepta");
+    let b = rev(&root, "HEAD");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-qm", "la aceptación, en la rama"]);
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 99; }\n}\n").unwrap();
+    commit(&root, "C");
+
+    let _ = fs::remove_dir_all(root.join(".bilink/cache"));
+    squash_over(&root, &main, &a);
+
+    assert!(git_out(&root, &["for-each-ref", "refs/bilink/"]).trim().is_empty(),
+            "este repo no cortó: no hay ninguna ref");
+
+    // El commit aceptado quedó fuera de toda ref. Sigue en el objeto store hasta que
+    // pase el gc, así que lo que se verifica es lo que importa: nada lo alcanza.
+    let reachable = git_out(&root, &["for-each-ref", "--format=%(refname)", "--contains", &b]);
+    assert!(reachable.trim().is_empty(),
+            "sin la ref, ninguna referencia alcanza el commit aceptado:\n{reachable}");
+
+    // Y la derivación tampoco lo encuentra: el rebase reescribió los commits donde
+    // el fragmento tenía el contenido aceptado.
+    run_in(&root, &["check", "."]);
+    let (out, _, _) = run_in(&root, &["get", &format!("{}.1", &uuid[..8]), "--diff"]);
+    assert!(!out.contains("int x = 1"),
+            "sin la ref el texto aceptado no se puede recuperar — y acá se recuperó:\n{out}");
+}

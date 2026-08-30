@@ -159,13 +159,24 @@ pub fn accepted_text(
 /// techo, porque un hash de algo que nunca existió en esta rama recorrería la
 /// historia entera para contestar que no. Al llegar al techo devuelve `None`, y
 /// quien preguntó degrada en vez de fallar.
+///
+/// **Se camina la ref, no la rama.** Es lo que vuelve cierto que la ref protege
+/// también a la derivación, y no sólo al `commit` guardado. Un rebase a secas no
+/// hace falta que lo cubra nadie —preserva el contenido, así que el fragmento
+/// aceptado aparece igual en el commit reescrito— pero un squash o un
+/// `filter-branch` sí: ahí el contenido intermedio deja de existir en la historia de
+/// la rama, y el único lugar donde sigue estando es la ref, que absorbió ese commit
+/// como segundo padre y no se rebasea nunca.
+///
+/// Sin ref —un repo que todavía no cortó— se camina `HEAD`, que es lo único que hay.
 pub fn derive_commit(layer: &Path, cap: &Capture, accepted_hash: &str) -> Option<String> {
     const TECHO: usize = 500;
 
     let repo_rel = git_path_from_repo_root(layer, &cap.file);
+    let start = history_root(layer);
     let out = std::process::Command::new("git")
         .args(["-C", &layer.to_string_lossy(), "log", "--format=%H",
-               &format!("-{TECHO}"), "--", &repo_rel])
+               &format!("-{TECHO}"), &start, "--", &repo_rel])
         .output().ok()?;
     if !out.status.success() { return None; }
 
@@ -173,6 +184,22 @@ pub fn derive_commit(layer: &Path, cap: &Capture, accepted_hash: &str) -> Option
         .lines()
         .find(|c| accepted_text(layer, cap, c, Some(accepted_hash)).is_some())
         .map(str::to_string)
+}
+
+/// Desde dónde se camina la historia de un archivo: `refs/bilink/<branch>` si la
+/// rama tiene ref, `HEAD` si no.
+///
+/// La ref alcanza todo commit del proyecto alguna vez absorbido, así que su historia
+/// es un superconjunto de la de la rama — incluye lo que un squash borró de ella. Y
+/// como la ref lleva el árbol del proyecto adentro, los paths son los mismos.
+fn history_root(layer: &Path) -> String {
+    crate::bilink_ref::Repo::open(layer)
+        .ok()
+        .and_then(|repo| {
+            let branch = repo.branch()?;
+            repo.ref_tip(&branch).map(|_| crate::bilink_ref::Repo::ref_name(&branch))
+        })
+        .unwrap_or_else(|| "HEAD".to_string())
 }
 
 /// Byte range absoluto del fragmento en su archivo, resolviendo la query.
