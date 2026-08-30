@@ -399,6 +399,41 @@ mod tests {
         assert_eq!(bl.endpoint.get(1).name.as_deref(), Some("lo-gobernado"));
     }
 
+    /// Un repo que nunca corrió `001` llega igual al formato 2.
+    ///
+    /// Es la prueba de que retirar `001` fue legítimo y no un borrado con otro
+    /// nombre: `002` lee la forma embebida —`file :: query :: offset` dentro del
+    /// `link`— además de la que `001` producía, así que el camino desde el formato
+    /// 1 crudo sigue completo, con un salto menos.
+    #[test]
+    fn a_repo_that_never_ran_001_still_reaches_format_2() {
+        let d = tempdir().unwrap();
+        let b = d.path().join(".bilink");
+        std::fs::create_dir_all(&b).unwrap();
+
+        // Formato 1 **crudo**: la ubicación embebida en el link, sin `.capture`.
+        std::fs::write(b.join("cccc3333-0000-4000-8000-000000000003.bilink"), concat!(
+            "link.0: commands/check.md :: (section\n",
+            "  (atx_heading (inline) @n0 (#eq? @n0 \"Firma\"))) @target :: 0~120\n",
+            "link.1: .stratum/impl\n",
+            "\n# Cache\nhash.0: c00e0760\ncommit.0: deadbeef\n")).unwrap();
+
+        let plan = plan(d.path()).unwrap();
+        let bl = plan.bilinks.get("cccc3333-0000-4000-8000-000000000003")
+            .expect("el bilink migró");
+
+        // El endpoint estructural quedó apuntando a un capture acuñado en el acto.
+        let link = bl.endpoint.get(0).link.to_string();
+        assert!(link.starts_with("capture "), "no se acuñó el capture: {link}");
+        let id = link.trim_start_matches("capture ");
+        let cap = plan.captures.get(id).expect("el capture está en el plan");
+        assert_eq!(cap.file, "commands/check.md");
+        assert!(cap.query.as_deref().unwrap().contains("Firma"));
+
+        // Y la aceptación sobrevivió: es lo que un corte no puede perder.
+        assert_eq!(bl.endpoint.get(0).accepted.as_ref().unwrap().hash, "c00e0760");
+    }
+
     /// **La propiedad que importa.** Correrla dos veces da bytes idénticos.
     ///
     /// Es lo que hace que la carpeta se pueda regenerar en cualquier momento, y por
