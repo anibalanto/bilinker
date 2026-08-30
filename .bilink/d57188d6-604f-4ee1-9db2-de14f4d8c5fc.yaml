@@ -7,6 +7,6 @@ endpoint:
   1:
     link: capture 8012171a288a17ca030f7f5d40aa6a00
     accepted:
-      link: capture 54db21afcd8d5760ebb08de18a9f4657
+      link: capture 8012171a288a17ca030f7f5d40aa6a00
       hash: 288bba78012980e249976f6a5e36b972f904dd49184f9340a76307b072082742
       hash_ast: 8cfd8fcf8144e76dac8ec524e4a8565337d980a6e4e5d02c31cf8cd8e583e296

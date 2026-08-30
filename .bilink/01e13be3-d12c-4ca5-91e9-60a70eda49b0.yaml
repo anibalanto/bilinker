@@ -7,6 +7,6 @@ endpoint:
   1:
     link: capture 5e582d8f286598ce24478f98bdbfb120
     accepted:
-      link: capture a1a1cd456da180f624443615495062ee
+      link: capture 5e582d8f286598ce24478f98bdbfb120
       hash: 9f866b6e31659a806f75fdf988deceb92017b8d93151de92393df36e19957a6c
       hash_ast: fc27010aa3ad64972921cb6505087a03b8567210004e7dc1c42312ab6e27ef7c
