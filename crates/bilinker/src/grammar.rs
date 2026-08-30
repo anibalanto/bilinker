@@ -68,6 +68,11 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
         ],
         "markdown" => &[
             "section",
+            // Una fila de tabla no tiene nombre propio, pero su primera celda la
+            // discrimina — igual que el `id:` de un item de secuencia YAML. Sin
+            // ella, capturar una fila obliga a un rango de bytes dentro de la
+            // sección, que se corre con cualquier fila agregada más arriba.
+            "pipe_table_row",
         ],
         "typescript" | "tsx" => &[
             "class_declaration",

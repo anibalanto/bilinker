@@ -19,7 +19,7 @@ pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<
 /// contenido, y el espacio que lo separa de sus vecinos es de los dos. Va en el
 /// único lugar donde un nodo se convierte en rango, así que no hay forma de
 /// obtener uno sin recortar.
-fn trim_edges(source: &str, start: usize, end: usize) -> (usize, usize) {
+pub(crate) fn trim_edges(source: &str, start: usize, end: usize) -> (usize, usize) {
     let b = source.as_bytes();
     let (mut s, mut e) = (start.min(source.len()), end.min(source.len()));
     while s < e && b[s].is_ascii_whitespace() { s += 1; }
@@ -322,5 +322,6 @@ mod rewrite_tests {
         assert_ne!(fingerprint("// antes\nfn f() {}"), fingerprint("// después\nfn f() {}"));
     }
 }
+
 
 

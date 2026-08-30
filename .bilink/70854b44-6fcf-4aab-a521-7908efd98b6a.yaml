@@ -3,7 +3,7 @@ endpoint:
     link: path <
     accepted:
       link: capture b46a29f67260519e0f9e57710ff5eff6
-      hash: 3c6809254953af353908d08bd9d398d2ee59f006b70b849a852ad99b5ef0ce3b
+      hash: 3cb974c0beae27c5d8ab398eea46c8756f47bf25cbe6b0e1ab66c5dbef608efe
   1:
     link: capture 10fb0aab89a39492fab11dee34e75d69
     accepted:

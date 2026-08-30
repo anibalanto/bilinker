@@ -268,23 +268,24 @@ pub fn capture(
     // OK sobre una correspondencia que no existe.
     verify_query_identifies(language.clone(), &source, &query, target, file)?;
 
-    let start_byte = byte_for_point(&source, start_point);
-    let end_byte   = byte_for_point(&source, end_point);
-    // Single-point selection → capture the whole anchor; use relative offsets only for real ranges.
-    let range = if start_byte == end_byte {
-        None
-    } else if start_byte != target.start_byte() || end_byte != target.end_byte() {
-        let rel_start = start_byte.saturating_sub(target.start_byte());
-        let rel_end   = end_byte.saturating_sub(target.start_byte());
-        Some(crate::link::ByteRange { start: rel_start, end: rel_end })
-    } else {
-        None
-    };
+    // **La selección elige un nodo, no un rango de bytes.**
+    //
+    // Un rango adentro de un nodo se corre con cualquier edición encima suya
+    // dentro del mismo nodo, así que su granularidad es ilusoria: se rompe todo
+    // el tiempo y hay que repuntarlo. Un ancla de nodo entero es estable, y sus
+    // falsas alarmas son honestas — "esto cambió, fijate si tu spec sigue
+    // valiendo". Lo que se pierde es atribución, no detección: `hash` dice que
+    // cambió y `hash_ast` si fue sólo espaciado.
+    //
+    // Así que la selección se usa para **encontrar** el nodo y después se
+    // descarta. Si hace falta más precisión, la respuesta es una query que
+    // nombre algo más chico, no un recorte sobre una que nombra algo más grande.
+    let range = None;
 
-    let (frag_start, frag_end) = match &range {
-        Some(r) => (target.start_byte() + r.start, target.start_byte() + r.end),
-        None    => (target.start_byte(), target.end_byte()),
-    };
+    // El mismo recorte que aplica la resolución: el hash tiene que ser el del
+    // fragmento que `check` va a comparar, no el del nodo crudo.
+    let (frag_start, frag_end) =
+        crate::query::trim_edges(&source, target.start_byte(), target.end_byte());
     let fragment = &source[frag_start..frag_end.min(source.len())];
     let hash = hash::sha256(fragment.as_bytes());
 
@@ -386,6 +387,12 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize, lang: &str
             return pred;
         }
     }
+    // Special case: markdown pipe_table_row — la primera celda lo discrimina
+    if node.kind() == "pipe_table_row" {
+        if let Some(pred) = markdown_table_row_predicate(node, source, counter) {
+            return pred;
+        }
+    }
     // Special case: YAML block_sequence_item — use id: or first key as predicate
     if node.kind() == "block_sequence_item" {
         if let Some(pred) = yaml_sequence_item_predicate(node, source, counter) {
@@ -433,6 +440,27 @@ fn rust_impl_predicate(node: Node, source: &str, counter: &mut usize) -> Option<
         out.push_str(&format!("\n  {field}: ({}) {cap} (#eq? {cap} \"{text}\")", child.kind()));
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Una fila de tabla markdown, identificada por el texto de su primera celda.
+///
+/// Es el análogo del `id:` de un item de secuencia YAML: la fila no tiene nombre
+/// propio, pero en una tabla de spec la primera columna **es** el discriminante —
+/// el estado, el campo, el comando del que habla la fila.
+///
+/// Sin esto una fila de tabla no se puede capturar, y hay que caer a un rango de
+/// bytes dentro de la sección: un ancla que se corre con cualquier fila que se
+/// agregue más arriba. Ver [`concepts/capture.md`](../../../concepts/capture.md).
+fn markdown_table_row_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    let mut c = node.walk();
+    let first = node.children(&mut c).find(|n| n.kind() == "pipe_table_cell")?;
+    let text = &source[first.byte_range()];
+    // Las comillas romperían la query, y una celda que las lleve no se puede
+    // usar como predicado: mejor fallar acá que emitir algo que no parsea.
+    if text.contains('"') || text.trim().is_empty() { return None; }
+    let cap = format!("@n{counter}");
+    *counter += 1;
+    Some(format!("\n  (pipe_table_cell) {cap} (#eq? {cap} \"{text}\")"))
 }
 
 /// For a YAML `block_sequence_item`, find the `id:` pair inside and use its value as predicate.
