@@ -22,11 +22,70 @@ pub struct BiLink {
     pub endpoint: Endpoints,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Exactamente dos endpoints, `0` y `1`.
+///
+/// La serialización es manual por una sola razón: `#[serde(rename = "0")]` sobre un
+/// campo produce una **clave string**, y el YAML sale con `'0':` entre comillas. Las
+/// claves son enteras y así se escriben.
+///
+/// La aridad sigue siendo del tipo: la struct tiene dos campos y no puede tener otra
+/// cosa. Lo que la deserialización agrega es el mensaje de error cuando el archivo
+/// dice algo distinto.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Endpoints {
-    #[serde(rename = "0")] pub zero: Endpoint,
-    #[serde(rename = "1")] pub one:  Endpoint,
+    pub zero: Endpoint,
+    pub one:  Endpoint,
+}
+
+impl Serialize for Endpoints {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(2))?;
+        m.serialize_entry(&0u8, &self.zero)?;
+        m.serialize_entry(&1u8, &self.one)?;
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Endpoints {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use std::collections::BTreeMap;
+
+        // Las claves se aceptan enteras o entrecomilladas. Escribimos enteras; leer
+        // las dos formas cuesta nada y evita que un archivo escrito a mano —o por
+        // una versión anterior del serializador— deje de parsear por un detalle de
+        // presentación que YAML no distingue al leer.
+        let raw: BTreeMap<String, Endpoint> = BTreeMap::deserialize(d)?;
+
+        let mut zero = None;
+        let mut one  = None;
+        for (k, v) in raw {
+            match k.as_str() {
+                "0" => zero = Some(v),
+                "1" => one  = Some(v),
+                other => return Err(serde::de::Error::custom(format!(
+                    "endpoint '{other}': la aridad es fija en dos, `0` y `1`"))),
+            }
+        }
+        Ok(Endpoints {
+            zero: zero.ok_or_else(|| serde::de::Error::custom("falta el endpoint `0`"))?,
+            one:  one.ok_or_else(|| serde::de::Error::custom("falta el endpoint `1`"))?,
+        })
+    }
+}
+
+impl JsonSchema for Endpoints {
+    fn schema_name() -> std::borrow::Cow<'static, str> { "Endpoints".into() }
+    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let ep = g.subschema_for::<Endpoint>();
+        schemars::json_schema!({
+            "type": "object",
+            "description": "Los dos endpoints del bilink. La aridad es fija.",
+            "properties": { "0": ep, "1": ep },
+            "required": ["0", "1"],
+            "additionalProperties": false,
+        })
+    }
 }
 
 /// Un extremo: a qué apunta, y qué se aprobó de él.
@@ -153,6 +212,26 @@ mod tests {
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();
         assert_eq!(BiLink::load(&p).unwrap(), bl);
+    }
+
+    /// Las claves van **sin comillas**: son enteras, no strings.
+    ///
+    /// `#[serde(rename = "0")]` las habría escrito como `'0':`, que YAML lee igual
+    /// pero se ve como un detalle de implementación filtrado al archivo.
+    #[test]
+    fn the_endpoint_keys_are_written_unquoted() {
+        let y = BiLink::new(ep("capture a"), ep("path >impl")).to_yaml().unwrap();
+        assert!(y.contains("\n  0:\n"), "el endpoint 0 va sin comillas:\n{y}");
+        assert!(y.contains("\n  1:\n"), "el endpoint 1 va sin comillas:\n{y}");
+        assert!(!y.contains("'0'") && !y.contains("\"0\""), "no debería haber comillas:\n{y}");
+    }
+
+    /// Y se leen de las dos formas: al leer, YAML no distingue.
+    #[test]
+    fn quoted_keys_still_parse() {
+        let quoted = "endpoint:\n  '0': {link: capture a}\n  '1': {link: capture b}\n";
+        let bl: BiLink = serde_yaml_ng::from_str(quoted).unwrap();
+        assert_eq!(bl.endpoint.zero.link, ep("capture a"));
     }
 
     /// La aridad no se verifica: no se puede escribir otra cosa.

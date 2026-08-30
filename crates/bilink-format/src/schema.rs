@@ -44,8 +44,12 @@ pub fn schema_json() -> String {
 /// **Es de sólo-agregar.** Una entrada registra lo que se publicó bajo esa versión;
 /// corregirla en vez de agregar una nueva reescribiría el pasado, y el hash dejaría
 /// de certificar el artefacto que alguien ya bajó.
+///
+/// La regla protege **lo publicado**. Mientras una versión no salió —no hay release,
+/// nadie la bajó— su entrada todavía se está escribiendo y corregirla no reescribe
+/// nada. La línea es la publicación, no el número.
 pub const SCHEMA_HASHES: &[(&str, &str)] = &[
-    ("2.0.0", "c0bed5cf14d679de730dade3009139f34440391202927d8253f8d091104ddda9"),
+    ("2.0.0", "39396775ea75eec5ac760b51a450a4315b2d1a8275860daedf7e4468e5acc21f"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
