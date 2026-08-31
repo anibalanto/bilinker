@@ -306,7 +306,6 @@ pub fn fetch(layer: &Path, alias: &str) -> Result<FetchReport> {
         git(&clone, &["checkout", "-q", "--force", &refname])?;
     }
 
-    ensure_ignored(layer, alias)?;
     Ok(FetchReport { alias: alias.to_string(), branch: provider.branch, files: files.len() })
 }
 
@@ -314,26 +313,6 @@ pub struct FetchReport {
     pub alias:  String,
     pub branch: String,
     pub files:  usize,
-}
-
-/// El clon de otro repo **no se commitea**. La regla va en `.bilink/.gitignore`,
-/// que es donde ya viven `cache/` e `index/`: adentro viaja con el directorio que
-/// gobierna, y un clon fresco la tiene sin que nadie la configure.
-fn ensure_ignored(layer: &Path, alias: &str) -> Result<()> {
-    let path = layer.join(".bilink").join(".gitignore");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let entry = format!("{alias}/");
-    if existing.lines().any(|l| l.trim() == entry) {
-        return Ok(());
-    }
-    let mut out = existing;
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(&entry);
-    out.push('\n');
-    std::fs::write(&path, out)?;
-    Ok(())
 }
 
 /// Los alias declarados en esta capa, por sus `.bilink/.{alias}.toml`.

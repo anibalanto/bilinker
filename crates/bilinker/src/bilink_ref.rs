@@ -29,6 +29,13 @@ use crate::config;
 ///
 /// `cache/` e `index/` son derivados; `head` es estado del árbol de trabajo, no
 /// contenido. Ninguno se commitea.
+///
+/// **La lista es la regla, y no hay ningún `.gitignore` detrás.** El árbol del
+/// commit se construye enumerando, así que lo que no está acá entra — y lo que no
+/// tiene que entrar se saca de acá, no agregando una línea a un archivo. Un
+/// `.gitignore` para esto sería además una escritura versionada para resolver algo
+/// que es del índice, y la exclusión del lado del proyecto ya la puso `init` en
+/// `.git/info/exclude`, una sola vez y por clon.
 const NOT_COMMITTED: [&str; 3] = ["cache", "index", "head"];
 
 /// El repo, su rama, y la ref que le corresponde.
@@ -787,6 +794,19 @@ fn walk_for_bilink(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Los archivos de un `.bilink/` que sí van al commit de la ref.
+///
+/// Se excluyen dos cosas, y por razones distintas:
+///
+/// - [`NOT_COMMITTED`] — derivados y estado del árbol.
+/// - **Los clones de proveedores**, que son otros repos enteros viviendo en
+///   `.bilink/<alias>/`. Un clon ajeno no es contenido de esta capa: se trae, se
+///   descarta y se vuelve a traer, y su procedencia es su propio remoto. La regla
+///   es la misma que frena el recorrido de capas —un directorio con `.git` adentro
+///   es otro repositorio— y acá se aplica al mismo hecho por el mismo motivo.
+///
+/// Que hasta ahora no se filtraran fue suerte: git trata un repo anidado como
+/// frontera por su cuenta. Depender de eso es depender de que el clon esté sano.
 fn collect_tracked(dir: &Path, base: &Path, root: &Path, out: &mut BTreeSet<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir)?.flatten() {
         let path = entry.path();
@@ -800,6 +820,11 @@ fn collect_tracked(dir: &Path, base: &Path, root: &Path, out: &mut BTreeSet<Stri
             continue;
         }
         if path.is_dir() {
+            // La frontera del repo, dicha una vez más: adentro de `.bilink/` un
+            // directorio con `.git` es el clon de un proveedor.
+            if path.join(".git").exists() {
+                continue;
+            }
             collect_tracked(&path, base, root, out)?;
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.insert(rel.to_string_lossy().into_owned());
