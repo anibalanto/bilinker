@@ -72,6 +72,22 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
     let accepted = e.accepted.as_ref()
         .context("el endpoint no tiene nada aceptado — correr `bilinker accept` primero")?;
 
+    // **Cruzar la frontera se despacha antes de derivar nada.** El commit del
+    // contenido aceptado de un endpoint repo vive en la historia del *proveedor*, no
+    // en ésta: pedírselo a este repo es preguntarle por algo que nunca tuvo, y el
+    // prólogo de abajo fallaría con "no aparece en los últimos commits del archivo"
+    // — un mensaje cierto sobre la pregunta equivocada.
+    match &e.link {
+        LinkEndpoint::Repo(alias) => {
+            return diff_across_frontier(root, alias, &uuid, accepted);
+        }
+        LinkEndpoint::Abstract => bail!(
+            "el endpoint {endpoint} es `abstract`: es la punta abierta, y no hay \
+             contra qué diffear de este lado"
+        ),
+        _ => {}
+    }
+
     let mut cache = Cache::load(root);
     let range = e.link.capture_id().and_then(|id| cache.capture_range(id));
 
@@ -98,14 +114,9 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
                             adj_commit.as_deref().unwrap_or(&commit),
                             adj_range.as_ref(), adj_hash.as_deref())
         }
-        // El diff cruzando la frontera es lo que **profundiza el clon**: `check` es
-        // masivo y corre superficial, y traer historia se paga sólo acá, donde hay
-        // un humano mirando un bilink.
-        LinkEndpoint::Repo(alias) => diff_across_frontier(root, alias, &uuid, accepted),
-        LinkEndpoint::Abstract => bail!(
-            "el endpoint {endpoint} es `abstract`: no hay contra qué diffear"
-        ),
         LinkEndpoint::Issue(id) => bail!("el endpoint {endpoint} es un issue ({id})"),
+        // Los dos de la frontera ya se despacharon arriba, antes de derivar.
+        LinkEndpoint::Repo(_) | LinkEndpoint::Abstract => unreachable!(),
     }
 }
 

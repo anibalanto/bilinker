@@ -2924,3 +2924,50 @@ fn fetch_writes_no_ignore_rules() {
     assert!(exclude.contains(".bilink/"),
             "un solo patrón cubre el directorio entero, clones incluidos:\n{exclude}");
 }
+
+/// `diff-deepens-on-demand` — ver qué cambió del lado del proveedor.
+///
+/// El clon arranca superficial, así que el commit donde vivía lo aceptado no está
+/// en él: se trae acá, para **un** bilink, recorriendo la ref del proveedor hacia
+/// atrás. Es el reparto que la frontera define: `check` es masivo y barato; ver el
+/// diff es puntual y caro.
+#[test]
+fn get_diff_crosses_the_frontier_and_deepens_the_clone() {
+    let (_t, provider, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    fs::write(provider.join("src/Perm.java"),
+              "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
+    commit(&provider, "el fragmento publicado cambia");
+    run_in(&provider, &["check", "."]);
+    run_in(&provider, &["accept", "."]);
+    run_in(&consumer, &["fetch", "hsi"]);
+
+    let (out, stderr, ok) = run_in(&consumer, &["get", &format!("{}.0", &uuid[..8]), "--diff"]);
+    assert!(ok, "el diff cruzando la frontera falló:\n{out}\n{stderr}");
+    assert!(out.contains("return true"), "el texto aceptado, de la historia del proveedor:\n{out}");
+    assert!(out.contains("return check(op)"), "y el que publica ahora:\n{out}");
+}
+
+/// El diff de un endpoint repo **no se le pregunta a la historia local**.
+///
+/// El commit del contenido aceptado vive del lado del proveedor. Pedírselo a este
+/// repo es preguntarle por algo que nunca tuvo, y la respuesta —"no aparece en los
+/// últimos commits del archivo"— sería cierta sobre la pregunta equivocada.
+#[test]
+fn a_repo_endpoint_diff_does_not_look_in_the_local_history() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    // Con la cache borrada, un endpoint local caería al walk local. Éste no.
+    let _ = fs::remove_dir_all(consumer.join(".bilink/cache"));
+
+    let (out, stderr, ok) = run_in(&consumer, &["get", &format!("{}.0", &uuid[..8]), "--diff"]);
+    assert!(ok, "el diff tiene que salir del clon, no de esta historia:\n{out}\n{stderr}");
+    assert!(!stderr.contains("últimos commits del archivo"),
+            "ése es el error de buscar en el repo equivocado:\n{stderr}");
+}
