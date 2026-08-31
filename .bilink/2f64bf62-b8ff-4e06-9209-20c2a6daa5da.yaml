@@ -13,5 +13,5 @@ endpoint:
       agree:
       - Anibal
       link: capture 5bcc1e095095f54d2fdf253c36400d8c
-      hash: 1ec448300b4a5fcbe918d080016b280e3707acb9370fd44ecd11a1e465abb30e
+      hash: 650c5982bd8f5320709c692e7c8a2c26e85ca6d57e12112677d5314142bff307
     name: el-parser
