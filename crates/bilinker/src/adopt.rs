@@ -156,6 +156,13 @@ fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -> Result<Ve
             let m = mine_one.endpoint.get(n).accepted.as_ref();
             let b = base_one.map(|x| x.endpoint.get(n).accepted.as_ref()).unwrap_or(None);
 
+            if let Some(mut c) = agree_to_bring(m, t) {
+                c.path = path.clone();
+                c.uuid = uuid.clone();
+                c.n = n;
+                out.push(c);
+            }
+
             for (dimension, get) in DIMENSIONS {
                 let (tv, mv, bv) = (t.map(get).flatten(), m.map(get).flatten(), b.map(get).flatten());
                 if tv == mv {
@@ -188,10 +195,37 @@ fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -> Result<Ve
 
 /// Las dos dimensiones que se aprueban por separado, y por eso se adoptan por
 /// separado. `hash_ast` acompaña al contenido: no es una decisión propia.
+///
+/// **`agree` no está acá**, y no por olvido: las dimensiones se resuelven eligiendo
+/// un lado, y `agree` se resuelve **uniendo**. Va por su cuenta, en
+/// [`agree_to_bring`] y en [`apply_changes`].
 const DIMENSIONS: [(&str, fn(&Accepted) -> Option<String>); 2] = [
     ("ubicación", |a| a.link.as_ref().map(|l| l.to_string())),
     ("contenido", |a| Some(a.hash.clone())),
 ];
+
+/// La fila que el vecino aporta sobre **quiénes aprobaron**, si aporta alguna.
+///
+/// **Nunca es conflicto.** Es la diferencia con `commit`, el campo que no está en
+/// `accepted`: el mismo contenido aceptado en dos ramas resuelve a dos commits sin
+/// forma de elegir, y acá hay una resolución correcta y única — la unión.
+///
+/// Sólo aplica cuando los dos lados aprobaron **los mismos valores**. Si difieren,
+/// el `agree` del vecino describe otros valores y viaja con ellos por las
+/// dimensiones de arriba, o no viaja.
+fn agree_to_bring(mine: Option<&Accepted>, theirs: Option<&Accepted>) -> Option<Change> {
+    let (m, t) = (mine?, theirs?);
+    if !m.same_values(t) || t.agree.is_subset(&m.agree) {
+        return None;
+    }
+    Some(Change {
+        path: String::new(), uuid: String::new(), n: 0,
+        dimension: "aprobadores",
+        row: Row::Clean,
+        mine: Some(m.agree.iter().cloned().collect::<Vec<_>>().join(", ")),
+        theirs: Some(t.agree.iter().cloned().collect::<Vec<_>>().join(", ")),
+    })
+}
 
 /// Escribe los campos que entran limpios, tomando el `accepted` entero del vecino
 /// para ese endpoint: las dos dimensiones que cambiaron llegan juntas y coherentes.
@@ -207,7 +241,20 @@ fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Result<()> {
         let mut bl = BiLink::load(&full)?;
         let theirs_one = &theirs_bl[path];
         for n in ns {
-            bl.endpoint.get_mut(n).accepted = theirs_one.endpoint.get(n).accepted.clone();
+            // **Los mismos valores se unen; valores distintos viajan enteros.**
+            //
+            // `agree` dice quiénes aprobaron *estos* valores: si adopto los del
+            // vecino, los míos describían otros y no vienen. Si los dos aprobamos lo
+            // mismo, la única resolución correcta es que estemos los dos.
+            let theirs_acc = theirs_one.endpoint.get(n).accepted.clone();
+            let mine_acc = bl.endpoint.get(n).accepted.clone();
+            bl.endpoint.get_mut(n).accepted = match (mine_acc, theirs_acc) {
+                (Some(mut m), Some(t)) if m.same_values(&t) => {
+                    m.agree.extend(t.agree);
+                    Some(m)
+                }
+                (_, t) => t,
+            };
         }
         bl.write(&full)?;
     }

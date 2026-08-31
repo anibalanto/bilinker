@@ -152,6 +152,11 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
     // todo en RELOCATED de golpe ni degradarlo a PENDING, que borraría el inventario.
     let accepted = match hash {
         Some(h) => Some(v2::Accepted {
+            // **Vacío, y no el autor de la migración.** El formato 1 no guardaba
+            // quién aprobó, así que no hay nada que traer — y poner al que corre
+            // `migrate` sería fabricar una aprobación que nadie dio. Un `agree`
+            // vacío dice la verdad: se aprobó, y no se sabe quién.
+            agree: Default::default(),
             // Un endpoint estructural aprueba su propia ubicación; uno `path` copia
             // la del endpoint estructural de su vecino. En el formato 1 esa segunda
             // copia no existía —sólo se copiaba el hash— así que hay que ir a

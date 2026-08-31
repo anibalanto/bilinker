@@ -980,6 +980,9 @@ Eliminar? [y/N] ");
             let accept_one = |uuid: &str, n: u8| -> anyhow::Result<()> {
                 let r = bilinker::accept::accept(&cwd, uuid, n, what)?;
                 print_accept_result(&r);
+                if !r.wrote {
+                    return Ok(());
+                }
                 seal(&cwd, bilinker::refmsg::RefCommand::Accept {
                     place: what.place, content: what.content, uuid: r.uuid.clone(), n: r.n,
                 })
@@ -1582,7 +1585,15 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
         Some(c) => c[..12.min(c.len())].to_string(),
         None    => "(sin commit)".to_string(),
     };
-    println!("  {}.{}  {}  {}", &r.uuid[..8.min(r.uuid.len())], r.n, &r.hash[..12.min(r.hash.len())], commit);
+    let agree: Vec<&str> = r.agree.iter().map(String::as_str).collect();
+    println!("  {}.{}  {}  {}  agree: {}",
+             &r.uuid[..8.min(r.uuid.len())], r.n,
+             &r.hash[..12.min(r.hash.len())], commit, agree.join(", "));
+    // Aprobar dos veces lo mismo no dice nada nuevo, y se dice en vez de escribir un
+    // commit vacío.
+    if !r.wrote {
+        println!("        ya estabas en el set y los valores no se movieron — nada que agregar");
+    }
 }
 
 /// El estado de la capa, agrupado por archivo.

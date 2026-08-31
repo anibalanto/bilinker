@@ -62,6 +62,13 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // fallar. Entre proyectos con releases independientes, ése es *el* modo de
     // falla que importa.
     ("3.1.0", "70d09000aaf76f14664c49e71a4307b7f8dd0077712683d08c3e4d32175f134e"),
+    // 3.2.0 agrega `accepted.agree`: quiénes aprobaron **estos** valores. Aditivo
+    // —ningún archivo existente lo lleva, y su ausencia es un set vacío— y sube la
+    // versión igual, por el mismo motivo que 3.1.0: un parser de 3.1.0 tiene
+    // `deny_unknown_fields` sobre `Accepted`, así que un archivo con `agree` no le
+    // falla en silencio, le falla y basta. La versión es lo que le permite decir
+    // **por qué**.
+    ("3.2.0", "32ccee2d79db3f2657ed4137d2088bbf7b2508eba95f7ec1ec013f54b309e2d8"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

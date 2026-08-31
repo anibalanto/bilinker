@@ -1,5 +1,6 @@
 //! El archivo `<uuid>.yaml`: una declaración y dos decisiones.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -104,10 +105,22 @@ pub struct Endpoint {
     pub name: Option<String>,
 }
 
-/// Lo que alguien aprobó: una ubicación y un contenido.
+/// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Accepted {
+    /// Quiénes aprobaron **exactamente estos valores**.
+    ///
+    /// Va primero y en bloque, un nombre por línea, porque **`git blame` sólo puede
+    /// atribuir una línea a un commit**: en flow, N endosos colapsan en un lugar y
+    /// blame devuelve el del último. Un nombre por línea deja cada uno atribuible
+    /// —autor, fecha y firma— y por eso el campo no guarda el commit de nadie.
+    ///
+    /// Un `BTreeSet` y no un `Vec` porque es un set: el orden alfabético es
+    /// canónico —el cronológico dependería del orden de un merge, que no es un
+    /// hecho sobre nada— y la unicidad no es algo que haya que recordar mantener.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub agree: BTreeSet<String>,
     /// La ubicación aprobada. Ausente en un endpoint `issue`, que no tiene capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkEndpoint>,
@@ -115,6 +128,19 @@ pub struct Accepted {
     /// Sólo donde hay gramática tree-sitter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_ast: Option<String>,
+}
+
+impl Accepted {
+    /// Si dos `accepted` aprueban lo mismo, **sin mirar quiénes**.
+    ///
+    /// Es la comparación que importa en todos lados menos en la serialización:
+    /// `agree` no participa de ningún estado ni de ningún hash, y dos personas que
+    /// aprobaron el mismo contenido aprobaron el mismo contenido.
+    pub fn same_values(&self, other: &Self) -> bool {
+        self.link == other.link
+            && self.hash == other.hash
+            && self.hash_ast == other.hash_ast
+    }
 }
 
 impl Endpoints {
@@ -205,6 +231,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut bl = BiLink::new(ep("capture abc123"), ep("path >impl"));
         bl.endpoint.zero.accepted = Some(Accepted {
+            agree: ["ana".to_string(), "pablo".to_string()].into(),
             link: Some(ep("capture abc123")),
             hash: "c00e0760".into(),
             hash_ast: Some("1b9e44a2".into()),
