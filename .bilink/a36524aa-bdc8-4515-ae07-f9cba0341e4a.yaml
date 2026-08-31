@@ -1,0 +1,7 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 8aaa36f9703b524d316ee92afc49111a
+    name: el-comando

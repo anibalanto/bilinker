@@ -1,0 +1,7 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 334918eb11d3436650daf1b7e82c1f8a
+    name: la-vista
