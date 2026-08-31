@@ -87,25 +87,33 @@ pub fn accept(layer: &Path, uuid: &str, n: u8, what: What) -> Result<AcceptResul
     Ok(AcceptResult { uuid, n, hash, commit, agree, wrote })
 }
 
-/// Quién acepta: el `user.name` de git.
+/// Quién acepta: **el nombre que git va a poner como autor del commit.**
 ///
-/// **El mismo que va a firmar el commit y el mismo que `git blame` va a mostrar
-/// sobre la línea del nombre.** Que sean uno solo es lo que permite cruzarlos: un
-/// `agree` que dijera una cosa y el autor del commit otra no se podría verificar
-/// contra ninguna firma, y el campo quedaría siendo decoración.
+/// Que sea el mismo que el autor y el mismo que `git blame` muestra sobre la línea
+/// del nombre es lo que permite cruzarlos: un `agree` que dijera una cosa y el autor
+/// del commit otra no se podría verificar contra ninguna firma, y el campo quedaría
+/// siendo decoración.
 ///
-/// Sin `user.name` no se acepta — igual que no se commitearía.
+/// **Por eso se le pregunta a git en vez de leer `user.name`.** El nombre del autor
+/// no siempre sale de ahí —puede venir de `GIT_AUTHOR_NAME`, de un `[includeIf]` por
+/// directorio, o del sistema cuando nadie lo configuró— y leer un solo lugar acierta
+/// a veces. `git var GIT_AUTHOR_IDENT` contesta lo que git realmente va a usar, con
+/// el mismo orden de precedencia, y devuelve `Nombre <mail> ts tz`.
+///
+/// Si git no puede contestar, no se acepta: tampoco se podría commitear.
 fn signer(layer: &Path) -> Result<String> {
     let out = std::process::Command::new("git")
-        .args(["-C", &layer.to_string_lossy(), "config", "user.name"])
+        .args(["-C", &layer.to_string_lossy(), "var", "GIT_AUTHOR_IDENT"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        // El nombre es todo lo que va antes del mail, que git siempre encierra.
+        .and_then(|ident| ident.split_once(" <").map(|(n, _)| n.trim().to_string()))
         .filter(|s| !s.is_empty());
 
     out.context(
-        "git no tiene `user.name` configurado, y `agree` dice quién aprueba.\n                Configurarlo: `git config user.name '<nombre>'`",
+        "git no sabe con qué nombre firmar, y `agree` dice quién aprueba.\n       Configurarlo: `git config user.name '<nombre>'`",
     )
 }
 
