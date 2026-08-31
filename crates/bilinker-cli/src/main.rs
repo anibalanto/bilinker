@@ -759,19 +759,35 @@ Eliminar? [y/N] ");
                 }
             }
 
-            // Apply each fix
+            // **Un commit por `link` repuntado, no por invocación.** Repuntar un
+            // vínculo a otro fragmento es una decisión, y las decisiones se firman y
+            // se auditan de a una. Lo fuerza además el mensaje: `apply <uuid>.<N>
+            // <capture-nuevo>` nombra **un** endpoint, y uno que nombrara tres no
+            // sería reproducible contra el árbol de un solo padre.
+            //
+            // La absorción la escribe el primer `seal`, y las N decisiones cuelgan
+            // de ella.
             let mut applied: Vec<std::path::PathBuf> = Vec::new();
-            let mut bullet_lines = Vec::new();
             let mut errors  = 0usize;
 
             for f in &fixes {
+                let capture = f.to.id();
                 match bilinker::apply::apply_fix(&cwd, f) {
                     Ok(paths) => {
-                        applied.extend(paths);
-                        bullet_lines.push(format!(
-                            "- {}… endpoint.{}: {} {}",
-                            f.short(), f.n, f.reason, f.description(),
-                        ));
+                        applied.extend(paths.clone());
+                        let command = bilinker::refmsg::RefCommand::Apply {
+                            uuid: f.uuid.clone(), n: f.n, capture,
+                        };
+                        // Antes del corte los bilinks viven en la rama, y
+                        // commitearlos ahí también es por fix.
+                        let sealed = match bilinker::bilink_ref::absorb_act(&cwd) {
+                            Ok(_) => seal_apply(&cwd, &root, &paths, command, f),
+                            Err(e) => Err(e),
+                        };
+                        if let Err(e) = sealed {
+                            eprintln!("error al commitear {}.{}: {e}", f.short(), f.n);
+                            errors += 1;
+                        }
                     }
                     Err(e) => {
                         eprintln!("error  {}.{}: {e}", f.short(), f.n);
@@ -785,40 +801,12 @@ Eliminar? [y/N] ");
                 std::process::exit(if errors > 0 { 1 } else { 2 });
             }
 
-            // Commit
-            let date    = chrono::Utc::now().format("%Y-%m-%d");
-            let summary = format!("bilinker: repuntar {states_label} ({date})");
-            let body    = bullet_lines.join("\n");
-            let message = format!("{summary}\n\n{body}");
-
-            // El acto se cierra con un commit. Sobre la ref si el repo ya cortó;
-            // sobre la rama del proyecto si todavía no, que es donde viven ahí.
-            //
-            // Sobre la ref son dos: **absorber y repuntar son dos cosas**, y un
-            // commit de la ref hace una. La absorción va primero y sólo si falta.
-            let committed = match bilinker::bilink_ref::absorb_act(&cwd)
-                .and_then(|_| bilinker::bilink_ref::decide_act(&cwd, &message))
-            {
-                Ok(Some(c)) => Ok(c.sha),
-                Ok(None)    => git_commit(&root, &applied, &message),
-                Err(e)      => Err(e),
-            };
-
-            match committed {
-                Ok(hash) => {
-                    let n = fixes.len() - errors;
-                    println!("\nRepuntados {n} endpoint(s). Los {n} quedan en RELOCATED.");
-                    println!("  Revisar con `bilinker get <uuid>.<N>` y aprobar con `bilinker accept --place`.");
-                    println!("Committed: {} \"{summary}\"", short(&hash));
-                    if errors > 0 {
-                        eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
-                        std::process::exit(1);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("error al commitear: {e}");
-                    std::process::exit(1);
-                }
+            let n = fixes.len() - errors;
+            println!("\nRepuntados {n} endpoint(s) ({states_label}). Los {n} quedan en RELOCATED.");
+            println!("  Revisar con `bilinker get <uuid>.<N>` y aprobar con `bilinker accept --place`.");
+            if errors > 0 {
+                eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
+                std::process::exit(1);
             }
         }
 
@@ -992,7 +980,9 @@ Eliminar? [y/N] ");
             let accept_one = |uuid: &str, n: u8| -> anyhow::Result<()> {
                 let r = bilinker::accept::accept(&cwd, uuid, n, what)?;
                 print_accept_result(&r);
-                seal(&cwd, &format!("accept {}.{}", r.uuid, r.n))
+                seal(&cwd, bilinker::refmsg::RefCommand::Accept {
+                    place: what.place, content: what.content, uuid: r.uuid.clone(), n: r.n,
+                })
             };
 
             if is_uuid_n {
@@ -1325,16 +1315,54 @@ fn short(sha: &str) -> &str {
 ///
 /// No hace nada en un repo que todavía no cortó a la ref, donde los bilinks viven en
 /// la rama del proyecto y commitearlos es de quien trabaja.
-fn seal(cwd: &Path, message: &str) -> anyhow::Result<()> {
+fn seal(cwd: &Path, command: bilinker::refmsg::RefCommand) -> anyhow::Result<()> {
     if let Some(a) = bilinker::bilink_ref::absorb_act(cwd)? {
         eprintln!("commit:  refs/bilink/… @ {}  (absorbe {})", short(&a.sha),
                   short(a.absorbed.as_deref().unwrap_or("?")));
     }
-    match bilinker::bilink_ref::decide_act(cwd, message)? {
+    let message = bilinker::refmsg::RefMessage::new(command).with_invocation(invocation());
+    match bilinker::bilink_ref::decide_act(cwd, &message)? {
         Some(c) if c.wrote => eprintln!("commit:  refs/bilink/… @ {}", short(&c.sha)),
         _ => {}
     }
     Ok(())
+}
+
+/// El commit de decisión de **un** fix de `apply`, sobre la ref o sobre la rama.
+///
+/// En un repo que todavía no cortó a la ref los bilinks viven en la rama del
+/// proyecto, y ahí el commit es un commit común — pero sigue siendo uno por fix, que
+/// es lo que hace que las dos historias se lean igual.
+fn seal_apply(
+    cwd: &Path,
+    root: &Path,
+    paths: &[std::path::PathBuf],
+    command: bilinker::refmsg::RefCommand,
+    f: &bilinker::apply::PendingFix,
+) -> anyhow::Result<()> {
+    let message = bilinker::refmsg::RefMessage::new(command)
+        .with_prose(format!("{} {}", f.reason, f.description()))
+        .with_invocation(invocation());
+
+    match bilinker::bilink_ref::decide_act(cwd, &message)? {
+        Some(c) if c.wrote => {
+            eprintln!("commit:  refs/bilink/… @ {}", short(&c.sha));
+            Ok(())
+        }
+        Some(_) => Ok(()),
+        None => git_commit(root, paths, &message.render()).map(|_| ()),
+    }
+}
+
+/// Lo que la persona tipeó, para el trailer `Invocation:`.
+///
+/// **Es auditoría y no verificación**: un `accept .` de veinte endpoints escribe
+/// veinte commits, y cada uno lleva su propio comando canónico. Esto guarda el
+/// `accept .` que los produjo, que es lo único que la primera línea ya no dice.
+fn invocation() -> Vec<String> {
+    std::iter::once("bilinker".to_string())
+        .chain(std::env::args().skip(1))
+        .collect()
 }
 
 /// Las tres filas de `adopt`, agrupadas. Son las únicas posibles: `accepted` son

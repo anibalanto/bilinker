@@ -30,6 +30,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::config;
+use crate::refmsg::{RefCommand, RefMessage};
 
 /// Lo que queda fuera del índice de bilinker, no sólo del índice del proyecto.
 ///
@@ -243,11 +244,13 @@ impl Repo {
         let tree = self.build_tree_inheriting(&project_tip, &ref_tip)?;
         self.verify_faithful(&tree, &project_tip)?;
 
+        let message = RefMessage::new(RefCommand::Absorb { project: project_tip.clone() })
+            .with_prose(format!("{branch} al día"));
         let sha = self.write_ref_commit(
             branch,
             &tree,
             &[ref_tip, project_tip.clone()],
-            &format!("absorb {}: {branch} al día", short(&project_tip)),
+            &message.render(),
         )?;
         self.write_head(branch, &sha)?;
 
@@ -266,7 +269,7 @@ impl Repo {
     /// jamás, y traer código no es de acá: si el proyecto se movió, [`Self::absorb`]
     /// lo trajo en un commit anterior. Que el tip esté absorbido es precondición y se
     /// verifica; no se cumple absorbiendo de contrabando.
-    pub fn decide(&self, branch: &str, message: &str) -> Result<Commit> {
+    pub fn decide(&self, branch: &str, message: &RefMessage) -> Result<Commit> {
         let ref_tip = self.require_ref_tip(branch)?;
         let project_tip = self.branch_tip(branch)?;
         let absorbed = self.absorbed(&ref_tip)?.unwrap_or_else(|| ref_tip.clone());
@@ -287,7 +290,7 @@ impl Repo {
             return Ok(Commit { sha: ref_tip, absorbed: None, wrote: false });
         }
 
-        let sha = self.write_ref_commit(branch, &tree, &[ref_tip], message)?;
+        let sha = self.write_ref_commit(branch, &tree, &[ref_tip], &message.render())?;
         self.write_head(branch, &sha)?;
 
         Ok(Commit { sha, absorbed: None, wrote: true })
@@ -799,7 +802,7 @@ pub fn absorb_act(dir: &Path) -> Result<Option<Commit>> {
 /// invocación. `accept .` sobre veinte endpoints pasa por acá veinte veces, y cada
 /// commit lleva su propio endpoint — cien commits firmados denuncian una aprobación
 /// masiva que uno disimula.
-pub fn decide_act(dir: &Path, message: &str) -> Result<Option<Commit>> {
+pub fn decide_act(dir: &Path, message: &RefMessage) -> Result<Option<Commit>> {
     let Some((repo, branch)) = committable(dir)? else { return Ok(None) };
     Ok(Some(repo.decide(&branch, message)?))
 }
@@ -1044,6 +1047,16 @@ mod tests {
         g(&["write-tree"])
     }
 
+    /// Un mensaje de decisión cualquiera, para los tests que no miran el mensaje.
+    fn decision() -> RefMessage {
+        RefMessage::new(RefCommand::Accept {
+            place: true,
+            content: true,
+            uuid: "00000000-0000-4000-8000-000000000000".into(),
+            n: 0,
+        })
+    }
+
     fn git_in(root: &Path, args: &[&str]) -> String {
         let out = Command::new("git").current_dir(root).args(args).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {}",
@@ -1077,7 +1090,7 @@ mod tests {
         let (_t, repo, branch, _x, _cut) = cut_repo();
         std::fs::write(repo.root.join(".bilink/a.yaml"), "endpoint: {b: 1}\n").unwrap();
 
-        let c = repo.decide(&branch, "accept 0000.0").unwrap();
+        let c = repo.decide(&branch, &decision()).unwrap();
         assert!(c.wrote);
         assert_eq!(repo.classify(&c.sha).unwrap(), Act::Decision);
     }
@@ -1106,7 +1119,7 @@ mod tests {
 
         // Y las dos puertas juntas escriben lo mismo en dos commits, los dos válidos.
         let a = repo.absorb(&branch).unwrap().expect("había algo que absorber");
-        let d = repo.decide(&branch, "accept 0000.0").unwrap();
+        let d = repo.decide(&branch, &decision()).unwrap();
         assert_eq!(repo.classify(&a.sha).unwrap(), Act::Absorption { project: e });
         assert_eq!(repo.classify(&d.sha).unwrap(), Act::Decision);
         assert_eq!(rev_tree(&root, &d.sha), rev_tree(&root, &sha),
@@ -1127,7 +1140,7 @@ mod tests {
         git_in(&repo.root, &["commit", "-qm", "el código avanza"]);
 
         let before = repo.ref_tip(&branch).unwrap();
-        let err = repo.decide(&branch, "accept 0000.0").unwrap_err().to_string();
+        let err = repo.decide(&branch, &decision()).unwrap_err().to_string();
         assert!(err.contains("no está absorbido"), "y se dice por qué:\n{err}");
         assert_eq!(before, repo.ref_tip(&branch).unwrap(), "no se escribió nada");
     }
