@@ -2090,6 +2090,132 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── task `1f`: el mensaje es el comando ───────────────────────────────────
+
+/// **Todo commit que bilinker escribe sobre la ref parsea contra la gramática**, y
+/// lleva `Bilinker-Version`. Es el contrato del que cuelga el replay.
+#[test]
+fn every_message_written_on_the_ref_parses_against_the_grammar() {
+    use bilinker::refmsg::{read, Read};
+
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Un poco de cada verbo: corte (el fixture), absorción, y decisiones.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    commit(&root, "y la spec");
+    run_in(&root, &["sync"]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--content", "."]);
+
+    let commits = ref_commits(&root, &bref);
+    assert!(commits.len() >= 5, "hacen falta varios actos para que valga:\n{commits:?}");
+
+    for c in &commits {
+        let msg = git_out(&root, &["log", "-1", "--format=%B", c]);
+        match read(&msg) {
+            Ok(Read::Parsed(m)) => {
+                assert_eq!(m.version, bilinker::refmsg::VERSION,
+                           "{c} lleva otra versión:\n{msg}");
+            }
+            Ok(Read::PreGrammar) => panic!("{c} no lleva Bilinker-Version:\n{msg}"),
+            Err(e) => panic!("{c} no parsea: {e}\n{msg}"),
+        }
+    }
+}
+
+/// **La gramática no es retroactiva.** Los commits que el código viejo dejó en la ref
+/// no se pueden reescribir, así que se leen como anteriores a ella y no como un
+/// error — y conviven con los nuevos en la misma ref.
+#[test]
+fn the_history_written_before_the_grammar_is_read_as_pre_grammar() {
+    use bilinker::refmsg::{read, Read};
+
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    // Un commit con la forma que escribía el código anterior a `1e` y a `1f`: un
+    // merge que absorbe y decide a la vez, con el mensaje en prosa.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    let e = rev(&root, "HEAD");
+    let tip = rev(&root, &bref);
+    let tree = rev(&root, &format!("{tip}^{{tree}}"));
+    let viejo = git_out(&root, &["commit-tree", &tree, "-p", &tip, "-p", &e,
+                                 "-m", "accept .: 9 endpoint(s)"]);
+    let viejo = viejo.trim().to_string();
+    git(&root, &["update-ref", &bref, &viejo]);
+
+    assert_eq!(read(&git_out(&root, &["log", "-1", "--format=%B", &viejo])).unwrap(),
+               Read::PreGrammar,
+               "un commit sin el trailer es anterior a la gramática, no un error");
+
+    // Y la ref sigue usable: el acto siguiente escribe con la gramática nueva encima.
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept sobre una ref con historia vieja falló:\n{stderr}");
+
+    let msg = git_out(&root, &["log", "-1", "--format=%B", &bref]);
+    assert!(matches!(read(&msg), Ok(Read::Parsed(_))), "el nuevo sí parsea:\n{msg}");
+}
+
+/// `apply` escribe **un commit por `link` repuntado**, no uno por invocación: el
+/// mensaje `apply <uuid>.<N> <capture-nuevo>` nombra un endpoint, y uno que nombrara
+/// tres no sería reproducible contra el árbol de un solo padre.
+#[test]
+fn apply_writes_one_commit_per_repointed_link() {
+    use bilinker::refmsg::{parse, RefCommand};
+
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // El proyecto avanza por otro lado, para que haya algo que absorber.
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "otro archivo");
+
+    // Los dos endpoints se mueven a la vez: dos fixes, una invocación. El rename se
+    // deja en el índice — `git diff -M` lo lee de ahí, y commitearlo lo esconde.
+    git(&root, &["mv", "docs/spec.md", "docs/renombrada.md"]);
+    git(&root, &["mv", "src/Service.java", "src/Servicio.java"]);
+
+    let before = rev(&root, &bref);
+    run_in(&root, &["check", "."]);
+    let (out, stderr, ok) = run_in(&root, &["apply", "-y"]);
+    assert!(ok, "apply falló:\n{out}\n{stderr}");
+
+    let nuevos = git_out(&root, &["rev-list", "--reverse", "--first-parent",
+                                  &format!("{before}..{bref}")]);
+    let nuevos: Vec<&str> = nuevos.lines().collect();
+    assert_eq!(nuevos.len(), 3, "una absorción y un commit por fix:\n{nuevos:?}");
+    assert_eq!(parents_of(&root, nuevos[0]).len(), 2, "primero la absorción");
+
+    let mut endpoints = Vec::new();
+    for d in &nuevos[1..] {
+        assert_eq!(parents_of(&root, d).len(), 1, "las decisiones tienen un padre");
+        let msg = git_out(&root, &["log", "-1", "--format=%B", d]);
+        match parse(&msg).expect("el mensaje de apply parsea").command {
+            RefCommand::Apply { uuid: u, n, capture } => {
+                assert_eq!(u, uuid, "cada commit nombra su bilink");
+                assert_eq!(capture.len(), 32, "y el capture nuevo, entero:\n{msg}");
+                endpoints.push(n);
+            }
+            other => panic!("el verbo tiene que ser apply, no {other:?}"),
+        }
+        assert!(msg.contains("Invocation: bilinker apply -y"),
+                "lo que se tipeó va como auditoría:\n{msg}");
+    }
+    endpoints.sort();
+    assert_eq!(endpoints, vec![0, 1], "un commit por endpoint repuntado");
+}
+
 // ─── La superficie de revisión ─────────────────────────────────────────────
 
 /// `bilinker-has-its-own-status` — los cambios de bilinker se ven en su índice, no

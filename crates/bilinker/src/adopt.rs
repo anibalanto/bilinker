@@ -115,10 +115,14 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
         &branch,
         &tree,
         &[tip_now, theirs.clone()],
-        &format!(
-            "adopt {neighbour_branch}: {} endpoint(s)",
+        &crate::refmsg::RefMessage::new(crate::refmsg::RefCommand::Adopt {
+            branch: neighbour_branch.clone(),
+        })
+        .with_prose(format!(
+            "{} endpoint(s)",
             changes.iter().filter(|c| c.row == Row::Clean).count()
-        ),
+        ))
+        .render(),
     )?;
     repo.write_head(&branch, &sha)?;
 

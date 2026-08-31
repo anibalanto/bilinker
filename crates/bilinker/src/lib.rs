@@ -25,6 +25,7 @@ pub mod init;
 pub mod issue;
 pub mod push;
 pub mod query;
+pub mod refmsg;
 pub mod review;
 pub mod state;
 pub mod sync;

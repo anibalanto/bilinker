@@ -17,6 +17,7 @@ use std::path::Path;
 use anyhow::{bail, Result};
 
 use crate::bilink_ref::Repo;
+use crate::refmsg::{RefCommand, RefMessage};
 
 pub struct TrackResult {
     pub branch:    String,
@@ -52,7 +53,8 @@ pub fn track(dir: &Path, branch: &str, from: Option<&str>) -> Result<TrackResult
         Some(Candidate { commit, absorbed }) => (
             repo.build_tree_inheriting(&tip, commit)?,
             vec![commit.clone(), tip.clone()],
-            format!("track: {branch} hereda de {} sobre {}", short(commit), short(absorbed)),
+            RefMessage::new(RefCommand::Track { branch: branch.to_string() })
+                .with_prose(format!("hereda de {} sobre {}", short(commit), short(absorbed))),
         ),
         // Ningún candidato califica: la ref nace desde cero, con el `.bilink/` del
         // árbol de trabajo y el commit de la rama como padre único.
@@ -62,12 +64,13 @@ pub fn track(dir: &Path, branch: &str, from: Option<&str>) -> Result<TrackResult
         None => (
             repo.build_tree(&tip)?,
             vec![tip.clone()],
-            format!("corte: los bilinks de {branch} pasan a refs/bilink/{branch}"),
+            RefMessage::new(RefCommand::Corte { branch: branch.to_string() })
+                .with_prose(format!("los bilinks pasan a refs/bilink/{branch}")),
         ),
     };
 
     repo.verify_faithful(&tree, &tip)?;
-    let sha = repo.write_ref_commit(branch, &tree, &parents, &message)?;
+    let sha = repo.write_ref_commit(branch, &tree, &parents, &message.render())?;
 
     // Recién acá se toca el árbol: si el commit no se pudo escribir, el `.bilink/`
     // del árbol quedó como estaba.
