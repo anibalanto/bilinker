@@ -30,6 +30,7 @@ pub mod issue;
 pub mod pull;
 pub mod push;
 pub mod query;
+pub mod relayer;
 pub mod refmsg;
 pub mod review;
 pub mod state;

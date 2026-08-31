@@ -2109,6 +2109,132 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── task `1w`: un `.bilink/` fabrica una capa ─────────────────────────────
+
+/// **Mover los bilinks de una capa a la de arriba no toca ningún contenido.**
+///
+/// El id de un capture es `sha256(file \0 query \0)`, así que prefijar el `file` le
+/// cambia el id — pero los `hash` no se tocan, y por eso ningún endpoint pasa a
+/// `ALTERED`. Es la propiedad que hace segura la migración.
+#[test]
+fn relayer_moves_the_bilinks_up_without_altering_anything() {
+    let (_t, root) = isolated_git_workspace();
+
+    // Una capa fabricada: un directorio común con `.bilink/` propio.
+    let sub = root.join("subsystems/demo");
+    fs::create_dir_all(sub.join("docs")).unwrap();
+    fs::create_dir_all(sub.join(".stratum/impl/src")).unwrap();
+    fs::write(sub.join("docs/spec.md"), "# Spec\n\nEl contrato.\n").unwrap();
+    fs::write(sub.join(".stratum/impl/src/lib.rs"),
+              "pub fn run() { let x = 1; }\n").unwrap();
+    // **Lo que fabrica la capa es el `.bilink/`**, y hace falta crearlo: `chain new`
+    // desde un subdirectorio que no lo tiene resuelve la raíz hacia arriba y hace
+    // lo correcto. Así se fabricaron las dos que había en el árbol.
+    fs::create_dir_all(sub.join(".bilink")).unwrap();
+    commit(&root, "la capa de abajo");
+
+    let (stdout, stderr, ok) = run_in(&sub, &[
+        "chain", "new", "--tip", "docs/spec.md", "--tip", ">impl/src/lib.rs",
+    ]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let uuid = stdout.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    // **Abajo primero**: un endpoint `path` copia el `accepted` de su vecino, así
+    // que no se puede aceptar antes que él.
+    run_in(&sub.join(".stratum/impl"), &["check", "."]);
+    run_in(&sub.join(".stratum/impl"), &["accept", "."]);
+    run_in(&sub, &["check", "."]);
+    run_in(&sub, &["accept", "."]);
+
+    // **El check de la raíz no los ve**: para él son otra capa, y no lo dice.
+    assert!(!root.join(".bilink").join(format!("{uuid}.yaml")).exists(),
+            "el bilink vive en la capa fabricada, no en la raíz");
+    let hash_antes = accepted_of(&sub, &uuid, 0).hash.clone();
+
+    let (out, stderr, ok) = run_in(&root, &["relayer", "subsystems/demo"]);
+    assert!(ok, "relayer falló:\n{out}{stderr}");
+
+    // La capa fabricada desapareció, y sus bilinks están arriba.
+    assert!(!sub.join(".bilink").exists(), "la capa fabricada se vació");
+    assert!(root.join(".bilink").join(format!("{uuid}.yaml")).exists(),
+            "y el bilink está en la raíz");
+
+    // **El contenido aprobado es el mismo**: lo que se movió es la ubicación.
+    assert_eq!(accepted_of(&root, &uuid, 0).hash, hash_antes,
+               "el hash no cambia: el fragmento no se movió");
+
+    // **Y nada quedó `ALTERED` de ningún lado**, que es la propiedad que hace segura
+    // la migración: lo que se movió es la ubicación, así que el contenido aprobado
+    // sigue coincidiendo. Un `PENDING` es otra cosa —alguien todavía no aprobó— y
+    // no lo produce este comando.
+    let (arriba, _, _) = run_in(&root, &["check", "."]);
+    let (abajo, _, _) = run_in(&sub.join(".stratum/impl"), &["check", "."]);
+    for (donde, estados) in [("la raíz", &arriba), ("la capa de abajo", &abajo)] {
+        assert!(!estados.contains("ALTERED"), "{donde} quedó con drift:\n{estados}");
+        assert!(!estados.contains("UNRESOLVED"), "{donde} perdió una ubicación:\n{estados}");
+        assert!(!estados.contains("RELOCATED"), "{donde} quedó pidiendo aprobar:\n{estados}");
+    }
+}
+
+/// El capture se reacuña con el `file` prefijado, y **el `path` relativo a la capa
+/// que se vacía gana el prefijo**: `>impl` desde arriba es `<capa>>impl`.
+#[test]
+fn relayer_rewrites_the_paths_that_were_relative_to_the_emptied_layer() {
+    let (_t, root) = isolated_git_workspace();
+    let sub = root.join("subsystems/demo");
+    fs::create_dir_all(sub.join("docs")).unwrap();
+    fs::create_dir_all(sub.join(".stratum/impl/src")).unwrap();
+    fs::write(sub.join("docs/spec.md"), "# Spec\n\nEl contrato.\n").unwrap();
+    fs::write(sub.join(".stratum/impl/src/lib.rs"), "pub fn run() {}\n").unwrap();
+    fs::create_dir_all(sub.join(".bilink")).unwrap();
+    commit(&root, "la capa de abajo");
+
+    let (stdout, _, _) = run_in(&sub, &[
+        "chain", "new", "--tip", "docs/spec.md", "--tip", ">impl/src/lib.rs",
+    ]);
+    let uuid = stdout.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    run_in(&root, &["relayer", "subsystems/demo"]);
+
+    let bl = bilink_format::BiLink::load(&root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    assert_eq!(bl.endpoint.get(1).link.to_string(), "path subsystems/demo>impl",
+               "el `>impl` era relativo a la capa que se vació");
+
+    let cap = bl.endpoint.get(0).link.to_string();
+    let id = cap.strip_prefix("capture ").expect("un capture");
+    let c: bilink_format::Capture = serde_yaml_ng::from_str(
+        &fs::read_to_string(root.join(format!(".bilink/capture/{id}.yaml"))).unwrap()).unwrap();
+    assert_eq!(c.file, "subsystems/demo/docs/spec.md",
+               "y el capture lleva el `file` prefijado");
+}
+
+/// El commit que lo cierra es una **decisión**, con su verbo propio: mover bilinks
+/// entre capas no es ninguno de los actos que ya existían.
+#[test]
+fn relayer_seals_with_its_own_verb() {
+    use bilinker::refmsg::{parse, RefCommand};
+
+    let (_t, root, _uuid, _x) = cut_over();
+    let sub = root.join("subsystems/demo");
+    fs::create_dir_all(sub.join("docs")).unwrap();
+    fs::create_dir_all(sub.join(".stratum/impl/src")).unwrap();
+    fs::write(sub.join("docs/spec.md"), "# Spec\n\nEl contrato.\n").unwrap();
+    fs::write(sub.join(".stratum/impl/src/lib.rs"), "pub fn run() {}\n").unwrap();
+    fs::create_dir_all(sub.join(".bilink")).unwrap();
+    commit(&root, "la capa de abajo");
+    run_in(&sub, &["chain", "new", "--tip", "docs/spec.md", "--tip", ">impl/src/lib.rs"]);
+
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let (out, stderr, ok) = run_in(&root, &["relayer", "subsystems/demo"]);
+    assert!(ok, "relayer falló:\n{out}{stderr}");
+
+    let msg = git_out(&root, &["log", "-1", "--format=%B", &bref]);
+    assert_eq!(parse(&msg).expect("el mensaje parsea").command,
+               RefCommand::Relayer { layer: "subsystems/demo".into() });
+    assert_eq!(parents_of(&root, &bref).len(), 1, "es una decisión: un solo padre");
+}
+
 // ─── tasks `10` y `15`: la salida es fiel a lo que la herramienta sabe ─────
 
 /// **`get` sobre un endpoint que no resuelve dice a dónde apuntaba.**
