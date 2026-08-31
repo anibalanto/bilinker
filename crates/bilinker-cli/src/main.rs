@@ -793,7 +793,12 @@ Eliminar? [y/N] ");
 
             // El acto se cierra con un commit. Sobre la ref si el repo ya cortó;
             // sobre la rama del proyecto si todavía no, que es donde viven ahí.
-            let committed = match bilinker::bilink_ref::commit_act(&cwd, &message) {
+            //
+            // Sobre la ref son dos: **absorber y repuntar son dos cosas**, y un
+            // commit de la ref hace una. La absorción va primero y sólo si falta.
+            let committed = match bilinker::bilink_ref::absorb_act(&cwd)
+                .and_then(|_| bilinker::bilink_ref::decide_act(&cwd, &message))
+            {
                 Ok(Some(c)) => Ok(c.sha),
                 Ok(None)    => git_commit(&root, &applied, &message),
                 Err(e)      => Err(e),
@@ -979,44 +984,49 @@ Eliminar? [y/N] ");
                 _             => bilinker::accept::What::default(),
             };
 
+            // **Un commit por aceptación, no por invocación.** Cada endpoint aprobado
+            // cierra con el suyo, y la absorción que los precede a todos la escribe
+            // el primer `seal`: la granularidad sigue al objeto, así que un
+            // `accept .` de veinte endpoints deja veinte decisiones auditables una
+            // por una en vez de una que las disimula a todas.
+            let accept_one = |uuid: &str, n: u8| -> anyhow::Result<()> {
+                let r = bilinker::accept::accept(&cwd, uuid, n, what)?;
+                print_accept_result(&r);
+                seal(&cwd, &format!("accept {}.{}", r.uuid, r.n))
+            };
+
             if is_uuid_n {
                 // Un endpoint
                 let (uuid, n) = parse_accept_target(&target)?;
-                let r = bilinker::accept::accept(&cwd, &uuid, n, what)?;
-                print_accept_result(&r);
-                seal(&cwd, &format!("accept {uuid}.{n}"))?;
+                accept_one(&uuid, n)?;
             } else if is_path {
                 // Bulk: all PENDING under path filter
                 let filter = if target == "." { None } else { Some(target.trim_end_matches('/')) };
                 let _ = filter;
-                let results = bilinker::accept::accept_all(&cwd)?;
-                if results.is_empty() {
+                let targets = bilinker::accept::pending(&cwd);
+                if targets.is_empty() {
                     eprintln!("nothing to accept");
                 } else {
-                    for r in &results {
-                        print_accept_result(r);
+                    let mut count = 0;
+                    for (uuid, n) in &targets {
+                        match accept_one(uuid, *n) {
+                            Ok(())  => count += 1,
+                            Err(e) => eprintln!("warn  {}.{n}: {e}", &uuid[..8.min(uuid.len())]),
+                        }
                     }
-                    eprintln!("accepted {} endpoint(s)", results.len());
-                    let endpoints: Vec<String> = results.iter()
-                        .map(|r| format!("{}.{}", &r.uuid[..8.min(r.uuid.len())], r.n))
-                        .collect();
-                    seal(&cwd, &format!(
-                        "accept {}: {} endpoint(s)\n\n{}",
-                        target, results.len(), endpoints.join("\n")
-                    ))?;
+                    eprintln!("accepted {count} endpoint(s)");
                 }
             } else {
                 // UUID prefix: accept both endpoints
                 let mut count = 0;
                 for n in [0u8, 1u8] {
-                    match bilinker::accept::accept(&cwd, &target, n, what) {
-                        Ok(r) => { print_accept_result(&r); count += 1; }
+                    match accept_one(&target, n) {
+                        Ok(())  => count += 1,
                         Err(e) => eprintln!("warn .{n}: {e}"),
                     }
                 }
                 if count > 0 {
                     eprintln!("note: adjacent node will detect CHAIN_DIRTY on next check");
-                    seal(&cwd, &format!("accept {target}: {count} endpoint(s)"))?;
                 }
             }
         }
@@ -1304,20 +1314,24 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
 }
 
-/// Cierra un acto con su commit sobre la ref.
+/// Cierra una decisión con sus commits sobre la ref: la absorción si falta, y la
+/// decisión.
 ///
-/// **Un commit por invocación, no por aceptación**: la granularidad sigue al acto.
+/// **Son dos commits porque son dos cosas.** Absorber es precondición de todo commit
+/// sobre la ref y se cumple en un commit propio, inmediatamente anterior; nunca en el
+/// mismo. Llamar acá N veces seguidas absorbe **una** sola —la segunda encuentra el
+/// tip ya absorbido— así que las N decisiones de un `accept .` cuelgan todas del
+/// mismo merge sin que nadie lleve la cuenta.
+///
 /// No hace nada en un repo que todavía no cortó a la ref, donde los bilinks viven en
 /// la rama del proyecto y commitearlos es de quien trabaja.
 fn seal(cwd: &Path, message: &str) -> anyhow::Result<()> {
-    match bilinker::bilink_ref::commit_act(cwd, message)? {
-        Some(c) if c.wrote => {
-            eprintln!("commit:  refs/bilink/… @ {}{}", short(&c.sha),
-                      match &c.absorbed {
-                          Some(a) => format!("  (absorbe {})", short(a)),
-                          None    => String::new(),
-                      });
-        }
+    if let Some(a) = bilinker::bilink_ref::absorb_act(cwd)? {
+        eprintln!("commit:  refs/bilink/… @ {}  (absorbe {})", short(&a.sha),
+                  short(a.absorbed.as_deref().unwrap_or("?")));
+    }
+    match bilinker::bilink_ref::decide_act(cwd, message)? {
+        Some(c) if c.wrote => eprintln!("commit:  refs/bilink/… @ {}", short(&c.sha)),
         _ => {}
     }
     Ok(())
