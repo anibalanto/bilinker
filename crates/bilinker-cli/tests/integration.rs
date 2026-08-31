@@ -2130,6 +2130,37 @@ fn every_message_written_on_the_ref_parses_against_the_grammar() {
     }
 }
 
+/// El corte no tiene verbo propio: su mensaje es `track <rama>`, igual que el de un
+/// `track` que hereda, y **lo que los separa son los padres**.
+#[test]
+fn the_cut_and_an_inheriting_track_share_a_verb_and_differ_in_their_parents() {
+    use bilinker::refmsg::{parse, RefCommand};
+
+    let (_t, root, _uuid, x) = cut_over();
+    let main = branch_of(&root);
+
+    // `●0` — el corte: `track` sin candidato del que heredar.
+    let corte = rev(&root, &format!("refs/bilink/{main}"));
+    let msg = git_out(&root, &["log", "-1", "--format=%B", &corte]);
+    assert_eq!(parse(&msg).expect("parsea").command,
+               RefCommand::Track { branch: main.clone() });
+    assert_eq!(parents_of(&root, &corte), vec![x], "un padre, y del proyecto");
+    assert!(msg.contains("corte"), "el acto se nombra en la prosa, no en el verbo:\n{msg}");
+
+    // `●a` — otra rama, ésta con candidato: el mismo verbo, y dos padres.
+    git(&root, &["checkout", "-q", "-b", "feature/x"]);
+    let (_, stderr, ok) = run_in(&root, &["track", "feature/x"]);
+    assert!(ok, "track falló:\n{stderr}");
+
+    let heredado = rev(&root, "refs/bilink/feature/x");
+    let msg = git_out(&root, &["log", "-1", "--format=%B", &heredado]);
+    assert_eq!(parse(&msg).expect("parsea").command,
+               RefCommand::Track { branch: "feature/x".to_string() },
+               "el mismo verbo para los dos nacimientos");
+    assert_eq!(parents_of(&root, &heredado).len(), 2,
+               "y lo que los separa son los padres: heredar tiene dos");
+}
+
 /// **La gramática no es retroactiva.** Los commits que el código viejo dejó en la ref
 /// no se pueden reescribir, así que se leen como anteriores a ella y no como un
 /// error — y conviven con los nuevos en la misma ref.

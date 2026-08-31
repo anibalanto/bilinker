@@ -40,7 +40,13 @@ pub enum RefCommand {
     /// Tipo 1. El commit va abreviado a propósito: es el segundo padre del commit,
     /// así que acá es una ayuda de lectura y no el dato autoritativo.
     Absorb { project: String },
-    /// Tipo 1 — la ref nace heredando el `.bilink/` de otra.
+    /// Tipo 1 — **la ref nace**, herede o no.
+    ///
+    /// El corte no tiene verbo propio: es el caso "no hay de quién heredar" del
+    /// mismo comando, y uno aparte nombraría un `bilinker corte` que no existe. Lo
+    /// que los separa son los padres —el corte tiene uno solo, y no es de la ref—
+    /// que es como [`Repo::classify`](crate::bilink_ref::Repo::classify) distingue
+    /// cualquier commit de la ref.
     Track { branch: String },
     /// Tipo 2 — una decisión, por endpoint.
     Accept { place: bool, content: bool, uuid: String, n: u8 },
@@ -49,8 +55,6 @@ pub enum RefCommand {
     /// Tipo 3.a. Sin endpoint: trae **todo** lo que el vecino decidió, y el conjunto
     /// sale del merge a tres puntas entre los dos padres, que ya están en el objeto.
     Adopt { branch: String },
-    /// La ref nace desde cero, con un commit del proyecto como padre único.
-    Corte { branch: String },
 }
 
 impl RefCommand {
@@ -69,7 +73,6 @@ impl RefCommand {
             }
             Self::Apply { uuid, n, capture } => format!("apply {uuid}.{n} {capture}"),
             Self::Adopt { branch } => format!("adopt {branch}"),
-            Self::Corte { branch } => format!("corte {branch}"),
         }
     }
 }
@@ -159,7 +162,6 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         ("absorb", [c]) => RefCommand::Absorb { project: commit(c)? },
         ("track", [b]) => RefCommand::Track { branch: branch(b)? },
         ("adopt", [b]) => RefCommand::Adopt { branch: branch(b)? },
-        ("corte", [b]) => RefCommand::Corte { branch: branch(b)? },
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
@@ -183,12 +185,12 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Un verbo del vocabulario con la cantidad de argumentos equivocada, y un
         // verbo que no está en el vocabulario, son el mismo error: el mensaje no
         // describe ningún acto reproducible.
-        ("absorb" | "track" | "adopt" | "corte" | "accept" | "apply", _) => bail!(
+        ("absorb" | "track" | "adopt" | "accept" | "apply", _) => bail!(
             "`{verb}` no lleva los argumentos '{}'", args.join(" ")
         ),
         _ => bail!(
             "'{verb}' no es un verbo del vocabulario de la ref \
-             (absorb, track, accept, apply, adopt, corte)"
+             (absorb, track, accept, apply, adopt)"
         ),
     };
 
@@ -315,7 +317,7 @@ mod tests {
             RefCommand::Accept { place: false, content: true, uuid: UUID.into(), n: 1 },
             RefCommand::Apply { uuid: UUID.into(), n: 1, capture: CAP.into() },
             RefCommand::Adopt { branch: "main".into() },
-            RefCommand::Corte { branch: "rc-2.35".into() },
+            RefCommand::Track { branch: "rc-2.35".into() },
         ] {
             let back = round(cmd.clone());
             // `absorb` es el único que no vuelve idéntico: el sha se abrevia a
@@ -366,8 +368,11 @@ mod tests {
 
     #[test]
     fn an_unknown_verb_invalidates_the_message() {
-        let err = parse("rebase main\n\nBilinker-Version: 0.1.0").unwrap_err().to_string();
-        assert!(err.contains("no es un verbo del vocabulario"), "{err}");
+        for verbo in ["rebase main", "corte main", "cut main"] {
+            let msg = format!("{verbo}\n\nBilinker-Version: 0.1.0");
+            let err = parse(&msg).unwrap_err().to_string();
+            assert!(err.contains("no es un verbo del vocabulario"), "sobre '{verbo}': {err}");
+        }
     }
 
     #[test]
@@ -408,7 +413,7 @@ mod tests {
             "adopt main>/dev/null",
             // No es una inyección de shell, pero sí una ambigüedad: dos respuestas a
             // la misma pregunta, y elegir una sería una regla más que conocer.
-            "corte main\nBilinker-Version: 0.0.0",
+            "track main\nBilinker-Version: 0.0.0",
         ];
         for a in ataques {
             let msg = format!("{a}\n\nBilinker-Version: 0.1.0");
