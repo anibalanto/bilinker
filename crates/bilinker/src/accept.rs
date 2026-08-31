@@ -204,11 +204,16 @@ fn compute(
     }
 }
 
-/// Acepta todo lo que necesita atención en la capa.
+/// Los endpoints de la capa que necesitan atención, en orden de archivo.
+///
+/// Es lo que `accept .` va a aprobar, **enumerado antes de aprobar nada**. Se separa
+/// del bucle porque cada aceptación cierra con su propio commit sobre la ref, y la
+/// absorción que las precede a todas se escribe una sola vez: quien recorre esta
+/// lista es quien commitea, no esta función.
 ///
 /// Existe para el caso en que ya se revisó todo, no para el caso en que no se
 /// revisó nada: cada estado no-OK es un puntero al fragmento que hay que mirar.
-pub fn accept_all(layer: &Path) -> Result<Vec<AcceptResult>> {
+pub fn pending(layer: &Path) -> Vec<(String, u8)> {
     let cache = Cache::load(layer);
     let mut out = Vec::new();
 
@@ -226,14 +231,10 @@ pub fn accept_all(layer: &Path) -> Result<Vec<AcceptResult>> {
                 Some(s) => !s.is_ok(),
                 None    => bl.endpoint.get(n).accepted.is_none(),
             };
-            if !needs { continue; }
-            match accept(layer, uuid, n, What::default()) {
-                Ok(r)  => out.push(r),
-                Err(e) => eprintln!("warn  {}.{n}: {e}", &uuid[..8.min(uuid.len())]),
-            }
+            if needs { out.push((uuid.to_string(), n)); }
         }
     }
-    Ok(out)
+    out
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

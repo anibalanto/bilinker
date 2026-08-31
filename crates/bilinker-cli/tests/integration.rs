@@ -1226,6 +1226,38 @@ fn branch_of(root: &Path) -> String {
     git_out(root, &["symbolic-ref", "--short", "HEAD"]).trim().to_string()
 }
 
+/// Los padres de un commit, en orden. **La forma de un commit de la ref se lee de
+/// acá y de [`bilink_diff`]**: cuántos padres, de dónde vienen, y cuál de los dos
+/// árboles se movió. Nada más hace falta para distinguir los tres tipos.
+fn parents_of(root: &Path, commit: &str) -> Vec<String> {
+    git_out(root, &["rev-list", "--parents", "-n", "1", commit])
+        .split_whitespace().skip(1).map(str::to_string).collect()
+}
+
+/// Qué cambió de `.bilink/` entre dos commits. Vacío en una absorción.
+fn bilink_diff(root: &Path, from: &str, to: &str) -> Vec<String> {
+    git_out(root, &["diff-tree", "-r", "--name-only", from, to])
+        .lines().filter(|l| l.contains(".bilink/")).map(str::to_string).collect()
+}
+
+/// Los commits **propios** de la ref, del más nuevo al corte. El freno es la
+/// disyunción, igual que en `Repo::ref_chain`: los del proyecto no llevan `.bilink/`.
+fn ref_commits(root: &Path, bref: &str) -> Vec<String> {
+    git_out(root, &["rev-list", "--first-parent", bref])
+        .lines()
+        .take_while(|c| git_out(root, &["ls-tree", "-r", "--name-only", c])
+                        .contains(".bilink/"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// El primer commit de la ref, bajando por primeros padres, que cumple algo.
+fn first_parent_matching(
+    root: &Path, bref: &str, pred: impl Fn(&str) -> bool,
+) -> Option<String> {
+    ref_commits(root, bref).into_iter().find(|c| pred(c))
+}
+
 /// El corte `005`, tal cual lo describe el ADR:
 ///
 /// ```text
@@ -1860,9 +1892,11 @@ fn adopt_refuses_the_current_branch() {
 
 // ─── accept y apply commitean sobre la ref ─────────────────────────────────
 
-/// `accept-absorbs-before-committing` — absorber es precondición, no comportamiento.
+/// `accept-absorbs-before-committing` — absorber es precondición, y **ocurre en un
+/// commit propio**: el tip queda siendo la decisión, de un solo padre, y la absorción
+/// es lo que tiene arriba.
 #[test]
-fn accept_absorbs_the_commit_it_accepted_against() {
+fn accept_absorbs_in_a_commit_of_its_own_right_before_deciding() {
     let (_t, root, _uuid, _x) = cut_over();
     let branch = branch_of(&root);
     let bref = format!("refs/bilink/{branch}");
@@ -1876,10 +1910,17 @@ fn accept_absorbs_the_commit_it_accepted_against() {
     let (_, stderr, ok) = run_in(&root, &["accept", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
-    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
-    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
-    assert_eq!(parents.len(), 2, "el accept absorbió en el mismo commit:\n{parents:?}");
-    assert_eq!(parents[1], e, "el segundo padre es el commit contra el que se aceptó");
+    // El tip es una decisión: un padre, y nada de código.
+    let parents = parents_of(&root, &bref);
+    assert_eq!(parents.len(), 1, "una decisión tiene un solo padre:\n{parents:?}");
+
+    // Y la absorción está más abajo, con el commit del proyecto como segundo padre.
+    let absorption = first_parent_matching(&root, &bref, |p| parents_of(&root, p).len() == 2)
+        .expect("tiene que haber una absorción debajo de las decisiones");
+    let ap = parents_of(&root, &absorption);
+    assert_eq!(ap[1], e, "el segundo padre es el commit contra el que se aceptó");
+    assert!(bilink_diff(&root, &ap[0], &absorption).is_empty(),
+            "la absorción no toca .bilink/: trae código y nada más");
 
     // La invariante de fidelidad se verifica sola.
     let diff = git_out(&root, &["diff-tree", "-r", "--name-only", &e, &bref]);
@@ -1888,8 +1929,36 @@ fn accept_absorbs_the_commit_it_accepted_against() {
     assert!(strays.is_empty(), "el árbol de código es el del commit absorbido:\n{strays:?}");
 }
 
-/// `act-without-new-code-has-one-parent` — el merge es la forma de ponerse al día,
-/// no la forma del acto.
+/// Invariante 4: **ningún commit de la ref tiene dos padres y diff de `.bilink/` no
+/// vacío.** Se lee sobre toda la ref, que es como un `pre-receive` la va a leer.
+#[test]
+fn no_ref_commit_both_absorbs_and_decides() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Un poco de todo: absorciones, decisiones sueltas y un bulk.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    commit(&root, "y la spec también");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    run_in(&root, &["sync"]);
+
+    for c in ref_commits(&root, &bref) {
+        let parents = parents_of(&root, &c);
+        if parents.len() < 2 { continue; }
+        assert!(bilink_diff(&root, &parents[0], &c).is_empty(),
+                "{c} absorbe y decide a la vez");
+    }
+}
+
+/// `act-without-new-code-has-one-parent` — el merge nunca es la forma del acto: una
+/// decisión tiene **siempre** un solo padre, se haya absorbido o no.
 #[test]
 fn an_accept_with_the_project_still_has_a_single_parent() {
     let (_t, root, _uuid, _x) = cut_over();
@@ -1912,16 +1981,22 @@ fn an_accept_with_the_project_still_has_a_single_parent() {
     run_in(&root, &["accept", "."]);          // este también absorbe
     run_in(&root, &["accept", "."]);          // y este no tiene nada que hacer
 
-    let parents = git_out(&root, &["rev-list", "--parents", "-n", "1", &bref]);
-    let parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
-    assert_eq!(parents.len(), 2, "el último accept con cambios absorbió");
+    let parents = parents_of(&root, &bref);
+    assert_eq!(parents.len(), 1, "el tip es la decisión, no la absorción:\n{parents:?}");
     assert_ne!(tree_before, rev(&root, &format!("{bref}^{{tree}}")), "y escribió algo");
+
+    // La absorción está justo debajo, y trae código sin decidir nada.
+    let below = parents_of(&root, &parents[0]);
+    assert_eq!(below.len(), 2, "el padre de la decisión es la absorción:\n{below:?}");
+    assert!(bilink_diff(&root, &below[0], &parents[0]).is_empty(),
+            "y absorber no decide");
 }
 
-/// La granularidad sigue al acto: `accept .` da **un** commit, no N.
+/// La granularidad sigue al **objeto**: `accept .` de dos endpoints da dos commits de
+/// decisión, los dos hijos de la misma absorción.
 #[test]
-fn accept_writes_one_commit_per_invocation_not_per_endpoint() {
-    let (_t, root, _uuid, _x) = cut_over();
+fn accept_writes_one_commit_per_acceptance_not_per_invocation() {
+    let (_t, root, uuid, _x) = cut_over();
     let bref = format!("refs/bilink/{}", branch_of(&root));
 
     // Los dos endpoints cambian a la vez.
@@ -1930,18 +2005,66 @@ fn accept_writes_one_commit_per_invocation_not_per_endpoint() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "los dos lados cambian");
 
-    let before = git_out(&root, &["rev-list", "--count", &bref]);
+    let before = rev(&root, &bref);
     run_in(&root, &["check", "."]);
     let (_, stderr, ok) = run_in(&root, &["accept", "."]);
     assert!(ok, "accept falló:\n{stderr}");
-    let after = git_out(&root, &["rev-list", "--count", &bref]);
 
-    let grew: usize = after.trim().parse::<usize>().unwrap()
-        - before.trim().parse::<usize>().unwrap();
-    assert_eq!(grew, 2, "un commit del acto más el del proyecto absorbido, no uno por endpoint");
+    // Lo nuevo **de la ref**, del más viejo al más nuevo: una absorción y dos
+    // decisiones. `--first-parent` es lo que deja afuera el commit del proyecto, que
+    // la absorción vuelve alcanzable por el segundo padre.
+    let nuevos = git_out(&root, &["rev-list", "--reverse", "--first-parent",
+                                  &format!("{before}..{bref}")]);
+    let nuevos: Vec<&str> = nuevos.lines().collect();
+    assert_eq!(nuevos.len(), 3, "una absorción y una decisión por endpoint:\n{nuevos:?}");
 
-    let subject = git_out(&root, &["log", "-1", "--format=%s", &bref]);
-    assert!(subject.contains("2 endpoint"), "y el mensaje los enumera:\n{subject}");
+    assert_eq!(parents_of(&root, nuevos[0]).len(), 2, "primero la absorción");
+    for d in &nuevos[1..] {
+        assert_eq!(parents_of(&root, d).len(), 1, "y después las decisiones, de un padre");
+    }
+
+    // Las dos cuelgan de la misma absorción: la segunda es hija de la primera.
+    assert_eq!(parents_of(&root, nuevos[2])[0], nuevos[1]);
+    assert_eq!(parents_of(&root, nuevos[1])[0], nuevos[0]);
+
+    // Y cada commit nombra **su** endpoint, no la invocación.
+    let asuntos = git_out(&root, &["log", "-2", "--format=%s", &bref]);
+    assert_eq!(asuntos.lines().count(), 2);
+    for a in asuntos.lines() {
+        assert!(a.starts_with(&format!("accept {uuid}.")),
+                "cada decisión lleva su propio endpoint, no `accept .`:\n{a}");
+    }
+    assert!(asuntos.contains(&format!("accept {uuid}.0"))
+            && asuntos.contains(&format!("accept {uuid}.1")),
+            "y son los dos endpoints, uno por commit:\n{asuntos}");
+}
+
+/// El árbol de código de una decisión es el de la absorción que tiene arriba: no
+/// cambia entre las N decisiones de un mismo `accept .`.
+#[test]
+fn the_decisions_of_one_invocation_share_the_code_tree_of_their_absorption() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "los dos lados cambian");
+    let e = rev(&root, "HEAD");
+
+    let before = rev(&root, &bref);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    for c in git_out(&root, &["rev-list", "--first-parent",
+                              &format!("{before}..{bref}")]).lines() {
+        let strays: Vec<String> = git_out(&root, &["diff-tree", "-r", "--name-only", &e, c])
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.contains(".bilink/"))
+            .map(str::to_string)
+            .collect();
+        assert!(strays.is_empty(), "{c} movió código:\n{strays:?}");
+    }
 }
 
 /// En un repo que todavía no cortó, `accept` no commitea nada: los bilinks viven en

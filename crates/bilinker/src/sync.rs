@@ -4,8 +4,13 @@
 //! tree-sitter, no resuelve captures y no toca `cache/state` — de ahí el nombre;
 //! `update` sugeriría que recalcula estados, que es lo que no hace.
 //!
-//! Su commit es el único de la ref cuyo diff contra el primer padre es **vacío**, y
-//! por eso el único que no registra ninguna decisión: alinea la foto y nada más.
+//! Su commit tiene el diff contra el primer padre **vacío**, y por eso no registra
+//! ninguna decisión: alinea la foto y nada más.
+//!
+//! **`sync` es la absorción invocada explícitamente**, y no un tipo de commit propio:
+//! escribe exactamente lo mismo que [`Repo::absorb`](crate::bilink_ref::Repo::absorb)
+//! escribe cuando `accept` o `apply` la encuentran pendiente. Lo único que lo
+//! distingue es que no viene seguido de ninguna decisión.
 //!
 //! **No publica.** Alinear la ref con la rama y publicarla son dos actos, y quien
 //! trabaja en una rama propia hace el primero muchas veces antes del segundo. Para
@@ -13,7 +18,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::bilink_ref::{Commit, Repo};
 
@@ -63,9 +68,10 @@ pub fn sync(dir: &Path, dry_run: bool) -> Result<SyncResult> {
         });
     }
 
-    let short = &project_tip[..project_tip.len().min(7)];
-    let Commit { sha, absorbed: got, wrote } =
-        repo.commit(&branch, &format!("sync: {branch} hasta {short}"))?;
+    // El caso "ya estaba absorbido" ya salió arriba, así que acá siempre escribe.
+    let Commit { sha, absorbed: got, wrote } = repo
+        .absorb(&branch)?
+        .context("el tip dejó de estar sin absorber entre la lectura y la escritura")?;
 
     Ok(SyncResult {
         branch,

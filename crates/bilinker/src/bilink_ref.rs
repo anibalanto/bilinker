@@ -10,7 +10,13 @@
 //!   idéntico al del commit del proyecto absorbido más recientemente, y el commit
 //!   contra el cual se calculó el acto tiene que estar absorbido antes de commitear.
 //!   Absorber no es un comportamiento por comando: es **precondición de todo commit
-//!   sobre la ref**, y cuando no se cumple se cumple absorbiendo en el mismo commit.
+//!   sobre la ref**, y cuando no se cumple se cumple absorbiendo en **un commit
+//!   propio, inmediatamente antes**.
+//! - **Un commit hace una cosa.** Trae código, o decide, o sincroniza decisiones;
+//!   nunca dos de las tres. De ahí que acá haya dos puertas y no una:
+//!   [`Repo::absorb`] y [`Repo::decide`]. [`Repo::classify`] es la vuelta de lectura
+//!   —qué hizo un commit ya escrito— y la que un `pre-receive` puede correr con git
+//!   a secas, sin abrir un bilink.
 //! - **El índice propio.** `GIT_INDEX_FILE` sobre el mismo árbol de trabajo, así el
 //!   mismo `.bilink/` queda ignorado por el índice del proyecto y trackeado por el
 //!   de bilinker.
@@ -211,53 +217,156 @@ impl Repo {
 
     // ─── El commit sobre la ref ──────────────────────────────────────────────
 
-    /// Escribe un commit sobre `refs/bilink/<branch>`, absorbiendo si hace falta.
+    /// **Absorción.** Trae el tip de la rama del proyecto a la ref y nada más.
     ///
-    /// ```text
-    /// read-tree     <commit del proyecto absorbido>   ← el nuevo, si hay que absorber;
-    /// update-index  únicamente .bilink/                 el vigente, si ya está absorbido
-    /// ```
+    /// Dos padres —el de la ref y el del proyecto—, el árbol de código del segundo, y
+    /// el `.bilink/` **del primero**: por eso su diff contra el primer padre es vacío
+    /// por construcción, que es lo que la vuelve reconocible con git a secas.
     ///
-    /// Nada del árbol de trabajo fuera de `.bilink/` entra jamás. Cuando el proyecto
-    /// no se movió desde la última absorción el acto es un commit común de un solo
-    /// padre: **el merge no es la forma del acto, es la forma de ponerse al día.**
-    pub fn commit(&self, branch: &str, message: &str) -> Result<Commit> {
+    /// Que el `.bilink/` salga de la ref y no del árbol de trabajo es lo que permite
+    /// absorber con escrituras pendientes en disco: la absorción no las arrastra, y
+    /// la decisión que viene atrás las lleva enteras.
+    ///
+    /// Devuelve `None` cuando el tip ya estaba absorbido — no hay nada que traer, y
+    /// un merge con el mismo segundo padre no diría nada nuevo.
+    pub fn absorb(&self, branch: &str) -> Result<Option<Commit>> {
         let ref_tip = self.require_ref_tip(branch)?;
         let project_tip = self.branch_tip(branch)?;
         let absorbed = self.absorbed(&ref_tip)?.unwrap_or_else(|| ref_tip.clone());
 
-        let absorbing = absorbed != project_tip;
-        let base = if absorbing { &project_tip } else { &absorbed };
-
-        if absorbing {
-            self.verify_disjoint(&project_tip)?;
+        if absorbed == project_tip {
+            return Ok(None);
         }
 
-        let tree = self.build_tree(base)?;
-        self.verify_faithful(&tree, base)?;
+        self.verify_disjoint(&project_tip)?;
+
+        let tree = self.build_tree_inheriting(&project_tip, &ref_tip)?;
+        self.verify_faithful(&tree, &project_tip)?;
+
+        let sha = self.write_ref_commit(
+            branch,
+            &tree,
+            &[ref_tip, project_tip.clone()],
+            &format!("absorb {}: {branch} al día", short(&project_tip)),
+        )?;
+        self.write_head(branch, &sha)?;
+
+        Ok(Some(Commit { sha, absorbed: Some(project_tip), wrote: true }))
+    }
+
+    /// **Decisión.** Escribe el `.bilink/` del árbol de trabajo sobre el árbol de
+    /// código que la ref ya tiene.
+    ///
+    /// ```text
+    /// read-tree     <commit del proyecto absorbido>
+    /// update-index  únicamente .bilink/
+    /// ```
+    ///
+    /// **Un solo padre, siempre.** Nada del árbol de trabajo fuera de `.bilink/` entra
+    /// jamás, y traer código no es de acá: si el proyecto se movió, [`Self::absorb`]
+    /// lo trajo en un commit anterior. Que el tip esté absorbido es precondición y se
+    /// verifica; no se cumple absorbiendo de contrabando.
+    pub fn decide(&self, branch: &str, message: &str) -> Result<Commit> {
+        let ref_tip = self.require_ref_tip(branch)?;
+        let project_tip = self.branch_tip(branch)?;
+        let absorbed = self.absorbed(&ref_tip)?.unwrap_or_else(|| ref_tip.clone());
+
+        if absorbed != project_tip {
+            bail!(
+                "{} no está absorbido; la ref está en {}.\n                   Una decisión no absorbe: sobre la ref un commit hace una cosa.\n                   Absorber primero — `bilinker sync`. No se escribió nada.",
+                short(&project_tip),
+                short(&absorbed)
+            );
+        }
+
+        let tree = self.build_tree(&absorbed)?;
+        self.verify_faithful(&tree, &absorbed)?;
 
         let previous_tree = self.git(&["rev-parse", &format!("{ref_tip}^{{tree}}")])?;
-        if tree.trim() == previous_tree.trim() && !absorbing {
+        if tree.trim() == previous_tree.trim() {
             return Ok(Commit { sha: ref_tip, absorbed: None, wrote: false });
         }
 
-        let mut args = vec!["commit-tree".to_string(), tree.clone(), "-p".into(), ref_tip];
-        if absorbing {
-            args.push("-p".into());
-            args.push(project_tip.clone());
-        }
-        args.push("-m".into());
-        args.push(message.to_string());
-
-        let sha = self.git_owned(&args)?.trim().to_string();
-        self.git(&["update-ref", &Self::ref_name(branch), &sha])?;
+        let sha = self.write_ref_commit(branch, &tree, &[ref_tip], message)?;
         self.write_head(branch, &sha)?;
 
-        Ok(Commit {
-            sha,
-            absorbed: absorbing.then_some(project_tip),
-            wrote: true,
-        })
+        Ok(Commit { sha, absorbed: None, wrote: true })
+    }
+
+    // ─── Un commit hace una cosa ─────────────────────────────────────────────
+
+    /// Qué hizo un commit de la ref, leído **con git a secas**.
+    ///
+    /// Los tres tipos se separan por la cantidad de padres, de dónde vienen, y cuál de
+    /// los dos árboles se movió contra el primer padre. Ni tree-sitter ni abrir un
+    /// bilink: es exactamente lo que un `pre-receive` puede correr sin instalar nada.
+    ///
+    /// **Falla cuando el commit hace dos cosas** — absorbe y decide a la vez, o
+    /// sincroniza y mueve código. Es la invariante 4 de `concepts/ref.md`, y éste es
+    /// el único lugar donde se decide.
+    pub fn classify(&self, commit: &str) -> Result<Act> {
+        let line = self.git(&["rev-list", "--parents", "-n", "1", commit])?;
+        let parents: Vec<String> =
+            line.split_whitespace().skip(1).map(str::to_string).collect();
+
+        let first = parents.first();
+        let (bilink_moved, code_moved) = match first {
+            Some(p) => self.what_moved(p, commit)?,
+            // Un commit raíz: todo su árbol es diff. No hay ref antes del corte.
+            None => (true, true),
+        };
+
+        match parents.as_slice() {
+            // El corte: nace de un commit del proyecto como padre único. Es el único
+            // commit de la ref cuyo primer padre no es de la ref.
+            [x] if !self.tree_has_bilink(x)? => Ok(Act::Cut { project: x.clone() }),
+
+            [_] => {
+                if code_moved {
+                    bail!(
+                        "{} decide y mueve código a la vez: el árbol de código de una \
+                         decisión es el de la absorción que tiene arriba",
+                        short(commit)
+                    );
+                }
+                Ok(Act::Decision)
+            }
+
+            [_, second, ..] if !self.tree_has_bilink(second)? => {
+                if bilink_moved {
+                    bail!(
+                        "{} absorbe y decide a la vez: sobre la ref un commit hace una \
+                         cosa, y el diff de .bilink/ de una absorción es vacío",
+                        short(commit)
+                    );
+                }
+                Ok(Act::Absorption { project: second.clone() })
+            }
+
+            [_, _, ..] => {
+                if code_moved {
+                    bail!(
+                        "{} sincroniza y mueve código a la vez: los dos lados de una \
+                         sincronización describen el mismo código",
+                        short(commit)
+                    );
+                }
+                Ok(Act::Synchronization)
+            }
+
+            [] => bail!("{} no tiene padres: no es un commit de la ref", short(commit)),
+        }
+    }
+
+    /// Cuál de los dos árboles se movió entre dos commits: `(.bilink/, código)`.
+    fn what_moved(&self, from: &str, to: &str) -> Result<(bool, bool)> {
+        let diff = self.git(&["diff-tree", "-r", "--name-only", from, to])?;
+        let mut bilink = false;
+        let mut code = false;
+        for path in diff.lines().filter(|l| !l.trim().is_empty()) {
+            if is_bilink_path(path) { bilink = true } else { code = true }
+        }
+        Ok((bilink, code))
     }
 
     /// El árbol del commit: `read-tree` de `base`, más los `.bilink/` del árbol de
@@ -673,18 +782,35 @@ pub struct Head {
     pub commit: String,
 }
 
-/// El commit de la ref que cierra un acto.
+/// La absorción que precede a un acto, si falta.
 ///
-/// **La granularidad sigue al acto, no al objeto**: una invocación de `accept` o de
-/// `apply`, no una aceptación. `accept .` da un commit, con el mensaje enumerando
-/// los endpoints, porque es una persona mirando y decidiendo **una vez**, y partirlo
-/// en N commits firmados no agrega verdad.
+/// **Absorber es precondición de todo commit sobre la ref, y se cumple en un commit
+/// propio.** Llamarla N veces seguidas absorbe una sola: la segunda encuentra el tip
+/// ya absorbido y devuelve `None`. Es lo que hace que las N decisiones de un
+/// `accept .` cuelguen todas de la misma absorción sin que nadie lleve la cuenta.
+pub fn absorb_act(dir: &Path) -> Result<Option<Commit>> {
+    let Some((repo, branch)) = committable(dir)? else { return Ok(None) };
+    repo.absorb(&branch)
+}
+
+/// El commit de decisión que cierra una aceptación o un `apply`.
 ///
-/// **No hace nada cuando la rama no tiene ref.** Es el estado de un repo antes del
-/// corte `005`: los bilinks todavía viven en la rama, git los ve como siempre, y
+/// **La granularidad sigue al objeto, no al acto**: una aceptación, no una
+/// invocación. `accept .` sobre veinte endpoints pasa por acá veinte veces, y cada
+/// commit lleva su propio endpoint — cien commits firmados denuncian una aprobación
+/// masiva que uno disimula.
+pub fn decide_act(dir: &Path, message: &str) -> Result<Option<Commit>> {
+    let Some((repo, branch)) = committable(dir)? else { return Ok(None) };
+    Ok(Some(repo.decide(&branch, message)?))
+}
+
+/// El repo y la rama sobre la que se commitea, o `None` si no hay dónde.
+///
+/// **`None` cuando la rama no tiene ref.** Es el estado de un repo antes del corte
+/// `005`: los bilinks todavía viven en la rama, git los ve como siempre, y
 /// commitearlos es de quien trabaja. Que el corte sea lo que enciende esto es lo que
 /// permite que el binario nuevo corra sobre repos que todavía no cortaron.
-pub fn commit_act(dir: &Path, message: &str) -> Result<Option<Commit>> {
+fn committable(dir: &Path) -> Result<Option<(Repo, String)>> {
     let repo = Repo::open(dir)?;
 
     let Some(branch) = repo.branch() else {
@@ -702,7 +828,7 @@ pub fn commit_act(dir: &Path, message: &str) -> Result<Option<Commit>> {
     if repo.ref_tip(&branch).is_none() {
         return Ok(None);
     }
-    Ok(Some(repo.commit(&branch, message)?))
+    Ok(Some((repo, branch)))
 }
 
 /// Qué pasó con el `.bilink/` del árbol al empezar un comando.
@@ -725,7 +851,27 @@ pub enum Materialization {
     NoGit,
 }
 
+/// Qué hace un commit sobre la ref. Uno de tres, nunca dos.
+///
+/// Lo que los separa es de git —padres y árboles—, no de bilinker: `absorb` y
+/// `decide` los escriben con esta forma, y [`Repo::classify`] la lee de vuelta sin
+/// abrir un solo bilink.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Act {
+    /// El corte. Padre único, y del proyecto: es el único commit de la ref que no
+    /// tiene ninguna absorción debajo, y la fidelidad se lee contra ese padre.
+    Cut { project: String },
+    /// **Trae código.** Dos padres, el segundo del proyecto, `.bilink/` sin tocar.
+    Absorption { project: String },
+    /// **Decide.** Un padre, el árbol de código sin cambios.
+    Decision,
+    /// **Sincroniza decisiones.** Dos padres, los dos de la ref, el árbol de código
+    /// sin cambios. Es lo que escribe `adopt`.
+    Synchronization,
+}
+
 /// El resultado de commitear sobre la ref.
+#[derive(Debug, Clone)]
 pub struct Commit {
     pub sha: String,
     /// El commit del proyecto absorbido, o `None` si ya lo estaba — el acto tiene un
@@ -831,4 +977,171 @@ fn collect_tracked(dir: &Path, base: &Path, root: &Path, out: &mut BTreeSet<Stri
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un repo con la ref ya cortada: `X` saca `.bilink/` del índice, `●0` lo trae de
+    /// vuelta sobre la ref. Devuelve `(tmp, repo, branch, X, ●0)`.
+    fn cut_repo() -> (tempfile::TempDir, Repo, String, String, String) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let g = |args: &[&str]| {
+            let out = Command::new("git").current_dir(&root).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "t"]);
+
+        // La exclusión que pone `init`: sin ella un `add -A` del proyecto se llevaría
+        // `.bilink/` a la rama y rompería la disyunción.
+        std::fs::write(root.join(".git/info/exclude"), ".bilink/\n").unwrap();
+
+        std::fs::write(root.join("code.txt"), "uno\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-qm", "código"]);
+
+        // `X`: el commit del proyecto sin `.bilink/` en el árbol.
+        let x = g(&["rev-parse", "HEAD"]);
+
+        // `●0`: el corte, con `X` como padre único y `.bilink/` en el árbol.
+        std::fs::create_dir_all(root.join(".bilink")).unwrap();
+        std::fs::write(root.join(".bilink/a.yaml"), "endpoint: {}\n").unwrap();
+        let blob = g(&["hash-object", "-w", ".bilink/a.yaml"]);
+        let tree = tree_with(&root, &x, &[(".bilink/a.yaml", &blob)]);
+        let cut = g(&["commit-tree", &tree, "-p", &x, "-m", "corte"]);
+        g(&["update-ref", "refs/bilink/main", &cut]);
+
+        let repo = Repo::open(&root).expect("abrir el repo");
+        (tmp, repo, "main".to_string(), x, cut)
+    }
+
+    /// El árbol de `base` más los blobs dados bajo `.bilink/`, con un índice aparte.
+    fn tree_with(root: &Path, base: &str, files: &[(&str, &str)]) -> String {
+        let index = root.join(".git/test-index");
+        let _ = std::fs::remove_file(&index);
+        let g = |args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(root)
+                .env("GIT_INDEX_FILE", &index)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        g(&["read-tree", base]);
+        for (path, blob) in files {
+            g(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{path}")]);
+        }
+        g(&["write-tree"])
+    }
+
+    fn git_in(root: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").current_dir(root).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// El corte se reconoce solo: padre único, y del proyecto.
+    #[test]
+    fn the_cut_is_classified_as_the_cut() {
+        let (_t, repo, _b, x, cut) = cut_repo();
+        assert_eq!(repo.classify(&cut).unwrap(), Act::Cut { project: x });
+    }
+
+    /// Una absorción: dos padres, el segundo del proyecto, `.bilink/` sin tocar.
+    #[test]
+    fn an_absorption_is_classified_as_one() {
+        let (_t, repo, branch, _x, _cut) = cut_repo();
+        std::fs::write(repo.root.join("code.txt"), "dos\n").unwrap();
+        git_in(&repo.root, &["add", "-A"]);
+        git_in(&repo.root, &["commit", "-qm", "el código avanza"]);
+        let e = git_in(&repo.root, &["rev-parse", "HEAD"]);
+
+        let c = repo.absorb(&branch).unwrap().expect("había algo que absorber");
+        assert_eq!(repo.classify(&c.sha).unwrap(), Act::Absorption { project: e });
+    }
+
+    /// Una decisión: un padre, y el árbol de código de la absorción que tiene arriba.
+    #[test]
+    fn a_decision_is_classified_as_one() {
+        let (_t, repo, branch, _x, _cut) = cut_repo();
+        std::fs::write(repo.root.join(".bilink/a.yaml"), "endpoint: {b: 1}\n").unwrap();
+
+        let c = repo.decide(&branch, "accept 0000.0").unwrap();
+        assert!(c.wrote);
+        assert_eq!(repo.classify(&c.sha).unwrap(), Act::Decision);
+    }
+
+    /// **El negativo.** Un commit que absorbe y decide a la vez se rechaza: es la
+    /// invariante 4, y es lo que un `pre-receive` va a chequear con git a secas.
+    #[test]
+    fn a_commit_that_absorbs_and_decides_at_once_is_rejected() {
+        let (_t, repo, branch, _x, cut) = cut_repo();
+        let root = repo.root.clone();
+
+        std::fs::write(root.join("code.txt"), "dos\n").unwrap();
+        git_in(&root, &["add", "-A"]);
+        git_in(&root, &["commit", "-qm", "el código avanza"]);
+        let e = git_in(&root, &["rev-parse", "HEAD"]);
+
+        // A mano, la forma vieja: un merge que trae `e` **y** escribe una decisión.
+        std::fs::write(root.join(".bilink/a.yaml"), "endpoint: {b: 1}\n").unwrap();
+        let blob = git_in(&root, &["hash-object", "-w", ".bilink/a.yaml"]);
+        let tree = tree_with(&root, &e, &[(".bilink/a.yaml", &blob)]);
+        let sha = git_in(&root, &["commit-tree", &tree, "-p", &cut, "-p", &e,
+                                  "-m", "accept 0000.0"]);
+
+        let err = repo.classify(&sha).unwrap_err().to_string();
+        assert!(err.contains("absorbe y decide"), "y se dice por qué:\n{err}");
+
+        // Y las dos puertas juntas escriben lo mismo en dos commits, los dos válidos.
+        let a = repo.absorb(&branch).unwrap().expect("había algo que absorber");
+        let d = repo.decide(&branch, "accept 0000.0").unwrap();
+        assert_eq!(repo.classify(&a.sha).unwrap(), Act::Absorption { project: e });
+        assert_eq!(repo.classify(&d.sha).unwrap(), Act::Decision);
+        assert_eq!(rev_tree(&root, &d.sha), rev_tree(&root, &sha),
+                   "el mismo árbol resultante, en dos commits en vez de uno");
+    }
+
+    fn rev_tree(root: &Path, commit: &str) -> String {
+        git_in(root, &["rev-parse", &format!("{commit}^{{tree}}")])
+    }
+
+    /// Una decisión **no absorbe de contrabando**: con el tip del proyecto sin
+    /// absorber, `decide` falla en vez de escribir un merge.
+    #[test]
+    fn decide_refuses_to_absorb_on_its_own() {
+        let (_t, repo, branch, _x, _cut) = cut_repo();
+        std::fs::write(repo.root.join("code.txt"), "dos\n").unwrap();
+        git_in(&repo.root, &["add", "-A"]);
+        git_in(&repo.root, &["commit", "-qm", "el código avanza"]);
+
+        let before = repo.ref_tip(&branch).unwrap();
+        let err = repo.decide(&branch, "accept 0000.0").unwrap_err().to_string();
+        assert!(err.contains("no está absorbido"), "y se dice por qué:\n{err}");
+        assert_eq!(before, repo.ref_tip(&branch).unwrap(), "no se escribió nada");
+    }
+
+    /// Absorber dos veces seguidas absorbe **una**: es lo que hace que las N
+    /// decisiones de un `accept .` cuelguen todas del mismo merge.
+    #[test]
+    fn absorbing_twice_in_a_row_absorbs_once() {
+        let (_t, repo, branch, _x, _cut) = cut_repo();
+        std::fs::write(repo.root.join("code.txt"), "dos\n").unwrap();
+        git_in(&repo.root, &["add", "-A"]);
+        git_in(&repo.root, &["commit", "-qm", "el código avanza"]);
+
+        assert!(repo.absorb(&branch).unwrap().is_some());
+        assert!(repo.absorb(&branch).unwrap().is_none(), "el tip ya estaba absorbido");
+    }
 }
