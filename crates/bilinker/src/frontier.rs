@@ -328,3 +328,110 @@ pub fn declared_aliases(layer: &Path) -> Vec<String> {
     out.sort();
     out
 }
+
+/// Una abstracción publicada, con su código.
+pub struct Abstraction {
+    pub uuid: String,
+    /// El `name` de la punta `abstract`, si lo tiene. Hoy es una etiqueta libre.
+    pub name: Option<String>,
+    pub file: String,
+    /// El fragmento. `None` si el capture no resuelve contra esa versión.
+    pub text: Option<String>,
+    /// Si esta capa ya se cuelga de ella. Sólo tiene sentido mirando a un
+    /// proveedor: sirve para no volver a colgarse de lo mismo.
+    pub consumed: bool,
+}
+
+/// Qué publica un proveedor, con el código de cada fragmento.
+///
+/// **Es el paso que falta antes de `chain new`**: para colgarse de algo hay que
+/// poder ver de qué. Sin esto, la lista de abstracciones viaja por chat.
+///
+/// **No amplía el sparse-checkout ni trae nada.** El clon recorta el *árbol de
+/// trabajo*, no el object store: los blobs del commit traído están todos, así que
+/// el fragmento se lee con `git show` aunque el archivo no esté en disco. Mirar el
+/// catálogo no cuesta ni un byte de red, y no ensucia el conjunto de archivos que
+/// este repo declara necesitar — que es derivado de lo que consume, no de lo que
+/// miró.
+pub fn abstracts(layer: &Path, alias: &str) -> Result<Vec<Abstraction>> {
+    let clone = Provider::clone_path(layer, alias);
+    if !clone.join(".bilink").is_dir() {
+        bail!("el repo '{alias}' no está clonado. Traerlo primero: `bilinker fetch {alias}`.");
+    }
+    verify_format_version(&clone, alias)?;
+
+    let provider = Provider::load(layer, alias)?;
+    let tip = git(&clone, &["rev-parse", &provider.ref_name()])?.trim().to_string();
+    let mine = consumed_uuids(layer, alias);
+
+    let mut out = Vec::new();
+    for path in bilink_format::bilink::bilink_files(&clone.join(".bilink")) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+
+        // Sólo las que están abiertas a que alguien las consuma.
+        let open = [0u8, 1u8].iter().find(|n| bl.endpoint.get(**n).link.is_abstract());
+        let Some(&open_n) = open else { continue };
+
+        let Some(id) = [0u8, 1u8].iter().find_map(|n| bl.endpoint.get(*n).link.capture_id())
+        else { continue };
+        let Ok(cap) = bilink_format::Capture::load_in(&clone, id) else { continue };
+
+        out.push(Abstraction {
+            uuid: uuid.to_string(),
+            name: bl.endpoint.get(open_n).name.clone(),
+            file: cap.file.clone(),
+            text: crate::capture::accepted_text(&clone, &cap, &tip, None),
+            consumed: mine.contains(uuid),
+        });
+    }
+    out.sort_by(|a, b| a.file.cmp(&b.file).then(a.uuid.cmp(&b.uuid)));
+    Ok(out)
+}
+
+/// Lo que **esta** capa publica, leído del árbol de trabajo.
+///
+/// La misma pregunta desde el otro lado: *¿qué estoy publicando?* Y a diferencia del
+/// catálogo de un proveedor, acá el fragmento sale del disco — es tu código.
+pub fn published(layer: &Path) -> Result<Vec<Abstraction>> {
+    let mut out = Vec::new();
+    for path in bilink_format::bilink::bilink_files(&layer.join(".bilink")) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+
+        let Some(&open_n) = [0u8, 1u8].iter().find(|n| bl.endpoint.get(**n).link.is_abstract())
+        else { continue };
+        let Some(id) = [0u8, 1u8].iter().find_map(|n| bl.endpoint.get(*n).link.capture_id())
+        else { continue };
+        let Ok(cap) = bilink_format::Capture::load_in(layer, id) else { continue };
+
+        let text = crate::capture::absolute_range(layer, &cap).ok().flatten().and_then(|r| {
+            let src = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
+            Some(src.get(r.start..r.end.min(src.len()))?.to_string())
+        });
+
+        out.push(Abstraction {
+            uuid: uuid.to_string(),
+            name: bl.endpoint.get(open_n).name.clone(),
+            file: cap.file.clone(),
+            text,
+            consumed: false,
+        });
+    }
+    out.sort_by(|a, b| a.file.cmp(&b.file).then(a.uuid.cmp(&b.uuid)));
+    Ok(out)
+}
+
+/// Los uuids que esta capa ya consume de un alias.
+fn consumed_uuids(layer: &Path, alias: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for path in bilink_format::bilink::bilink_files(&layer.join(".bilink")) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        if [0u8, 1u8].iter().any(|n| bl.endpoint.get(*n).link.repo_alias() == Some(alias)) {
+            if let Some(u) = path.file_stem().and_then(|s| s.to_str()) {
+                out.insert(u.to_string());
+            }
+        }
+    }
+    out
+}

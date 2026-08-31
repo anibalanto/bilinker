@@ -3039,3 +3039,94 @@ fn sync_does_not_publish() {
         .output().unwrap();
     assert!(!remote_has.status.success(), "sync no habla con la red");
 }
+
+/// El catálogo: **para colgarse de algo hay que poder ver de qué.**
+///
+/// Sin esto la lista de abstracciones de un proveedor viaja por chat, y elegir es
+/// elegir entre uuids.
+#[test]
+fn the_catalog_shows_what_a_provider_publishes_with_its_code() {
+    let (_t, provider, consumer, uuid) = provider_and_consumer();
+
+    // Una segunda abstracción, que nadie consume.
+    fs::write(provider.join("src/Turnos.java"),
+              "public class Turnos {\n    public String reservar(String p) { return p; }\n}\n").unwrap();
+    commit(&provider, "otro fragmento publicable");
+    let (out, stderr, ok) = run_in(&provider, &[
+        "chain", "new", "--tip", "src/Turnos.java:2:5", "--tip", "abstract"]);
+    assert!(ok, "publicar la segunda falló:\n{stderr}");
+    let otro = out.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    run_in(&provider, &["check", "."]);
+    run_in(&provider, &["accept", "."]);
+
+    fs::create_dir_all(consumer.join(".bilink")).unwrap();
+    let (_, stderr, ok) = run_in(&consumer, &["fetch", "hsi"]);
+    assert!(ok, "fetch falló:\n{stderr}");
+
+    let (out, stderr, ok) = run_in(&consumer, &["abstracts", "hsi"]);
+    assert!(ok, "el catálogo falló:\n{out}\n{stderr}");
+
+    // Las dos, con su código — que es lo que hace posible elegir.
+    assert!(out.contains("Perm.java") && out.contains("Turnos.java"),
+            "lista las dos:\n{out}");
+    assert!(out.contains("public boolean can"), "con el código de una:\n{out}");
+    assert!(out.contains("reservar"), "y el de la otra:\n{out}");
+    assert!(out.contains(&uuid[..8]) && out.contains(&otro[..8]),
+            "y el uuid con que colgarse de cada una:\n{out}");
+}
+
+/// **Mirar el catálogo no trae nada ni amplía el sparse.**
+///
+/// El clon recorta el árbol de trabajo, no el object store: los blobs del commit
+/// traído están todos, así que el fragmento se lee con `git show` aunque el archivo
+/// no esté en disco. El conjunto sparse sigue siendo derivado de lo que se consume,
+/// no de lo que se miró.
+#[test]
+fn browsing_the_catalog_does_not_widen_the_sparse_set() {
+    let (_t, provider, consumer, _uuid) = provider_and_consumer();
+
+    fs::write(provider.join("src/Turnos.java"),
+              "public class Turnos {\n    public String reservar(String p) { return p; }\n}\n").unwrap();
+    commit(&provider, "otro fragmento publicable");
+    run_in(&provider, &["chain", "new", "--tip", "src/Turnos.java:2:5", "--tip", "abstract"]);
+    run_in(&provider, &["check", "."]);
+    run_in(&provider, &["accept", "."]);
+
+    fs::create_dir_all(consumer.join(".bilink")).unwrap();
+    run_in(&consumer, &["fetch", "hsi"]);
+
+    // Sin consumir nada, el árbol del clon no tiene ningún archivo de código.
+    let en_arbol = |p: &Path| p.join(".bilink/hsi/src").read_dir()
+        .map(|d| d.flatten().count()).unwrap_or(0);
+    assert_eq!(en_arbol(&consumer), 0, "todavía no se consume nada");
+
+    let (out, _, ok) = run_in(&consumer, &["abstracts", "hsi"]);
+    assert!(ok, "el catálogo falló:\n{out}");
+    assert!(out.contains("reservar"), "y sin embargo muestra el código:\n{out}");
+    assert_eq!(en_arbol(&consumer), 0, "mirarlo no sacó ningún archivo al árbol");
+}
+
+/// El proveedor pregunta lo mismo desde su lado: *¿qué estoy publicando?*
+#[test]
+fn a_provider_can_list_what_it_publishes() {
+    let (_t, provider, _c, uuid) = provider_and_consumer();
+
+    let (out, stderr, ok) = run_in(&provider, &["abstracts"]);
+    assert!(ok, "listar lo propio falló:\n{out}\n{stderr}");
+    assert!(out.contains(&uuid[..8]), "con su uuid:\n{out}");
+    assert!(out.contains("public boolean can"), "y su código, del árbol de trabajo:\n{out}");
+    assert!(!out.contains("ya lo consumís"),
+            "nadie consume lo propio: esa marca es sobre un proveedor ajeno:\n{out}");
+}
+
+/// Lo que ya se consume se marca, para no colgarse dos veces de lo mismo.
+#[test]
+fn the_catalog_marks_what_is_already_consumed() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+
+    let (out, _, ok) = run_in(&consumer, &["abstracts", "hsi"]);
+    assert!(ok);
+    assert!(out.contains("ya lo consumís"), "se marca:\n{out}");
+}

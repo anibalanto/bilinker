@@ -201,6 +201,19 @@ enum Command {
         alias: Option<String>,
     },
 
+    /// Qué abstracciones hay para consumir, con su código
+    ///
+    /// Con un alias, las que publica ese proveedor — el paso previo a `chain new
+    /// --from-repo`, para poder ver de qué colgarse. Sin alias, las que publica esta
+    /// capa. No trae nada ni amplía el sparse: los blobs ya están en el clon.
+    Abstracts {
+        /// Alias del proveedor. Sin argumento, lo que publica esta capa
+        alias: Option<String>,
+        /// Cuántas líneas del fragmento mostrar. 0 = todas
+        #[arg(short = 'n', default_value = "3")]
+        lines: usize,
+    },
+
     /// Show status of all bilinks in the current layer (like git status)
     Status {
         /// Layer directory to inspect (default: current directory)
@@ -1078,6 +1091,14 @@ Eliminar? [y/N] ");
             }
         }
 
+        Command::Abstracts { alias, lines } => {
+            let (items, label) = match &alias {
+                Some(a) => (bilinker::frontier::abstracts(&cwd, a)?, a.clone()),
+                None    => (bilinker::frontier::published(&cwd)?, "esta capa".into()),
+            };
+            print_abstracts(&items, &label, lines, alias.is_some());
+        }
+
         Command::Status { path, porcelain } => {
             let layer = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
@@ -1234,6 +1255,48 @@ fn print_sync(r: bilinker::sync::SyncResult, dry_run: bool) {
     }
     if dry_run {
         println!("\ndry-run: no se escribió nada");
+    }
+}
+
+/// El catálogo de abstracciones. Muestra **el código**, que es lo que hace falta
+/// para decidir de cuál colgarse — una lista de uuids no alcanza para elegir.
+fn print_abstracts(
+    items: &[bilinker::frontier::Abstraction], label: &str, lines: usize, remote: bool,
+) {
+    if items.is_empty() {
+        eprintln!("{label} no publica ninguna abstracción");
+        return;
+    }
+    println!("{label} · {} abstracción(es)\n", items.len());
+
+    for a in items {
+        let id = &a.uuid[..8.min(a.uuid.len())];
+        let marca = if a.consumed { "   ← ya lo consumís" } else { "" };
+        match &a.name {
+            Some(n) => println!("  {id}  {}  ({}){marca}", a.file, n),
+            None    => println!("  {id}  {}{marca}", a.file),
+        }
+
+        match &a.text {
+            Some(t) => {
+                let total = t.lines().count();
+                let show: Vec<&str> = if lines == 0 { t.lines().collect() }
+                                      else { t.lines().take(lines).collect() };
+                for l in &show {
+                    println!("            {l}");
+                }
+                if show.len() < total {
+                    println!("            … {} línea(s) más", total - show.len());
+                }
+            }
+            // El capture no resuelve contra esa versión: se dice, no se inventa.
+            None => println!("            (el fragmento no se pudo resolver)"),
+        }
+        println!();
+    }
+
+    if remote {
+        println!("Para colgarse de una: bilinker chain new --from-repo '{label}:<uuid>' --tip <tu fragmento>");
     }
 }
 
