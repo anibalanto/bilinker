@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use bilink_format::{BiLink, ByteRange, Capture, LinkEndpoint};
 
 use crate::cache::Cache;
+use crate::state::CaptureState;
 use crate::grammar;
 use crate::query;
 use bilink_format::link::StratumPath;
@@ -407,6 +408,37 @@ fn traverse_layer(
     resolve(&adjacent_root, &cap, before, after)
 }
 
+/// La referencia que un endpoint que no resuelve **igual puede mostrar**.
+///
+/// El estado ya dice que el fragmento no está; lo que falta saber es **cuál era**,
+/// para decidir a dónde repuntarlo. Y `UNRESOLVED` es el estado que obliga a
+/// intervenir a mano: no tiene fix automático y no se resuelve aceptando.
+///
+/// Sin esto, la salida obliga a abrir el `.yaml` del capture y leerlo — que es
+/// exactamente lo que el formato evita pedirle a nadie.
+#[derive(Debug, Clone)]
+pub struct Unresolved {
+    pub file: String,
+    pub capture: String,
+    pub query: Option<String>,
+    /// El nombre que la query busca, si lo tiene. Es lo que hay que ir a mirar.
+    pub anchor: Option<String>,
+    pub state: CaptureState,
+    /// Qué falló, en una línea.
+    pub reason: String,
+}
+
+impl std::fmt::Display for Unresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "# {}", self.file)?;
+        writeln!(f, "# capture {}…  ({})", &self.capture[..8.min(self.capture.len())], self.state)?;
+        if let Some(q) = &self.query {
+            writeln!(f, "query: {q}")?;
+        }
+        Ok(())
+    }
+}
+
 fn resolve(
     root: &Path,
     cap: &Capture,
@@ -414,8 +446,10 @@ fn resolve(
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
     let file_path = root.join(&cap.file);
-    let source = std::fs::read_to_string(&file_path)
-        .with_context(|| format!("reading {}", file_path.display()))?;
+    // **El archivo no está tampoco es "no se pudo leer".** El estado sabe si se
+    // movió, si el anchor se renombró, o si no está en ninguna parte, y de ahí sale
+    // qué comando corresponde: se pregunta lo mismo que cuando la query no matchea.
+    let source = std::fs::read_to_string(&file_path).map_err(|_| fail(root, cap))?;
 
     let Some(query_str) = &cap.query else {
         let total = count_lines(&source);
@@ -431,7 +465,7 @@ fn resolve(
     let language = grammar::for_language(lang)?;
 
     let (node_start, node_end) = query::find_target(language, &source, query_str)?
-        .with_context(|| format!("query matched nothing in {}", cap.file))?;
+        .ok_or_else(|| fail(root, cap))?;
 
     let (frag_start, frag_end) = (node_start, node_end);
 
@@ -496,4 +530,91 @@ mod tests {
         assert_eq!(byte_to_line(source, source.len()), 3);
         assert_eq!(byte_to_line(source, usize::MAX), 3);
     }
+}
+
+// ─── la referencia de un endpoint que no resuelve ─────────────────────────────
+
+/// Arma la vista de un capture que no resolvió, **re-derivando su estado**.
+///
+/// El estado dice qué pasó de verdad —el anchor se renombró, el archivo se movió,
+/// no está en ninguna parte— y de ahí sale qué comando corresponde. Sin él, decir
+/// *"la query no matcheó"* es cierto y no sirve: es la observación, no la causa.
+pub fn unresolved_for(root: &Path, cap: &Capture) -> Unresolved {
+    let state = crate::check::resolve_capture(root, cap, None, None)
+        .map(|(s, _)| s)
+        .unwrap_or(CaptureState::Unanchored);
+
+    let anchor = cap.query.as_deref().and_then(query::anchor_name);
+    let reason = match state {
+        CaptureState::Moved => format!(
+            "el archivo se movió y el fragmento ya no está en `{}`.\n  \
+             Repuntar con `bilinker apply`.",
+            cap.file
+        ),
+        CaptureState::Reanchored => format!(
+            "el anchor `{}` se renombró.\n  Repuntar con `bilinker apply`.",
+            anchor.as_deref().unwrap_or("?")
+        ),
+        // **La causa que el mensaje de `apply` escondía.** `git diff -M` sólo ve lo
+        // que git conoce, así que un archivo nuevo sin `git add` es invisible y el
+        // rename no se detecta. Se busca el anchor entre los archivos sin trackear:
+        // si aparece, es un hecho y se lo nombra, no una sugerencia genérica.
+        _ => match (&anchor, anchor.as_deref().and_then(|a| untracked_with(root, a))) {
+            (Some(a), Some(f)) => format!(
+                "el anchor `{a}` está en `{f}`, que no está trackeado — por eso \
+                 git no reporta el rename.\n  `git add {f}` y volver a correr."
+            ),
+            (Some(a), None) => format!(
+                "el anchor `{a}` no está en el archivo.\n  \
+                 Repuntar con `bilinker recapture <uuid>.<N> <archivo> <línea>:<col>`, \
+                 o `bilinker remove <uuid>` si el fragmento ya no existe."
+            ),
+            (None, _) => format!(
+                "el fragmento no se encontró en `{}`.\n  \
+                 Repuntar con `bilinker recapture <uuid>.<N> <archivo> <línea>:<col>`.",
+                cap.file
+            ),
+        },
+    };
+
+    Unresolved {
+        file: cap.file.clone(),
+        capture: cap.id(),
+        query: cap.query.clone(),
+        anchor,
+        state,
+        reason,
+    }
+}
+
+/// El error de un endpoint que no resuelve: **la referencia primero, la causa
+/// después.** Sigue siendo un error —no hay fragmento que devolver— y lo que cambia
+/// es que la salida ya no obliga a abrir el `.yaml` del capture para leer la query.
+fn fail(root: &Path, cap: &Capture) -> anyhow::Error {
+    let u = unresolved_for(root, cap);
+    anyhow::anyhow!("{u}\n{}", u.reason)
+}
+
+/// El primer archivo sin trackear que contiene ese nombre.
+///
+/// **Sin `.bilink/`.** Un capture guarda su query, y la query lleva el nombre del
+/// anchor adentro: sin este filtro, el primer candidato que aparece es el archivo
+/// del capture que se está tratando de resolver.
+fn untracked_with(root: &Path, anchor: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "ls-files", "--others", "--exclude-standard"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|f| !f.split('/').any(|c| c == ".bilink"))
+        .find(|f| {
+            std::fs::read_to_string(root.join(f))
+                .map(|t| t.contains(anchor))
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
 }
