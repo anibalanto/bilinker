@@ -2971,3 +2971,71 @@ fn a_repo_endpoint_diff_does_not_look_in_the_local_history() {
     assert!(!stderr.contains("últimos commits del archivo"),
             "ése es el error de buscar en el repo equivocado:\n{stderr}");
 }
+
+/// **Ninguna interacción con `refs/bilink/*` se hace tipeando git.**
+///
+/// La ref vive fuera de `refs/heads/`, así que `git push` a secas no la empuja y
+/// hay que nombrarla con un refspec. Hacer que alguien lo tipee es una fuga del
+/// namespace hacia afuera: a la segunda vez ya es una convención que alguien copia
+/// mal. El refspec lo arma `bilinker push`.
+#[test]
+fn push_publishes_the_ref_without_anyone_typing_a_refspec() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let bref = format!("refs/bilink/{branch}");
+
+    // Un remoto de verdad, para que el push tenga a dónde ir.
+    let bare = root.parent().unwrap().join("remoto.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare", "-q"]).arg(&bare).output().unwrap();
+    git(&root, &["remote", "add", "origin", &bare.to_string_lossy()]);
+
+    let (out, stderr, ok) = run_in(&root, &["push"]);
+    assert!(ok, "push falló:\n{out}\n{stderr}");
+    assert!(out.contains("publicado"), "y lo dice:\n{out}");
+
+    let there = git_out(&bare, &["rev-parse", &bref]);
+    assert_eq!(there.trim(), rev(&root, &bref), "la ref quedó en el remoto");
+
+    // Y no publicó la rama del proyecto: eso es decisión de quien trabaja.
+    assert!(std::process::Command::new("git").current_dir(&bare)
+                .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+                .output().unwrap().stdout.is_empty(),
+            "push publica la ref, no la rama");
+}
+
+/// Publicar dos veces no es un error: la segunda no mueve nada y lo dice.
+#[test]
+fn push_is_idempotent() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bare = root.parent().unwrap().join("remoto2.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare", "-q"]).arg(&bare).output().unwrap();
+    git(&root, &["remote", "add", "origin", &bare.to_string_lossy()]);
+
+    run_in(&root, &["push"]);
+    let (out, _, ok) = run_in(&root, &["push"]);
+    assert!(ok, "el segundo push no es un error");
+    assert!(out.contains("ya estaba"), "y dice que no movió nada:\n{out}");
+}
+
+/// `sync` alinea y **no publica**: son dos actos, y quien trabaja en una rama propia
+/// hace el primero muchas veces antes del segundo.
+#[test]
+fn sync_does_not_publish() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bare = root.parent().unwrap().join("remoto3.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare", "-q"]).arg(&bare).output().unwrap();
+    git(&root, &["remote", "add", "origin", &bare.to_string_lossy()]);
+
+    fs::write(root.join("src/Other.java"), "public class Other {}\n").unwrap();
+    commit(&root, "el proyecto avanza");
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+
+    let remote_has = std::process::Command::new("git").current_dir(&bare)
+        .args(["rev-parse", "--verify", &format!("refs/bilink/{}", branch_of(&root))])
+        .output().unwrap();
+    assert!(!remote_has.status.success(), "sync no habla con la red");
+}

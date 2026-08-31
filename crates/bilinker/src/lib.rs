@@ -23,6 +23,7 @@ pub mod hash;
 pub mod index;
 pub mod init;
 pub mod issue;
+pub mod push;
 pub mod query;
 pub mod review;
 pub mod state;

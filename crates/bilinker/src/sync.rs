@@ -6,6 +6,10 @@
 //!
 //! Su commit es el único de la ref cuyo diff contra el primer padre es **vacío**, y
 //! por eso el único que no registra ninguna decisión: alinea la foto y nada más.
+//!
+//! **No publica.** Alinear la ref con la rama y publicarla son dos actos, y quien
+//! trabaja en una rama propia hace el primero muchas veces antes del segundo. Para
+//! publicar está [`push`](crate::push), que es un comando y no una flag.
 
 use std::path::Path;
 
@@ -23,10 +27,9 @@ pub struct SyncResult {
     /// que ya tenía.
     pub at:          Option<String>,
     pub commits:     usize,
-    pub pushed:      bool,
 }
 
-pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
+pub fn sync(dir: &Path, dry_run: bool) -> Result<SyncResult> {
     let repo = Repo::open(dir)?;
     let branch = repo.require_branch()?;
     let ref_tip = repo.require_ref_tip(&branch)?;
@@ -45,7 +48,6 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
             absorbed: None,
             at: Some(project_tip),
             commits: 0,
-            pushed: false,
         });
     }
 
@@ -58,21 +60,12 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
             absorbed: Some(project_tip.clone()),
             at: Some(project_tip),
             commits: 1,
-            pushed: false,
         });
     }
 
     let short = &project_tip[..project_tip.len().min(7)];
     let Commit { sha, absorbed: got, wrote } =
         repo.commit(&branch, &format!("sync: {branch} hasta {short}"))?;
-
-    let pushed = if push && wrote {
-        let refspec = format!("{0}:{0}", Repo::ref_name(&branch));
-        repo.git(&["push", "origin", &refspec])?;
-        true
-    } else {
-        false
-    };
 
     Ok(SyncResult {
         branch,
@@ -81,6 +74,5 @@ pub fn sync(dir: &Path, dry_run: bool, push: bool) -> Result<SyncResult> {
         absorbed: got.clone(),
         at: got.or(Some(project_tip)),
         commits: usize::from(wrote),
-        pushed,
     })
 }
