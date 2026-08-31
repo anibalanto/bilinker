@@ -59,6 +59,14 @@ pub enum RefCommand {
     /// y no una rama, que es lo que lo separa de `adopt`: la fuente es la copia que
     /// el remoto tiene de esta misma ref.
     Pull { remote: String },
+    /// Tipo 2 — **mover bilinks de una capa a otra.**
+    ///
+    /// Es una decisión: cambia `link` y `accepted.link`, y por eso lleva un commit
+    /// propio como cualquier otra. Lo que la separa de `apply` es que no repunta un
+    /// endpoint a otro fragmento — **el fragmento no se mueve**: lo que se mueve es
+    /// desde qué capa se lo nombra, así que los `hash` no cambian y ningún endpoint
+    /// pasa a ALTERED.
+    Relayer { layer: String },
 }
 
 impl RefCommand {
@@ -78,6 +86,7 @@ impl RefCommand {
             Self::Apply { uuid, n, capture } => format!("apply {uuid}.{n} {capture}"),
             Self::Adopt { branch } => format!("adopt {branch}"),
             Self::Pull { remote } => format!("pull {remote}"),
+            Self::Relayer { layer } => format!("relayer {layer}"),
         }
     }
 }
@@ -170,6 +179,9 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Un nombre de remoto tiene las mismas restricciones que uno de rama: es lo
         // que git acepta, y es el único argumento no hexadecimal del vocabulario.
         ("pull", [r]) => RefCommand::Pull { remote: branch(r)? },
+        // Una capa se nombra por su path relativo a la raíz, con las mismas
+        // restricciones de un nombre de rama: es el otro argumento no hexadecimal.
+        ("relayer", [l]) => RefCommand::Relayer { layer: branch(l)? },
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
@@ -193,12 +205,12 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Un verbo del vocabulario con la cantidad de argumentos equivocada, y un
         // verbo que no está en el vocabulario, son el mismo error: el mensaje no
         // describe ningún acto reproducible.
-        ("absorb" | "track" | "adopt" | "pull" | "accept" | "apply", _) => bail!(
+        ("absorb" | "track" | "adopt" | "pull" | "relayer" | "accept" | "apply", _) => bail!(
             "`{verb}` no lleva los argumentos '{}'", args.join(" ")
         ),
         _ => bail!(
             "'{verb}' no es un verbo del vocabulario de la ref \
-             (absorb, track, accept, apply, adopt, pull)"
+             (absorb, track, accept, apply, adopt, pull, relayer)"
         ),
     };
 
@@ -326,6 +338,7 @@ mod tests {
             RefCommand::Apply { uuid: UUID.into(), n: 1, capture: CAP.into() },
             RefCommand::Adopt { branch: "main".into() },
             RefCommand::Pull { remote: "origin".into() },
+            RefCommand::Relayer { layer: "subsystems/stratum".into() },
             RefCommand::Track { branch: "rc-2.35".into() },
         ] {
             let back = round(cmd.clone());

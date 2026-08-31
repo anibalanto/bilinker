@@ -165,6 +165,19 @@ enum Command {
         remote: Option<String>,
     },
 
+    /// Mueve los bilinks de una capa a la de arriba
+    ///
+    /// Un `.bilink/` fabrica una raíz de capa. Si queda en un directorio que
+    /// stratum no declara como capa, el check de arriba deja de ver esos bilinks
+    /// sin decir nada. Los `hash` no cambian: lo que se mueve es la ubicación.
+    Relayer {
+        /// La capa a vaciar, relativa a la actual (p.ej. subsystems/stratum)
+        layer: String,
+        /// Muestra qué movería sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Qué le pasó a un bilink: quién aceptó qué, cuándo y contra qué código
     ///
     /// Los demás comandos miran el presente; éste mira la ref, que es donde vive el
@@ -1160,6 +1173,19 @@ Eliminar? [y/N] ");
                      commit:  refs/bilink/{} @ {}\nárbol:   {} archivo(s)",
                     r.branch, short(&r.sha), r.files
                 ),
+            }
+        }
+
+        Command::Relayer { layer, dry_run } => {
+            let layer = layer.trim_end_matches('/').to_string();
+            let r = bilinker::relayer::relayer(&cwd, &layer, dry_run)?;
+            println!("{}: {} capture(s) reacuñados, {} bilink(s) movidos, \
+                      {} vecino(s) con el id actualizado",
+                     r.layer, r.captures, r.bilinks, r.neighbours);
+            if dry_run {
+                println!("\ndry-run: no se escribió nada");
+            } else {
+                seal(&cwd, bilinker::refmsg::RefCommand::Relayer { layer: r.layer })?;
             }
         }
 
