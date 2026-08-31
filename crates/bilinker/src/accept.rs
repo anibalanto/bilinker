@@ -3,6 +3,7 @@
 //! Aceptar es decir *"revisé esto y lo apruebo"*, y hay **dos cosas que aprobar**:
 //! dónde está el fragmento y qué dice. Se pueden aprobar juntas o por separado.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -36,6 +37,11 @@ pub struct AcceptResult {
     pub n: u8,
     pub hash: String,
     pub commit: Option<String>,
+    /// Quiénes aprobaron estos valores, después de este acto.
+    pub agree: BTreeSet<String>,
+    /// `false` cuando el archivo quedó igual: los mismos valores y quien acepta ya
+    /// estaba en el set. No hay nada que agregar, y no hay commit que escribir.
+    pub wrote: bool,
 }
 
 /// Acepta un endpoint.
@@ -47,13 +53,30 @@ pub fn accept(layer: &Path, uuid: &str, n: u8, what: What) -> Result<AcceptResul
     let mut bl = BiLink::load(&path)?;
     let mut cache = Cache::load(layer);
 
-    let (accepted, commit) = compute(layer, &bl, &uuid, n, what, &cache)?;
+    let (mut accepted, commit) = compute(layer, &bl, &uuid, n, what, &cache)?;
     if let Some(c) = &commit {
         cache.set_commit(&uuid, n, c);
     }
 
+    // **Quiénes aprobaron *estos* valores.**
+    //
+    // El set anterior sobrevive sólo si los valores no se movieron: quien aprobó el
+    // hash de antes no aprobó el de ahora, y arrastrar su nombre sería atribuirle
+    // una decisión que no tomó. Y arranca vacío también cuando `compute` trajo el
+    // `accepted` de un vecino —un endpoint `path` o `repo`— porque **`agree` no se
+    // copia**: los que aprobaron allá aprobaron ese fragmento, no esta copia.
+    let previous = bl.endpoint.get(n).accepted.as_ref();
+    let iguales = previous.map(|p| p.same_values(&accepted)).unwrap_or(false);
+    accepted.agree = match previous {
+        Some(p) if iguales => p.agree.clone(),
+        _ => BTreeSet::new(),
+    };
+    let sumado = accepted.agree.insert(signer(layer)?);
+    let wrote = sumado || !iguales;
+
     let e = bl.endpoint.get_mut(n);
     let hash = accepted.hash.clone();
+    let agree = accepted.agree.clone();
     e.accepted = Some(accepted);
     bl.write(&path)?;
 
@@ -61,7 +84,29 @@ pub fn accept(layer: &Path, uuid: &str, n: u8, what: What) -> Result<AcceptResul
     cache.set_endpoint_state(&uuid, n, EndpointState::Ok);
     cache.save(layer)?;
 
-    Ok(AcceptResult { uuid, n, hash, commit })
+    Ok(AcceptResult { uuid, n, hash, commit, agree, wrote })
+}
+
+/// Quién acepta: el `user.name` de git.
+///
+/// **El mismo que va a firmar el commit y el mismo que `git blame` va a mostrar
+/// sobre la línea del nombre.** Que sean uno solo es lo que permite cruzarlos: un
+/// `agree` que dijera una cosa y el autor del commit otra no se podría verificar
+/// contra ninguna firma, y el campo quedaría siendo decoración.
+///
+/// Sin `user.name` no se acepta — igual que no se commitearía.
+fn signer(layer: &Path) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &layer.to_string_lossy(), "config", "user.name"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    out.context(
+        "git no tiene `user.name` configurado, y `agree` dice quién aprueba.\n                Configurarlo: `git config user.name '<nombre>'`",
+    )
 }
 
 /// Calcula el bloque `accepted` para un endpoint.
@@ -104,6 +149,8 @@ fn compute(
             let ast_hash = ast_hash_of(layer, &cap, &source)?;
 
             let accepted = Accepted {
+                // Lo pone `accept`, no `compute`: depende de qué había antes.
+                agree: BTreeSet::new(),
                 // Aprobar la ubicación es escribir el link vigente en `accepted`.
                 link: if what.place {
                     Some(e.link.clone())
@@ -197,7 +244,12 @@ fn compute(
                 .with_context(|| format!("leyendo {}", item.display()))?;
             let rel = item.strip_prefix(&root).unwrap_or(&item).display().to_string();
             Ok((
-                Accepted { link: None, hash: hash::sha256(text.as_bytes()), hash_ast: None },
+                Accepted {
+                    agree: BTreeSet::new(),
+                    link: None,
+                    hash: hash::sha256(text.as_bytes()),
+                    hash_ast: None,
+                },
                 crate::git::try_head_commit_for_file(&root, &rel),
             ))
         }

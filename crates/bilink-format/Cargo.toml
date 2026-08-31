@@ -2,7 +2,7 @@
 name    = "bilink-format"
 # La versión del crate ES la versión del formato: no se puede cambiar el parseo
 # sin releasear, ni releasear sin bumpear. Ver ADR-0006.
-version = "3.1.0"
+version = "3.2.0"
 edition = "2021"
 
 [dependencies]

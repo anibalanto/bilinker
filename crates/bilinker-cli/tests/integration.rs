@@ -2090,6 +2090,194 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── task `1n`: quiénes aprobaron ──────────────────────────────────────────
+
+/// Quién acepta, para los tests que necesitan más de una persona.
+fn as_person(root: &Path, name: &str) {
+    git(root, &["config", "user.name", name]);
+    git(root, &["config", "user.email", &format!("{name}@t")]);
+}
+
+/// El `accepted` de un endpoint, tal como está en el archivo.
+fn accepted_of(root: &Path, uuid: &str, n: u8) -> bilink_format::Accepted {
+    let bl = bilink_format::BiLink::load(&root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    bl.endpoint.get(n).accepted.clone().expect("el endpoint está aceptado")
+}
+
+fn agree_of(root: &Path, uuid: &str, n: u8) -> Vec<String> {
+    accepted_of(root, uuid, n).agree.into_iter().collect()
+}
+
+/// Aceptar escribe quién aprobó, y **el primero entra solo**: si no, el campo
+/// significaría "los que *además* aprobaron", que es otra cosa.
+#[test]
+fn accepting_writes_who_approved() {
+    let (_t, root, uuid) = accepted_layer();
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["t"]);
+    assert_eq!(agree_of(&root, &uuid, 1), vec!["t"]);
+}
+
+/// **Un segundo aprobador tiene algo que escribir.** Sobre un endpoint ya `OK` no
+/// cambiaba ningún byte: no había diff, ni commit, ni firma. Ahora es un diff de una
+/// línea sobre un commit propio.
+#[test]
+fn a_second_endorsement_adds_a_name_and_writes_a_commit() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    assert!(check_states(&root).trim().is_empty(), "el endpoint arranca OK");
+    let before = rev(&root, &bref);
+
+    as_person(&root, "ana");
+    let (out, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    assert!(ok, "endosar un endpoint OK falló:\n{stderr}");
+    assert!(out.contains("agree: ana, t"), "y lo dice:\n{out}");
+
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "t"], "alfabético, no cronológico");
+    assert_ne!(before, rev(&root, &bref), "el endoso produjo un commit");
+
+    // Y no cambió el estado: `OK` no depende de cuántos aprobaron.
+    assert!(check_states(&root).trim().is_empty(), "sigue OK con un aprobador más");
+}
+
+/// **Un nombre por línea, y por eso `git blame` atribuye cada endoso por separado.**
+/// En flow, N actos colapsan en un lugar y blame devuelve el del último.
+#[test]
+fn blame_attributes_each_endorsement_to_the_commit_that_added_it() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    as_person(&root, "ana");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    as_person(&root, "pablo");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "pablo", "t"]);
+
+    // El blame va sobre el archivo **de la ref**: ahí es donde viven los bilinks.
+    let file = format!(".bilink/{uuid}.yaml");
+    let blame = git_out(&root, &["blame", "--line-porcelain", &bref, "--", &file]);
+
+    // De cada línea `- <nombre>`, el commit y el autor que la escribieron.
+    let mut por_nombre: std::collections::BTreeMap<String, (String, String)> = Default::default();
+    let mut commit = String::new();
+    let mut autor = String::new();
+    for line in blame.lines() {
+        if let Some(rest) = line.strip_prefix("author ") { autor = rest.to_string(); }
+        else if line.starts_with('\t') {
+            if let Some(nombre) = line.trim().strip_prefix("- ") {
+                por_nombre.insert(nombre.to_string(), (commit.clone(), autor.clone()));
+            }
+        } else if line.len() >= 40 && line[..40].chars().all(|c| c.is_ascii_hexdigit()) {
+            commit = line[..40].to_string();
+        }
+    }
+
+    let (c_ana, a_ana) = por_nombre.get("ana").expect("la línea de ana");
+    let (c_pablo, a_pablo) = por_nombre.get("pablo").expect("la línea de pablo");
+    assert_ne!(c_ana, c_pablo, "cada endoso es su propio commit");
+    assert_eq!(a_ana, "ana", "y su autor es quien endosó");
+    assert_eq!(a_pablo, "pablo");
+}
+
+/// Publicar dos veces la misma aprobación no dice nada nuevo: no hay diff, así que
+/// no hay commit.
+#[test]
+fn endorsing_twice_writes_nothing() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    as_person(&root, "ana");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    let after_first = rev(&root, &bref);
+
+    let (out, _, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    assert!(ok, "repetir no es un error");
+    assert!(out.contains("nada que agregar"), "y se dice:\n{out}");
+    assert_eq!(after_first, rev(&root, &bref), "no se escribió ningún commit");
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "t"], "y no se duplicó");
+}
+
+/// **Cambian los valores, se vacía la lista.** Quien aprobó el hash anterior no
+/// aprobó el nuevo, y arrastrar su nombre le atribuiría una decisión que no tomó.
+#[test]
+fn changing_the_values_empties_the_list() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    as_person(&root, "ana");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "t"]);
+
+    // El fragmento cambia y alguien más lo aprueba: los anteriores no aprobaron esto.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    commit(&root, "la spec cambia");
+    as_person(&root, "pablo");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    assert_eq!(agree_of(&root, &uuid, 0), vec!["pablo"],
+               "los aprobadores del contenido anterior quedan en sus commits, no acá");
+}
+
+/// **Un endpoint `path` no copia el `agree` del vecino.** Los de allá aprobaron ese
+/// fragmento; los de acá aprobaron esta copia.
+#[test]
+fn a_path_endpoint_does_not_copy_the_agree_of_its_neighbour() {
+    let (_t, root) = isolated_git_workspace();
+    let impl_dir = root.join(".stratum/impl");
+    fs::create_dir_all(impl_dir.join("src")).unwrap();
+    fs::write(impl_dir.join("src/Service.java"),
+              "public class Service {\n    public void run() {}\n}\n").unwrap();
+    commit(&root, "la capa de abajo");
+
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--tip", "docs/spec.md", "--tip", ">impl/src/Service.java",
+    ]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let uuid = stdout.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    // Ana aprueba el fragmento, abajo. Pablo aprueba la copia, arriba.
+    as_person(&root, "ana");
+    run_in(&impl_dir, &["check", "."]);
+    let (_, stderr, ok) = run_in(&impl_dir, &["accept", &format!("{uuid}.1")]);
+    assert!(ok, "accept del fragmento falló:\n{stderr}");
+
+    as_person(&root, "pablo");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.1")]);
+    assert!(ok, "accept de la copia falló:\n{stderr}");
+
+    assert_eq!(agree_of(&impl_dir, &uuid, 1), vec!["ana"], "abajo, quien aprobó el fragmento");
+    assert_eq!(agree_of(&root, &uuid, 1), vec!["pablo"],
+               "arriba, quien aprobó **esta copia** — y nadie del otro lado de la cadena");
+}
+
+/// **`adopt` une los dos `agree` sin reportar conflicto.** Es la diferencia con
+/// `commit`, el campo que no está en `accepted`: acá la resolución es correcta y
+/// única.
+#[test]
+fn adopt_unites_the_two_agree_without_conflict() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+    let same = "public class Service {\n    public void run() { int x = 1; }\n}\n";
+
+    as_person(&root, "ana");
+    decide_on(&root, &main, same);
+    as_person(&root, "pablo");
+    decide_on(&root, "feature/x", same);
+
+    // Los mismos valores, listas distintas.
+    assert_eq!(agree_of(&root, &uuid, 1), vec!["pablo"]);
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", &main]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(!stdout.contains("conflicto"), "unir no es un conflicto:\n{stdout}");
+
+    assert_eq!(agree_of(&root, &uuid, 1), vec!["ana", "pablo"],
+               "el resultado dice algo verdadero que antes no se podía decir: los dos aprobaron");
+}
+
 // ─── task `1f`: el mensaje es el comando ───────────────────────────────────
 
 /// **Todo commit que bilinker escribe sobre la ref parsea contra la gramática**, y

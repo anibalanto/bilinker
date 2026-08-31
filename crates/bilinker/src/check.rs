@@ -575,6 +575,7 @@ mod tests {
 
         let cap = Capture { file: file.into(), query: Some(QUERY.into()) };
         let accepted = Accepted {
+            agree: Default::default(),
             link: None,
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara

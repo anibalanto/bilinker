@@ -654,6 +654,7 @@ mod tests {
             format!("capture {vigente}").parse().unwrap(),
             "issue 3a".parse().unwrap());
         bl.endpoint.zero.accepted = Some(bilink_format::Accepted {
+            agree: Default::default(),
             link: Some(format!("capture {aprobado}").parse().unwrap()),
             hash: "deadbeef".into(),
             hash_ast: None,
