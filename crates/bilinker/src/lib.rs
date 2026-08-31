@@ -26,6 +26,7 @@ pub mod hash;
 pub mod index;
 pub mod init;
 pub mod issue;
+pub mod pull;
 pub mod push;
 pub mod query;
 pub mod refmsg;

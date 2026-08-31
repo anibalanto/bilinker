@@ -55,6 +55,10 @@ pub enum RefCommand {
     /// Tipo 3.a. Sin endpoint: trae **todo** lo que el vecino decidió, y el conjunto
     /// sale del merge a tres puntas entre los dos padres, que ya están en el objeto.
     Adopt { branch: String },
+    /// Tipo 3.b — traer lo que otro aceptó en **esta misma** rama. Nombra el remoto
+    /// y no una rama, que es lo que lo separa de `adopt`: la fuente es la copia que
+    /// el remoto tiene de esta misma ref.
+    Pull { remote: String },
 }
 
 impl RefCommand {
@@ -73,6 +77,7 @@ impl RefCommand {
             }
             Self::Apply { uuid, n, capture } => format!("apply {uuid}.{n} {capture}"),
             Self::Adopt { branch } => format!("adopt {branch}"),
+            Self::Pull { remote } => format!("pull {remote}"),
         }
     }
 }
@@ -162,6 +167,9 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         ("absorb", [c]) => RefCommand::Absorb { project: commit(c)? },
         ("track", [b]) => RefCommand::Track { branch: branch(b)? },
         ("adopt", [b]) => RefCommand::Adopt { branch: branch(b)? },
+        // Un nombre de remoto tiene las mismas restricciones que uno de rama: es lo
+        // que git acepta, y es el único argumento no hexadecimal del vocabulario.
+        ("pull", [r]) => RefCommand::Pull { remote: branch(r)? },
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
@@ -185,12 +193,12 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Un verbo del vocabulario con la cantidad de argumentos equivocada, y un
         // verbo que no está en el vocabulario, son el mismo error: el mensaje no
         // describe ningún acto reproducible.
-        ("absorb" | "track" | "adopt" | "accept" | "apply", _) => bail!(
+        ("absorb" | "track" | "adopt" | "pull" | "accept" | "apply", _) => bail!(
             "`{verb}` no lleva los argumentos '{}'", args.join(" ")
         ),
         _ => bail!(
             "'{verb}' no es un verbo del vocabulario de la ref \
-             (absorb, track, accept, apply, adopt)"
+             (absorb, track, accept, apply, adopt, pull)"
         ),
     };
 
@@ -317,6 +325,7 @@ mod tests {
             RefCommand::Accept { place: false, content: true, uuid: UUID.into(), n: 1 },
             RefCommand::Apply { uuid: UUID.into(), n: 1, capture: CAP.into() },
             RefCommand::Adopt { branch: "main".into() },
+            RefCommand::Pull { remote: "origin".into() },
             RefCommand::Track { branch: "rc-2.35".into() },
         ] {
             let back = round(cmd.clone());

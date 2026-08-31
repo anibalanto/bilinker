@@ -2109,6 +2109,196 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── task `1m`: dos personas que aceptan en la misma rama ──────────────────
+
+/// Dos clones de la misma rama, con un remoto compartido entre los dos.
+///
+/// Es el escenario entero de `1m`: Ana y Luis parten del mismo commit de la ref, los
+/// dos aceptan, y uno pushea primero.
+fn two_clones() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf, String) {
+    let (tmp, ana, uuid, _x) = cut_over();
+    // El remoto y el segundo clon en su **propio** tempdir: colgarlos del padre del
+    // primero los pondría en /tmp, compartidos con los demás tests que corren a la
+    // vez.
+    let otros = tempfile::tempdir().unwrap();
+    let base = otros.path().to_path_buf();
+
+    let origin = base.join("origin.git");
+    let out = std::process::Command::new("git")
+        .args(["init", "-q", "--bare"]).arg(&origin).output().unwrap();
+    assert!(out.status.success());
+
+    // **El hook es la única protección**, y sin él nada de esto se sostiene: el `+`
+    // del refspec de push es del cliente, y lo que lo vuelve seguro es que el
+    // servidor rechace. `receive.denyNonFastForwards` no sirve acá — git la chequea
+    // sólo sobre `refs/heads/`— así que quien rechaza es `verify-ref`.
+    let hook = origin.join("hooks/pre-receive");
+    fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    fs::write(&hook, format!(
+        "#!/bin/sh\nexec {} verify-ref --stdin\n", bilinker().display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Los dos fragmentos cambian **antes** del clon: los dos clones parten del mismo
+    // commit del proyecto y con los dos endpoints pidiendo una decisión.
+    fs::write(ana.join("docs/spec.md"), "# Spec\n\nAlgo nuevo.\n").unwrap();
+    fs::write(ana.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&ana, "los dos lados cambian");
+    run_in(&ana, &["sync"]);
+
+    let branch = branch_of(&ana);
+    git(&ana, &["remote", "add", "origin", &origin.display().to_string()]);
+    run_in(&ana, &["init"]);
+    git(&ana, &["push", "-q", "origin", &branch]);
+    let (_, stderr, ok) = run_in(&ana, &["push"]);
+    assert!(ok, "el push inicial de la ref falló:\n{stderr}");
+
+    // El segundo clon, con la misma ref.
+    let luis = base.join("luis");
+    let out = std::process::Command::new("git")
+        .args(["clone", "-q", &origin.display().to_string()])
+        .arg(&luis).output().unwrap();
+    assert!(out.status.success(), "clone: {}", String::from_utf8_lossy(&out.stderr));
+    as_person(&luis, "luis");
+    let (_, stderr, ok) = run_in(&luis, &["init"]);
+    assert!(ok, "init en el clon falló:\n{stderr}");
+
+    as_person(&ana, "ana");
+    (tmp, otros, ana, luis, uuid)
+}
+
+/// Que un clon quede con la ref y los bilinks del remoto.
+fn ref_tip(root: &Path, branch: &str) -> String {
+    rev(root, &format!("refs/bilink/{branch}"))
+}
+
+/// **Dos personas que aceptan endpoints distintos convergen sin conflicto, y los dos
+/// commits sobreviven.** Que sobrevivan no es cuidado: son los dos padres.
+#[test]
+fn two_clones_accepting_different_endpoints_converge_and_keep_both_commits() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    // Ana acepta un endpoint y publica.
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    let de_ana = ref_tip(&ana, &branch);
+    let (_, stderr, ok) = run_in(&ana, &["push"]);
+    assert!(ok, "el push de Ana falló:\n{stderr}");
+
+    // Luis, que partió del mismo commit y no trajo nada, acepta **el otro** endpoint.
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    let de_luis = ref_tip(&luis, &branch);
+
+    // Su push se rechaza, y el error dice que fue divergencia, no reescritura.
+    let (out, err, ok) = run_in(&luis, &["push"]);
+    assert!(!ok, "el push de Luis tiene que rechazarse:\n{out}{err}");
+    assert!(err.contains("las dos historias agregaron"),
+            "nadie reescribió nada, y el mensaje no puede decir que sí:\n{err}");
+    assert!(err.contains("bilinker pull"), "y nombra el comando que corresponde:\n{err}");
+
+    // Y `pull` une sin pedir nada.
+    let (out, err, ok) = run_in(&luis, &["pull"]);
+    assert!(ok, "pull falló:\n{out}{err}");
+    assert!(!out.contains("conflicto"), "endpoints distintos no conflictúan:\n{out}");
+
+    // **Ninguna aceptación se pierde**: los dos commits son los dos padres.
+    let unido = ref_tip(&luis, &branch);
+    let padres = parents_of(&luis, &unido);
+    assert_eq!(padres.len(), 2, "un commit de sincronización tiene dos padres:\n{padres:?}");
+    assert!(padres.contains(&de_luis), "el commit de Luis sigue alcanzable");
+    assert!(padres.contains(&de_ana), "y el de Ana también");
+
+    // Y los dos valores están en el archivo.
+    let bl = bilink_format::BiLink::load(&luis.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    assert!(bl.endpoint.get(0).accepted.is_some(), "lo que aceptó Ana entró");
+    assert!(bl.endpoint.get(1).accepted.is_some(), "y lo de Luis quedó");
+}
+
+/// **Dos clones que aceptan lo mismo convergen sin pedir nada, y el `agree`
+/// resultante tiene a los dos.** Es lo que dice algo verdadero que antes no se podía
+/// decir.
+#[test]
+fn two_clones_accepting_the_same_thing_end_up_with_both_names_in_agree() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    // Los dos aceptan **el mismo endpoint sobre el mismo contenido**: los valores
+    // direccionan por contenido, así que coinciden byte a byte.
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    assert_eq!(agree_of(&luis, &uuid, 0), vec!["luis"]);
+
+    let (out, err, ok) = run_in(&luis, &["pull"]);
+    assert!(ok, "aceptar lo mismo no puede pedir nada:\n{out}{err}");
+    assert!(!out.contains("conflicto"), "los valores direccionan por contenido:\n{out}");
+
+    assert_eq!(agree_of(&luis, &uuid, 0), vec!["ana", "luis"],
+               "el resultado dice que los dos aprobaron");
+    assert_eq!(parents_of(&luis, &ref_tip(&luis, &branch)).len(), 2,
+               "y los dos commits siguen alcanzables");
+}
+
+/// **El mismo endpoint con contenidos distintos es conflicto real, y no se elige por
+/// su cuenta.** Es dos decisiones humanas incompatibles sobre el mismo fragmento.
+#[test]
+fn two_clones_accepting_the_same_endpoint_differently_report_a_conflict() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    // Luis aprueba **otro** contenido para el mismo endpoint: dos decisiones humanas
+    // incompatibles sobre el mismo fragmento.
+    fs::write(luis.join("docs/spec.md"), "# Spec\n\nLo de Luis, que es otra cosa.\n").unwrap();
+    commit(&luis, "la spec cambia de otra forma");
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    let antes = ref_tip(&luis, &branch);
+
+    let (out, _, ok) = run_in(&luis, &["pull"]);
+    assert!(!ok, "un conflicto sale con 1:\n{out}");
+    assert!(out.contains("conflicto"), "y se enumera:\n{out}");
+    assert!(out.contains("no se escribió nada"), "y se dice:\n{out}");
+    assert!(out.contains("bilinker accept"), "y se nombra cómo resolverlo:\n{out}");
+
+    assert_eq!(antes, ref_tip(&luis, &branch), "todo o nada");
+}
+
+/// El fetch de `pull` va a un namespace aparte: la ref local es justo la que no se
+/// quiere pisar, y el refspec sin `+` existe para que un fetch normal falle.
+#[test]
+fn pull_fetches_into_its_own_namespace_and_never_over_the_local_ref() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    let propio = ref_tip(&luis, &branch);
+
+    run_in(&luis, &["pull", "--dry-run"]);
+
+    assert_eq!(propio, ref_tip(&luis, &branch), "el dry-run no toca la ref local");
+    let copia = git_out(&luis, &["for-each-ref", "--format=%(refname)", "refs/bilink-remote/"]);
+    assert!(copia.contains(&format!("refs/bilink-remote/origin/{branch}")),
+            "la copia del remoto vive aparte:\n{copia}");
+}
+
 // ─── task `1g`: la ref es protegida ────────────────────────────────────────
 
 /// `verify-ref` sobre un rango, con la salida y el código de salida.

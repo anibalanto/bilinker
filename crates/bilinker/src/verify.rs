@@ -59,7 +59,7 @@ pub fn verify(
     new: &str,
     signers: Option<&Path>,
 ) -> Result<Report> {
-    let repo = Repo::open(dir)?;
+    let repo = Repo::open_bare_ok(dir)?;
 
     // ── del rango ────────────────────────────────────────────────────────────
     if is_zero(new) {
@@ -360,7 +360,7 @@ pub fn parse_stdin(text: &str) -> Vec<(String, String, String)> {
 
 /// Resuelve el argumento de la línea de comandos a `(refname, old, new)`.
 pub fn target(dir: &Path, arg: Option<&str>) -> Result<(String, Option<String>, String)> {
-    let repo = Repo::open(dir)?;
+    let repo = Repo::open_bare_ok(dir)?;
     let spec = match arg {
         Some(a) => a.to_string(),
         None => {

@@ -59,6 +59,21 @@ impl Repo {
         Ok(Self { root, git_dir })
     }
 
+    /// Abre el repo **aunque no tenga árbol de trabajo**.
+    ///
+    /// Es para [`verify-ref`](crate::verify), y sólo para él: un `pre-receive` corre
+    /// dentro de un repo desnudo, donde `rev-parse --show-toplevel` falla porque no
+    /// hay toplevel. Verificar no lee el árbol de trabajo ni escribe nada, así que
+    /// la falta de uno no le quita nada — pero al resto de los comandos sí, y por eso
+    /// esto es una puerta aparte y no un `open` más permisivo.
+    pub fn open_bare_ok(dir: &Path) -> Result<Self> {
+        if let Ok(repo) = Self::open(dir) {
+            return Ok(repo);
+        }
+        let git_dir = config::git_dir(dir)?;
+        Ok(Self { root: git_dir.clone(), git_dir })
+    }
+
     /// La rama del proyecto checkouteada, o `None` con `HEAD` desacoplado.
     ///
     /// A mitad de un rebase con conflictos no hay rama contra la cual comparar, y

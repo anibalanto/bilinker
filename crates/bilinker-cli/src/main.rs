@@ -165,6 +165,18 @@ enum Command {
         remote: Option<String>,
     },
 
+    /// Trae lo que otro aceptó en la misma rama, y lo une con lo tuyo
+    ///
+    /// Es el caso 3.b: los dos lados cuelgan de la misma absorción, así que el
+    /// árbol de código no se elige. `adopt` es para otra rama.
+    Pull {
+        /// De cuál traer. Default: el único que haya, u `origin`
+        remote: Option<String>,
+        /// Muestra qué entraría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Verifica que una refs/bilink/* tenga la forma que promete
     ///
     /// La misma verificación del lado del servidor —donde rechaza un push— y del
@@ -1098,7 +1110,23 @@ Eliminar? [y/N] ");
         }
 
         Command::Push { branch, remote } => {
-            let r = bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref())?;
+            let r = match bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref()) {
+                Ok(r) => r,
+                Err(e) => {
+                    // **Un non-fast-forward tiene dos causas**, y confundirlas manda
+                    // a mirar un incidente donde no hubo ninguno. `git merge-base`
+                    // las separa, así que no hace falta adivinar.
+                    let elegido = bilinker::push::pick_remote(
+                        &bilinker::bilink_ref::Repo::open(&cwd)?, remote.as_deref());
+                    if let Ok(rem) = elegido {
+                        if let Ok(diag) = bilinker::pull::diagnose_rejection(&cwd, &rem) {
+                            eprintln!("error: {diag}");
+                            std::process::exit(1);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
             if r.moved {
                 println!("publicado: refs/bilink/{} @ {} → {}",
                          r.branch, short(&r.tip), r.remote);
@@ -1121,6 +1149,12 @@ Eliminar? [y/N] ");
                     r.branch, short(&r.sha), r.files
                 ),
             }
+        }
+
+        Command::Pull { remote, dry_run } => {
+            let r = bilinker::pull::pull(&cwd, remote.as_deref(), dry_run)?;
+            print_pull(&r, dry_run);
+            if r.conflicts() > 0 { std::process::exit(1); }
         }
 
         Command::Adopt { branch, dry_run } => {
@@ -1643,6 +1677,55 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
     // commit vacío.
     if !r.wrote {
         println!("        ya estabas en el set y los valores no se movieron — nada que agregar");
+    }
+}
+
+/// El informe de `pull`.
+fn print_pull(r: &bilinker::pull::PullResult, dry_run: bool) {
+    use bilinker::adopt::Row;
+
+    if r.up_to_date {
+        println!("refs/bilink/{} ya tiene lo de {} — nada que traer", r.branch, r.remote);
+        return;
+    }
+    if r.fast_forward {
+        println!("refs/bilink/{} avanzó a {} — no hubo nada que unir",
+                 r.branch, short(r.sha.as_deref().unwrap_or("")));
+        return;
+    }
+
+    match &r.base {
+        Some(b) => println!("base {} · aceptaciones de {} en {}..\n",
+                            short(b), r.remote, short(b)),
+        None => println!("sin base de merge con {} — toda diferencia es conflicto\n", r.remote),
+    }
+
+    for (row, label) in [(Row::Clean, "entra limpio"), (Row::Converged, "ya coincidía"),
+                         (Row::Conflict, "conflicto   ")] {
+        for c in r.changes.iter().filter(|c| c.row == row) {
+            println!("  {label}  {}.{}  {}", &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension);
+            if row == Row::Conflict {
+                println!("                  acá:   {}", c.mine.as_deref().unwrap_or("—"));
+                println!("                  allá:  {}", c.theirs.as_deref().unwrap_or("—"));
+            }
+        }
+    }
+
+    if r.conflicts() > 0 {
+        let primero = r.changes.iter().find(|c| c.row == Row::Conflict).expect("hay uno");
+        println!("\nno se escribió nada. Resolver aceptando uno de los dos: \
+                  `bilinker accept {}.{}`",
+                 &primero.uuid[..8.min(primero.uuid.len())], primero.n);
+        return;
+    }
+    if dry_run {
+        println!("\ndry-run: no se escribió nada");
+        return;
+    }
+    match &r.sha {
+        Some(sha) => println!("\ncommit:  refs/bilink/{} @ {}   ({} endpoint(s))",
+                              r.branch, short(sha), r.brought()),
+        None => println!("\nnada que traer"),
     }
 }
 
