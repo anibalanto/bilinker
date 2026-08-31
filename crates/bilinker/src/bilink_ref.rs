@@ -361,6 +361,88 @@ impl Repo {
         }
     }
 
+    // ─── lo que `verify-ref` necesita leer, y nada más ───────────────────────
+
+    /// Si el repo está configurado para firmar sus commits.
+    fn signs(&self) -> bool {
+        self.git(&["config", "--bool", "commit.gpgsign"])
+            .map(|v| v.trim() == "true")
+            .unwrap_or(false)
+    }
+
+    /// Si `a` es antepasado de `b`. Es la definición de fast-forward.
+    pub fn is_ancestor(&self, a: &str, b: &str) -> Result<bool> {
+        let out = Command::new("git")
+            .args(["-C", &self.root.to_string_lossy(), "merge-base", "--is-ancestor", a, b])
+            .output()?;
+        Ok(out.status.success())
+    }
+
+    /// Los padres de un commit, en orden.
+    pub fn parents(&self, commit: &str) -> Result<Vec<String>> {
+        let line = self.git(&["rev-list", "--parents", "-n", "1", commit])?;
+        Ok(line.split_whitespace().skip(1).map(str::to_string).collect())
+    }
+
+    /// Público para `verify-ref`: si el árbol de un commit lleva algún `.bilink/`.
+    pub fn tree_has_any_bilink(&self, commit: &str) -> Result<bool> {
+        self.tree_has_bilink(commit)
+    }
+
+    /// Los archivos bajo `.bilink/` que el commit tocó, con su estado de git.
+    ///
+    /// Sin padre —el commit raíz— todo su árbol cuenta como agregado.
+    pub fn changed_bilink_files(
+        &self,
+        base: Option<&str>,
+        commit: &str,
+    ) -> Result<Vec<(char, String)>> {
+        let out = match base {
+            Some(b) => self.git(&["diff-tree", "-r", "--no-renames", "--name-status", b, commit])?,
+            None => self.git(&["ls-tree", "-r", "--name-only", commit])?,
+        };
+        let mut files = Vec::new();
+        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+            let (status, path) = match base {
+                Some(_) => match line.split_once('\t') {
+                    Some((st, p)) => (st.chars().next().unwrap_or('M'), p),
+                    None => continue,
+                },
+                None => ('A', line),
+            };
+            if is_bilink_path(path) {
+                files.push((status, path.to_string()));
+            }
+        }
+        Ok(files)
+    }
+
+    /// Un bilink leído del árbol de un commit, sin tocar el disco.
+    pub fn bilink_at(&self, commit: &str, path: &str) -> Result<crate::BiLinkFile> {
+        let text = self.git(&["show", &format!("{commit}:{path}")])?;
+        Ok(serde_yaml_ng::from_str(&text)?)
+    }
+
+    /// Que el commit esté firmado por una clave de la allowlist.
+    ///
+    /// **No se inventa un formato de allowlist**: es el `allowed_signers` de ssh,
+    /// que git ya consume por `gpg.ssh.allowedSignersFile`. Se le pasa por `-c` en
+    /// vez de escribirlo en la config, porque verificar no configura nada.
+    pub fn verify_signature(&self, commit: &str, signers: &Path) -> Result<()> {
+        let out = Command::new("git")
+            .args(["-C", &self.root.to_string_lossy()])
+            .args(["-c", &format!("gpg.ssh.allowedSignersFile={}", signers.display())])
+            .args(["verify-commit", commit])
+            .output()?;
+        if out.status.success() {
+            return Ok(());
+        }
+        bail!(
+            "sin firma de la allowlist ({})",
+            first_line(&String::from_utf8_lossy(&out.stderr))
+        )
+    }
+
     /// Cuál de los dos árboles se movió entre dos commits: `(.bilink/, código)`.
     fn what_moved(&self, from: &str, to: &str) -> Result<(bool, bool)> {
         let diff = self.git(&["diff-tree", "-r", "--name-only", from, to])?;
@@ -456,6 +538,17 @@ impl Repo {
         for p in parents {
             args.push("-p".into());
             args.push(p.clone());
+        }
+        // **`commit-tree` no firma solo.** A diferencia de `git commit`, no mira
+        // `commit.gpgsign`: hay que pasarle `-S`. Sin esto los commits de la ref
+        // salen sin firmar y la allowlist del `pre-receive` no tendría nada que
+        // verificar — la atestación de una decisión es el commit firmado, así que
+        // sería la protección entera sin sujeto.
+        //
+        // La condición la pone git, no bilinker: la misma config con la que se
+        // firma cualquier otro commit del repo, sin una opción propia que aprender.
+        if self.signs() {
+            args.push("-S".into());
         }
         args.push("-m".into());
         args.push(message.to_string());
@@ -891,6 +984,10 @@ fn is_bilink_path(path: &str) -> bool {
 
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
 
 fn run(cmd: &mut Command, args: &[String]) -> Result<String> {

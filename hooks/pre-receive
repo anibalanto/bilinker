@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# Rechaza un push a `refs/bilink/*` que no tenga la forma que la ref promete.
+#
+# Va junto a las dos opciones de config, que no dependen de que este hook esté
+# instalado y cubren lo más barato:
+#
+#     git config receive.denyNonFastForwards true
+#     git config receive.denyDeletes true
+#
+# `verify-ref` lee `<viejo> <nuevo> <ref>` por línea y sale distinto de cero para
+# rechazar el push entero. Las refs que no son `refs/bilink/*` las ignora: este hook
+# no opina sobre las ramas del proyecto.
+#
+# Sin `--signers` la firma no se verifica, y la salida lo dice.
+
+exec bilinker verify-ref --stdin --signers /etc/bilinker/allowed-signers

@@ -20,8 +20,19 @@ pub const EXCLUDE_PATTERNS: [&str; 2] = [".bilink/", ".bilink-migrate-*"];
 /// El refspec que hace que `git fetch` traiga las refs de bilinks con las ramas.
 ///
 /// Se mapea a sí mismo y no a `refs/remotes/`: la ref del remoto y la local son la
-/// misma cosa, y como la ref es append-only el fetch es siempre fast-forward.
-pub const REFSPEC: &str = "+refs/bilink/*:refs/bilink/*";
+/// misma cosa.
+///
+/// **Y va sin `+`.** El `+` significa *"actualizá aunque no sea fast-forward"*, y
+/// acá es exactamente lo que no se quiere: como la ref sólo crece, en operación
+/// normal el fetch ya es fast-forward y el `+` no aporta nada. Lo único que agrega
+/// es que, si el remoto divergió, el fetch **pisa la ref local en silencio** — y lo
+/// que se pierde no es un valor sino **un padre**: el commit propio queda sin
+/// referencia, y el commit de sincronización que lo uniría necesita dos.
+pub const REFSPEC: &str = "refs/bilink/*:refs/bilink/*";
+
+/// El que escribían las versiones anteriores, y que hay que sacar de un clon que ya
+/// lo tiene. Poner el nuevo no alcanza: los dos refspecs conviven y el `+` gana.
+pub const REFSPEC_FORZADO: &str = "+refs/bilink/*:refs/bilink/*";
 
 #[derive(Debug, Default)]
 pub struct Config {}
@@ -59,7 +70,15 @@ pub fn is_initialized(repo: &Path) -> bool {
         })
         .unwrap_or(false);
 
-    excluded && remotes(repo).map(|rs| rs.iter().all(|r| has_refspec(repo, r))).unwrap_or(false)
+    // **Cualquiera de los dos refspecs cuenta como inicializado**, incluido el
+    // forzado que escribían las versiones anteriores. Un clon que corrió el `init`
+    // viejo trae bilinks igual: lo que le falta es la protección, no la puesta a
+    // punto. Bloquear todos sus comandos por eso sería cobrarle a quien no hizo
+    // nada mal un cambio que `init` repara solo.
+    excluded
+        && remotes(repo)
+            .map(|rs| rs.iter().all(|r| has_refspec(repo, r) || has_forced_refspec(repo, r)))
+            .unwrap_or(false)
 }
 
 /// El id del corte a la ref en el ledger de migraciones.
@@ -138,18 +157,35 @@ pub fn write_exclude(repo: &Path, dry_run: bool) -> Result<Vec<&'static str>> {
 /// Devuelve los remotos que tocó. Sin remotos no hay nada que escribir y no es un
 /// error: un repo local sin origen igual usa la ref, sólo que nunca la empuja.
 pub fn write_refspec(repo: &Path, dry_run: bool) -> Result<Vec<String>> {
-    let missing: Vec<String> = remotes(repo)?
+    let pendientes: Vec<String> = remotes(repo)?
         .into_iter()
-        .filter(|r| !has_refspec(repo, r))
+        .filter(|r| !has_refspec(repo, r) || has_forced_refspec(repo, r))
         .collect();
 
     if dry_run {
-        return Ok(missing);
+        return Ok(pendientes);
     }
-    for remote in &missing {
-        git(repo, &["config", "--add", &format!("remote.{remote}.fetch"), REFSPEC])?;
+    for remote in &pendientes {
+        // **Primero se saca el forzado.** Agregar el nuevo sin sacarlo dejaría los
+        // dos, y git aplica los dos: el `+` seguiría pisando la ref local. Un clon
+        // que ya corrió un `init` viejo se arregla corriendo `init` de nuevo.
+        if has_forced_refspec(repo, remote) {
+            git(repo, &["config", "--unset-all", &format!("remote.{remote}.fetch"),
+                        &regex_of(REFSPEC_FORZADO)])?;
+        }
+        if !has_refspec(repo, remote) {
+            git(repo, &["config", "--add", &format!("remote.{remote}.fetch"), REFSPEC])?;
+        }
     }
-    Ok(missing)
+    Ok(pendientes)
+}
+
+/// El refspec como regex de `git config --unset-all`, que matchea el **valor**.
+fn regex_of(refspec: &str) -> String {
+    let escapado: String = refspec.chars()
+        .map(|c| if "+*.^$[]()|\\".contains(c) { format!("\\{c}") } else { c.to_string() })
+        .collect();
+    format!("^{escapado}$")
 }
 
 pub fn remotes(repo: &Path) -> Result<Vec<String>> {
@@ -158,8 +194,18 @@ pub fn remotes(repo: &Path) -> Result<Vec<String>> {
 }
 
 fn has_refspec(repo: &Path, remote: &str) -> bool {
+    tiene(repo, remote, REFSPEC)
+}
+
+/// Si el remoto todavía lleva el refspec con `+` que escribían las versiones
+/// anteriores. Un clon así fetchea forzando aunque el nuevo también esté puesto.
+pub fn has_forced_refspec(repo: &Path, remote: &str) -> bool {
+    tiene(repo, remote, REFSPEC_FORZADO)
+}
+
+fn tiene(repo: &Path, remote: &str, refspec: &str) -> bool {
     git(repo, &["config", "--get-all", &format!("remote.{remote}.fetch")])
-        .map(|out| out.lines().any(|l| l.trim() == REFSPEC))
+        .map(|out| out.lines().any(|l| l.trim() == refspec))
         .unwrap_or(false)
 }
 

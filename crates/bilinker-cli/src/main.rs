@@ -165,6 +165,22 @@ enum Command {
         remote: Option<String>,
     },
 
+    /// Verifica que una refs/bilink/* tenga la forma que promete
+    ///
+    /// La misma verificación del lado del servidor —donde rechaza un push— y del
+    /// lado del que recibe una ref ajena. No resuelve ninguna query y no escribe
+    /// nada: es lo único que un hook puede correr sin efectos.
+    VerifyRef {
+        /// <viejo>..<nuevo>, o una ref. Default: la ref de la rama actual
+        range: Option<String>,
+        /// El allowed_signers de ssh. Sin él, la firma no se verifica y se dice
+        #[arg(long)]
+        signers: Option<std::path::PathBuf>,
+        /// Lee "<viejo> <nuevo> <ref>" por línea: el protocolo de un pre-receive
+        #[arg(long)]
+        stdin: bool,
+    },
+
     /// Crea refs/bilink/<branch> para una rama que no la tiene
     ///
     /// Hereda los bilinks del commit de otra ref cuyo commit absorbido siga siendo
@@ -450,7 +466,15 @@ fn main() -> anyhow::Result<()> {
 
     // `init` se configura a sí mismo; `migrate` corre en repos que todavía no
     // cortaron y no puede exigir una ref que no existe.
-    if !matches!(cli.command, Command::Init { .. } | Command::Migrate { .. }) {
+    //
+    // Y `verify-ref` **no toca el árbol de trabajo**: verifica una ref, que puede ser
+    // ajena, de otra rama, o la que un push está proponiendo. Materializar antes
+    // sería escribir —lo único que un hook no puede hacer— y además fallaría justo
+    // donde más se lo necesita: sobre una ref que no corresponde a este árbol.
+    if !matches!(
+        cli.command,
+        Command::Init { .. } | Command::Migrate { .. } | Command::VerifyRef { .. }
+    ) {
         match bilinker::init::prelude(&cwd)? {
             bilinker::init::Materialization::Rematerialized { from, to } => {
                 eprintln!("materializado: {} → refs/bilink/… @ {}",
@@ -1047,6 +1071,32 @@ Eliminar? [y/N] ");
             print_sync(bilinker::sync::sync(&cwd, dry_run)?, dry_run);
         }
 
+        Command::VerifyRef { range, signers, stdin } => {
+            use bilinker::verify;
+            let signers = signers.as_deref();
+
+            let objetivos: Vec<(String, Option<String>, String)> = if stdin {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                verify::parse_stdin(&buf)
+                    .into_iter()
+                    .map(|(o, n, r)| (r, Some(o), n))
+                    .collect()
+            } else {
+                vec![verify::target(&cwd, range.as_deref())?]
+            };
+
+            let mut rechazos = 0usize;
+            for (refname, old, new) in objetivos {
+                let r = verify::verify(&cwd, &refname, old.as_deref(), &new, signers)?;
+                print_verify(&r);
+                rechazos += r.rejected();
+            }
+            if rechazos > 0 {
+                std::process::exit(1);
+            }
+        }
+
         Command::Push { branch, remote } => {
             let r = bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref())?;
             if r.moved {
@@ -1594,6 +1644,36 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
     if !r.wrote {
         println!("        ya estabas en el set y los valores no se movieron — nada que agregar");
     }
+}
+
+/// El informe de `verify-ref`.
+///
+/// **Lo que no se verificó se dice.** Confundir "verifiqué y está bien" con "no
+/// verifiqué" sería el peor resultado posible de una herramienta de verificación.
+fn print_verify(r: &bilinker::verify::Report) {
+    println!("{}  {} commit(s)\n", r.refname, r.verdicts.len());
+
+    let rechazados = r.rejected();
+    if rechazados == 0 {
+        let previos = r.pre_grammar();
+        let firmados = if r.signatures_checked { ", firmados" } else { "" };
+        println!("  ✓  {:>3}  con la gramática{firmados}", r.verdicts.len() - previos);
+        if previos > 0 {
+            println!("  ·  {previos:>3}  anteriores a la gramática — forma no verificada");
+        }
+        if !r.signatures_checked {
+            println!("\nsin allowlist: la firma no se verificó");
+        }
+        println!("\nok");
+        return;
+    }
+
+    for v in r.verdicts.iter().filter(|v| !v.faults.is_empty()) {
+        for f in &v.faults {
+            println!("  ✗  {}  {f}", short(&v.commit));
+        }
+    }
+    println!("\n{rechazados} de {} rechazados", r.verdicts.len());
 }
 
 /// El estado de la capa, agrupado por archivo.
