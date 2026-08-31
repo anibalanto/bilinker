@@ -2109,6 +2109,114 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── tasks `10` y `15`: la salida es fiel a lo que la herramienta sabe ─────
+
+/// **`get` sobre un endpoint que no resuelve dice a dónde apuntaba.**
+///
+/// El estado ya dijo que el fragmento no está; lo que falta saber es cuál era, para
+/// decidir a dónde repuntarlo — y `UNRESOLVED` es el estado que obliga a intervenir
+/// a mano. Sin esto hay que abrir el `.yaml` del capture y leerlo.
+#[test]
+fn get_on_an_unresolved_endpoint_prints_where_it_pointed() {
+    let (_t, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void compute() {}\n}\n").unwrap();
+    commit(&root, "el método");
+
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let uuid = stdout.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+
+    // El anchor se renombra y el fragmento deja de resolver.
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void otroNombre() {}\n}\n").unwrap();
+    commit(&root, "el anchor se renombra");
+
+    let (out, err, ok) = run_in(&root, &["get", &format!("{uuid}.1")]);
+    let todo = format!("{out}{err}");
+    assert!(!ok, "sin fragmento que devolver, sigue fallando:\n{todo}");
+
+    assert!(todo.contains("src/Service.java"), "el archivo:\n{todo}");
+    assert!(todo.contains("capture "), "el id del capture:\n{todo}");
+    assert!(todo.contains("query:"), "y la query, que es el dato que falta:\n{todo}");
+    assert!(todo.contains("compute"), "con el anchor que buscaba:\n{todo}");
+    assert!(todo.contains("recapture") || todo.contains("apply"),
+            "y el comando que lo resuelve:\n{todo}");
+}
+
+/// Un archivo con cuerpo suficiente para que `git diff -M` **detecte el rename**.
+///
+/// Con tres líneas la similitud cae por debajo del umbral y git reporta un borrado
+/// más un agregado, que es otro caso — el de "el fragmento no está en ninguna parte".
+fn service_with_body(anchor: &str) -> String {
+    let mut s = String::from("public class Service {\n");
+    for i in 0..12 {
+        s.push_str(&format!("    public void metodo{i}() {{ int x = {i}; }}\n"));
+    }
+    s.push_str(&format!("    public void {anchor}() {{ int y = 1; }}\n}}\n"));
+    s
+}
+
+/// **`apply` nombra el anchor cuando lo que cambió fue el anchor**, no el índice de
+/// renames de git — que estaba bien.
+#[test]
+fn apply_names_the_anchor_when_the_anchor_is_what_changed() {
+    let (_t, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), service_with_body("compute")).unwrap();
+    commit(&root, "el método");
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1",
+                    "--tip", "src/Service.java:14:5"]);
+    run_in(&root, &["check", "."]);
+
+    // El archivo **y** el símbolo de adentro se renombran a la vez.
+    git(&root, &["mv", "src/Service.java", "src/Servicio.java"]);
+    fs::write(root.join("src/Servicio.java"), service_with_body("calcular")).unwrap();
+    git(&root, &["add", "-A"]);
+
+    run_in(&root, &["check", "."]);
+    let (out, err, _) = run_in(&root, &["apply", "--dry-run"]);
+    let todo = format!("{out}{err}");
+
+    assert!(todo.contains("src/Servicio.java"),
+            "git sí encontró el rename, y el mensaje no puede decir que no:\n{todo}");
+    assert!(todo.contains("compute"), "el anchor que se buscaba, por su nombre:\n{todo}");
+    assert!(todo.contains("recapture"), "y el comando que sí lo resuelve:\n{todo}");
+}
+
+/// La causa que el mensaje viejo escondía: **el destino no está trackeado.**
+///
+/// Y no la explica `apply` sino `get`: sin rename detectado el capture queda en un
+/// estado **sin fix**, así que `apply` ni lo mira. Que su mensaje pretendiera cubrir
+/// este caso era parte del mismo error — describía una condición que ese camino no
+/// puede observar.
+#[test]
+fn get_says_when_the_destination_is_simply_not_tracked() {
+    let (_t, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), service_with_body("compute")).unwrap();
+    commit(&root, "el método");
+    let (stdout, _, _) = run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1",
+                                         "--tip", "src/Service.java:14:5"]);
+    let uuid = stdout.lines().find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    run_in(&root, &["check", "."]);
+
+    // El archivo se mueve **sin** stagear el destino: git no puede ver el rename.
+    fs::rename(root.join("src/Service.java"), root.join("src/Servicio.java")).unwrap();
+
+    run_in(&root, &["check", "."]);
+    let (out, err, ok) = run_in(&root, &["get", &format!("{uuid}.1")]);
+    let todo = format!("{out}{err}");
+    assert!(!ok, "sin fragmento que devolver, sigue fallando:\n{todo}");
+
+    assert!(todo.contains("src/Servicio.java"),
+            "el archivo sin trackear se nombra:\n{todo}");
+    assert!(todo.contains("git add"), "y qué hacer con él:\n{todo}");
+    assert!(todo.contains("compute"), "con el anchor que lo delata:\n{todo}");
+}
+
 // ─── task `1h`: qué le pasó a un bilink ────────────────────────────────────
 
 /// Lista los actos en orden, con autor y tipo. Es la vista que ningún otro comando

@@ -229,6 +229,18 @@ fn last_name_capture(query: &Query) -> Option<u32> {
         .last()
 }
 
+/// El nombre que la query busca: el valor del **último** predicado `(#eq? @nK "...")`.
+///
+/// Es el par de [`rewrite_name_predicate`] —el mismo predicado, leído en vez de
+/// reescrito— y es lo que hay que ir a mirar cuando un capture no resuelve.
+pub fn anchor_name(query_str: &str) -> Option<String> {
+    let at = query_str.rfind("(#eq? @n")?;
+    let rest = &query_str[at..];
+    let open = rest.find('"')?;
+    let close = rest[open + 1..].find('"')? + open + 1;
+    Some(rest[open + 1..close].replace("\\\"", "\"").replace("\\\\", "\\"))
+}
+
 /// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
 ///
 /// Reescribe el **último** predicado `(#eq? @nK "...")`, que es el que nombra al

@@ -121,23 +121,61 @@ pub fn apply_fix(layer: &Path, pf: &PendingFix) -> Result<Vec<PathBuf>> {
 // ─── cálculo de la ubicación nueva ────────────────────────────────────────────
 
 /// MOVED: el índice de renames de git.
+///
+/// **Tres cosas distintas terminan en "no se pudo", y cada una manda a mirar un
+/// lugar distinto.** Confundirlas es lo que hacía que el mensaje culpara a git —el
+/// índice de renames— cuando el que había cambiado era el anchor:
+///
+/// | Lo que pasó | Estado | Quién lo explica |
+/// |---|---|---|
+/// | el destino está, pero el anchor se renombró también | `MOVED` | **acá** |
+/// | git no detectó el rename: el destino no está trackeado | sin fix | [`get`](crate::get) |
+/// | el fragmento no está en ninguna parte | sin fix | [`get`](crate::get) |
+///
+/// Las dos últimas **no llegan a `apply`**: dejan el capture en un estado sin fix, y
+/// `apply` no los toca. Que el mensaje de acá pretendiera cubrirlas era parte del
+/// mismo error — describía condiciones que este camino no puede observar.
 fn compute_moved(layer: &Path, cap: &Capture) -> Result<Option<Capture>> {
     let Some(new_file) = crate::check::git_renamed_to(layer, &cap.file) else {
-        // Tres cosas distintas terminan acá y conviene no confundirlas: que el
-        // destino no esté trackeado, que el anchor se haya renombrado también, o que
-        // el fragmento no esté en ninguna parte.
-        bail!("MOVED: git no reporta un rename de '{}'. Si el archivo nuevo no está \
-               trackeado, `git add` y volver a correr.", cap.file);
+        // **Casi inalcanzable, y por eso el mensaje no diagnostica nada.** Se entra
+        // acá sólo con `CaptureState::Moved`, que ya implica que git reportó el
+        // rename; llegar significa que el árbol cambió entre el `check` y esta
+        // línea. Las otras dos causas —destino sin trackear, fragmento en ninguna
+        // parte— **no pasan por acá**: dejan el capture en un estado sin fix, y
+        // quien las explica es [`get`](crate::get), que es donde se pregunta qué
+        // pasó con un endpoint que no resuelve.
+        bail!(
+            "MOVED: git ya no reporta el rename de '{}' — el árbol cambió mientras \
+             se calculaba.\n      Correr `bilinker check .` de nuevo.",
+            cap.file
+        );
     };
     let moved = Capture { file: new_file, ..cap.clone() };
     // Verificar que la referencia siga resolviendo en el path nuevo. Sin aceptación:
     // lo que se pregunta es si el anchor está ahí, no si dice lo que se aprobó.
     let (state, _) = crate::check::resolve_capture(layer, &moved, None, None)?;
     if !state.is_resolved() {
-        bail!("MOVED: el archivo se movió a '{}', pero el anchor ya no está ahí ({state}). \
-               Repuntar con `bilinker recapture`.", moved.file);
+        // **Nombrar el anchor, no el estado.** Es el caso de MOVED y REANCHORED a la
+        // vez, que ningún estado expresa porque los dos son de resolución y el
+        // capture guarda uno solo. Y no hay auto-fix: dónde quedó el fragmento
+        // adentro del archivo destino es una inferencia que `apply` no debería hacer
+        // sola. Lo que sí puede es decir qué comando la hace.
+        bail!(
+            "MOVED: el archivo se movió a '{}', pero el anchor {} ya no está ahí \
+             ({state}).\n      Repuntar con `bilinker recapture`.",
+            moved.file,
+            named(cap),
+        );
     }
     Ok(Some(moved))
+}
+
+/// El anchor entre backticks, o una frase que no finge saber su nombre.
+fn named(cap: &Capture) -> String {
+    match cap.query.as_deref().and_then(query::anchor_name) {
+        Some(a) => format!("`{a}`"),
+        None => "capturado".to_string(),
+    }
 }
 
 /// REANCHORED: la query relajada, con el nombre nuevo.
