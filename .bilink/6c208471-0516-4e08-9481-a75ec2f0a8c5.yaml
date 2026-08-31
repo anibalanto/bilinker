@@ -7,5 +7,7 @@ endpoint:
   1:
     link: capture 832fcb23b9150d34c9828baff6b9f03b
     accepted:
+      agree:
+      - Anibal
       link: capture 832fcb23b9150d34c9828baff6b9f03b
-      hash: e9990b9bab8bbcc30ae6102292f7d48d805b2e04aa447c6be08042de26743156
+      hash: 11bc04885cfb0229615cd95d71ad454a1d51b5f6d7f56dd29af1f563ce12d3bd
