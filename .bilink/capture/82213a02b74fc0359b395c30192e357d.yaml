@@ -1,0 +1,4 @@
+file: crates/bilinker/src/accept.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "accept")) @target

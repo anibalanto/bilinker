@@ -1,0 +1,13 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 82213a02b74fc0359b395c30192e357d
+    accepted:
+      agree:
+      - Anibal
+      link: capture 82213a02b74fc0359b395c30192e357d
+      hash: c7ffbe6eb57ac806b798f7eb4ccdb07f1e1ad769579f4f8aebdd0c9c29ce129a
+      hash_ast: af0ec5abb8dd39285e0826ecfc86d9945d22f2ba938ed7c70dca08eee16ba97e
+    name: quien-lo-escribe
