@@ -1,0 +1,12 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 6cf03e596eda7a6236677e629ad195ec
+    accepted:
+      agree:
+      - Anibal
+      link: capture 6cf03e596eda7a6236677e629ad195ec
+      hash: d7fb9cd2467f4582baa09710cf54baa8bc30a779f4b852612a846fa8535c0c45
+    name: el-comando
