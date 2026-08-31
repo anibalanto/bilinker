@@ -23,6 +23,7 @@ pub mod get;
 pub mod git;
 pub mod grammar;
 pub mod hash;
+pub mod history;
 pub mod index;
 pub mod init;
 pub mod issue;

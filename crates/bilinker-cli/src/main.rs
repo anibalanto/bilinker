@@ -165,6 +165,18 @@ enum Command {
         remote: Option<String>,
     },
 
+    /// Qué le pasó a un bilink: quién aceptó qué, cuándo y contra qué código
+    ///
+    /// Los demás comandos miran el presente; éste mira la ref, que es donde vive el
+    /// registro de decisiones. No escribe nada: arma una vista.
+    History {
+        /// <uuid> o <uuid>.<N>
+        target: String,
+        /// json, para un consumidor que no es una persona
+        #[arg(long)]
+        format: Option<String>,
+    },
+
     /// Trae lo que otro aceptó en la misma rama, y lo une con lo tuyo
     ///
     /// Es el caso 3.b: los dos lados cuelgan de la misma absorción, así que el
@@ -1151,6 +1163,16 @@ Eliminar? [y/N] ");
             }
         }
 
+        Command::History { target, format } => {
+            let (uuid, n) = bilinker::history::parse_target(&target)?;
+            let h = bilinker::history::history(&cwd, &uuid, n)?;
+            if format.as_deref() == Some("json") {
+                println!("{}", serde_json::to_string_pretty(&h)?);
+            } else {
+                print_history(&h);
+            }
+        }
+
         Command::Pull { remote, dry_run } => {
             let r = bilinker::pull::pull(&cwd, remote.as_deref(), dry_run)?;
             print_pull(&r, dry_run);
@@ -1677,6 +1699,59 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
     // commit vacío.
     if !r.wrote {
         println!("        ya estabas en el set y los valores no se movieron — nada que agregar");
+    }
+}
+
+/// La historia de un bilink.
+///
+/// **Lo que no se sabe se dice.** Un acto anterior a la gramática no tiene comando
+/// que leer, y ponerle uno derivado del texto libre sería fabricar precisión.
+fn print_history(h: &bilinker::history::History) {
+    println!("{}  {}", h.uuid, h.path);
+    if !h.from_ref {
+        println!("sin ref: la historia sale de la rama, y no incluye los actos que la \
+                  ref registraría");
+    }
+    if h.deeds.is_empty() {
+        println!("\nsin actos");
+        return;
+    }
+
+    for d in &h.deeds {
+        let comando = d.command.as_deref().unwrap_or("(anterior a la gramática)");
+        println!("\n  {}  {:<8} {:<11}  {:<15}  {comando}",
+                 short(&d.commit), d.author, &d.date[..10.min(d.date.len())], d.kind);
+        if let Some(a) = &d.against {
+            println!("           contra {}", short(a));
+        }
+        for c in &d.changes {
+            println!("           .{}  {:<14} {} → {}", c.n, c.field,
+                     abbrev(c.before.as_deref()), abbrev(c.after.as_deref()));
+            for cap in &c.captures {
+                // La query se aplana: es multilínea en el archivo, y acá cada acto
+                // tiene que caber en su renglón para que el orden se lea.
+                let q = cap.query.as_deref().map(one_line);
+                println!("               {}  {}  {}", &cap.id[..8.min(cap.id.len())],
+                         cap.file, q.as_deref().unwrap_or("(archivo entero)"));
+            }
+        }
+    }
+}
+
+/// Una query en un renglón, recortada.
+fn one_line(q: &str) -> String {
+    let plano = q.split_whitespace().collect::<Vec<_>>().join(" ");
+    if plano.len() > 60 { format!("{}…", &plano[..60]) } else { plano }
+}
+
+/// Un valor de la historia, acortado si es un hash. `—` para lo que no estaba.
+fn abbrev(v: Option<&str>) -> String {
+    match v {
+        None => "—".to_string(),
+        Some(s) if s.len() > 20 && s.chars().all(|c| c.is_ascii_hexdigit()) =>
+            format!("{}…", &s[..8]),
+        Some(s) if s.len() > 40 => format!("{}…", &s[..40]),
+        Some(s) => s.to_string(),
     }
 }
 

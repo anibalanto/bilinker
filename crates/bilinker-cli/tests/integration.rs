@@ -2109,6 +2109,153 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
             "y no crea ninguna ref por su cuenta");
 }
 
+// ─── task `1h`: qué le pasó a un bilink ────────────────────────────────────
+
+/// Lista los actos en orden, con autor y tipo. Es la vista que ningún otro comando
+/// da: los demás miran el presente.
+#[test]
+fn history_lists_every_deed_on_a_bilink_with_its_author_and_kind() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    as_person(&root, "ana");
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo de Ana.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    as_person(&root, "luis");
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.1")]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "history falló:\n{stderr}");
+
+    assert!(out.contains("ana") && out.contains("luis"), "los dos autores:\n{out}");
+    assert!(out.contains("decisión"), "el tipo sale de los padres:\n{out}");
+    assert!(out.contains(&format!("accept {uuid}.0")), "y el comando canónico:\n{out}");
+
+    // En orden, del más nuevo al más viejo.
+    let i_luis = out.find("luis").expect("luis");
+    let i_ana = out.find("ana").expect("ana");
+    assert!(i_luis < i_ana, "el más nuevo primero:\n{out}");
+
+    // Y contra qué código se calculó, que sale de la absorción más cercana.
+    assert!(out.contains("contra "), "el commit del proyecto:\n{out}");
+}
+
+/// `<uuid>.<N>` filtra a un endpoint.
+#[test]
+fn history_filters_to_one_endpoint() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.1")]);
+
+    let (todo, _, _) = run_in(&root, &["history", &uuid]);
+    let (solo0, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok);
+
+    assert!(todo.contains(".1  hash"), "sin filtro está el endpoint 1:\n{todo}");
+    assert!(!solo0.contains(".1  hash"), "con filtro, no:\n{solo0}");
+}
+
+/// **Un capture que `prune` borró se sigue leyendo**, porque todo commit que lo tenía
+/// lo sigue teniendo. Sin la ref, `prune` sería destructivo para la arqueología.
+#[test]
+fn history_reads_a_capture_that_prune_already_removed() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    // Un `apply` repunta el `link` a un capture nuevo, y deja el viejo sin referentes.
+    git(&root, &["mv", "docs/spec.md", "docs/renombrada.md"]);
+    run_in(&root, &["check", "."]);
+    let (out, err, ok) = run_in(&root, &["apply", "-y"]);
+    assert!(ok, "apply falló:\n{out}{err}");
+
+    // El capture viejo, el que el `accepted.link` todavía nombra, y el nuevo.
+    let (h, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok, "history falló:\n{h}");
+    assert!(h.contains("docs/spec.md"), "la ubicación vieja se sigue leyendo:\n{h}");
+    assert!(h.contains("docs/renombrada.md"), "y la nueva:\n{h}");
+
+    // Y después de un prune, sigue estando: sale del árbol del commit, no del tip.
+    commit(&root, "el rename");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["capture", "prune"]);
+
+    let (h2, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok, "history falló después del prune:\n{h2}");
+    assert!(h2.contains("docs/spec.md"),
+            "todo commit que tenía ese capture lo sigue teniendo:\n{h2}");
+}
+
+/// **Degrada por acto, no por corrida.** Un acto sin `Bilinker-Version` no tiene
+/// comando canónico que leer, y se reporta con lo que sí es derivable de git.
+#[test]
+fn history_degrades_one_deed_at_a_time_over_the_grammar() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Uno con la gramática.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    // Y uno de la forma vieja encima.
+    pre_grammar_commit(&root, &bref, &uuid, "accept .: 9 endpoint(s)");
+
+    let (out, _, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "un acto viejo no rompe la corrida:\n{out}");
+    assert!(out.contains("anterior a la gramática"),
+            "el acto viejo se reporta y dice que no sabe:\n{out}");
+    assert!(!out.contains("accept .: 9 endpoint"),
+            "y **no** adivina el comando del texto libre:\n{out}");
+    assert!(out.contains(&format!("accept {uuid}.0")),
+            "mientras el otro sí lo tiene:\n{out}");
+}
+
+/// Con `--format json`, que es el consumidor principal.
+#[test]
+fn history_has_a_json_format() {
+    let (_t, root, uuid, _x) = cut_over();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid, "--format", "json"]);
+    assert!(ok, "history --format json falló:\n{stderr}");
+
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json válido");
+    assert_eq!(v["uuid"], uuid);
+    assert_eq!(v["from_ref"], true);
+    let deeds = v["deeds"].as_array().expect("array de actos");
+    assert!(!deeds.is_empty());
+    assert_eq!(deeds[0]["kind"], "decisión");
+    assert!(deeds[0]["command"].as_str().unwrap().starts_with("accept "));
+    assert!(deeds[0]["against"].is_string(), "contra qué código se calculó");
+}
+
+/// En un repo que todavía no cortó **degrada explícitamente en vez de mentir**: la
+/// historia sale de la rama, y no incluye los actos que la ref registraría.
+#[test]
+fn history_says_when_there_is_no_ref_to_read() {
+    let (_t, root, uuid) = accepted_layer();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-qm", "los bilinks viven en la rama"]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "history falló:\n{stderr}");
+    assert!(out.contains("sin ref"), "callar la diferencia haría parecer completa \
+                                      una vista que no lo es:\n{out}");
+}
+
 // ─── task `1m`: dos personas que aceptan en la misma rama ──────────────────
 
 /// Dos clones de la misma rama, con un remoto compartido entre los dos.
@@ -2568,12 +2715,7 @@ fn pre_grammar_commit(root: &Path, bref: &str, uuid: &str, msg: &str) -> String 
     let path = root.join(format!(".bilink/{uuid}.yaml"));
     let texto = format!("{}# a mano\n", fs::read_to_string(&path).unwrap());
     fs::write(&path, texto).unwrap();
-    let tip = rev(root, bref);
-    let tree = rev(root, &format!("{tip}^{{tree}}"));
-    let sha = git_out(root, &["commit-tree", &tree, "-p", &tip, "-m", msg]);
-    let sha = sha.trim().to_string();
-    git(root, &["update-ref", bref, &sha]);
-    sha
+    commit_bilinks(root, bref, msg, false)
 }
 
 /// Un commit de un padre sobre la ref con el `.bilink/` del árbol de trabajo, sin
@@ -2581,7 +2723,17 @@ fn pre_grammar_commit(root: &Path, bref: &str, uuid: &str, msg: &str) -> String 
 fn commit_worktree_bilinks(root: &Path, bref: &str, msg: &str) -> String {
     // Con el trailer: sin él, el commit cae en "anterior a la gramática" y nunca se
     // llega a la verificación que el test quiere ejercer.
-    let msg = &format!("{msg}\n\nBilinker-Version: {}", bilinker::refmsg::VERSION);
+    commit_bilinks(root, bref, msg, true)
+}
+
+/// El commit, con o sin el trailer de la gramática. El árbol sale del `.bilink/` del
+/// árbol de trabajo, así que el `head` sigue correspondiendo y la guarda no salta.
+fn commit_bilinks(root: &Path, bref: &str, msg: &str, con_gramatica: bool) -> String {
+    let msg = &if con_gramatica {
+        format!("{msg}\n\nBilinker-Version: {}", bilinker::refmsg::VERSION)
+    } else {
+        msg.to_string()
+    };
     let tip = rev(root, bref);
     let index = root.join(".git/handmade-index");
     let _ = fs::remove_file(&index);
@@ -2604,6 +2756,9 @@ fn commit_worktree_bilinks(root: &Path, bref: &str, msg: &str) -> String {
     let sha = git_out(root, &["commit-tree", &tree, "-p", &tip, "-m", msg]);
     let sha = sha.trim().to_string();
     git(root, &["update-ref", bref, &sha]);
+    // El `head` sigue al commit, o la guarda de materialización saltaría después.
+    fs::write(root.join(".bilink/head"),
+              format!("branch {}\ncommit {sha}\n", branch_of(root))).unwrap();
     sha
 }
 
