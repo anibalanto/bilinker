@@ -2,8 +2,10 @@ endpoint:
   0:
     link: path <
     accepted:
+      agree:
+      - Anibal
       link: capture 5ea149551877f2032a72547c4d4f1931
-      hash: cf6112ca437693798faec5d0ab8cfc637a754f3fb6b88a366bcd9928636e6b18
+      hash: 420aaaa06b9e38eb939279865c36c0109cd9875253fb797bfbd70f5225b545b1
   1:
     link: capture 6ec6cd32ae4c0a7b58c9d7791a38677e
     accepted:
