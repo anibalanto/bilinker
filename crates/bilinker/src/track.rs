@@ -64,8 +64,9 @@ pub fn track(dir: &Path, branch: &str, from: Option<&str>) -> Result<TrackResult
         None => (
             repo.build_tree(&tip)?,
             vec![tip.clone()],
-            RefMessage::new(RefCommand::Corte { branch: branch.to_string() })
-                .with_prose(format!("los bilinks pasan a refs/bilink/{branch}")),
+            // El corte no tiene verbo propio: es el mismo comando, sin candidato.
+            RefMessage::new(RefCommand::Track { branch: branch.to_string() })
+                .with_prose(format!("corte, los bilinks pasan a refs/bilink/{branch}")),
         ),
     };
 
