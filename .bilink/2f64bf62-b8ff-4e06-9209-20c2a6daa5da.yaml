@@ -8,6 +8,8 @@ endpoint:
   1:
     link: capture 5bcc1e095095f54d2fdf253c36400d8c
     accepted:
+      agree:
+      - Anibal
       link: capture 5bcc1e095095f54d2fdf253c36400d8c
-      hash: 4f9bac8bc7d829f10058755a1e278fcc2002e5d7e9d10a1d894efb68245b62b1
+      hash: 1ec448300b4a5fcbe918d080016b280e3707acb9370fd44ecd11a1e465abb30e
     name: el-parser
