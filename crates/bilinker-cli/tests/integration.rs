@@ -1310,13 +1310,32 @@ fn init_writes_exclude_and_refspec_without_touching_the_branch() {
             "las carpetas de migración también van al exclude:\n{exclude}");
 
     let config = fs::read_to_string(root.join(".git/config")).unwrap();
-    assert!(config.contains("+refs/bilink/*:refs/bilink/*"),
+    assert!(config.contains("refs/bilink/*:refs/bilink/*"),
             "falta el refspec:\n{config}");
+    assert!(!config.contains("+refs/bilink/*:refs/bilink/*"),
+            "y va **sin `+`**: con él, un fetch de una ref divergida pisa la local \
+             en silencio y se lleva puesto un padre:\n{config}");
 
     assert!(!root.join(".gitignore").exists(),
             ".gitignore está versionado: tocarlo modificaría la rama del proyecto");
     assert!(git_out(&root, &["status", "--porcelain"]).trim().is_empty(),
             "init no puede dejar la rama del proyecto sucia");
+}
+
+/// Un clon que corrió un `init` viejo lleva el refspec con `+`. **Sacarlo es parte
+/// de `init`**: agregar el nuevo al lado dejaría los dos, y git aplica los dos.
+#[test]
+fn init_removes_the_forced_refspec_a_previous_version_wrote() {
+    let (_t, root) = isolated_git_workspace();
+    git(&root, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+    git(&root, &["config", "--add", "remote.origin.fetch", "+refs/bilink/*:refs/bilink/*"]);
+
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+
+    let fetch = git_out(&root, &["config", "--get-all", "remote.origin.fetch"]);
+    assert!(!fetch.contains("+refs/bilink"), "el forzado tiene que salir:\n{fetch}");
+    assert!(fetch.contains("refs/bilink/*:refs/bilink/*"), "y quedar el otro:\n{fetch}");
 }
 
 /// `init-is-idempotent` — correrlo dos veces no agrega nada.
@@ -2088,6 +2107,678 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
                "sin ref, accept no escribe ningún commit");
     assert!(git_out(&root, &["for-each-ref", "refs/bilink/"]).trim().is_empty(),
             "y no crea ninguna ref por su cuenta");
+}
+
+// ─── task `1h`: qué le pasó a un bilink ────────────────────────────────────
+
+/// Lista los actos en orden, con autor y tipo. Es la vista que ningún otro comando
+/// da: los demás miran el presente.
+#[test]
+fn history_lists_every_deed_on_a_bilink_with_its_author_and_kind() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    as_person(&root, "ana");
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo de Ana.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    as_person(&root, "luis");
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.1")]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "history falló:\n{stderr}");
+
+    assert!(out.contains("ana") && out.contains("luis"), "los dos autores:\n{out}");
+    assert!(out.contains("decisión"), "el tipo sale de los padres:\n{out}");
+    assert!(out.contains(&format!("accept {uuid}.0")), "y el comando canónico:\n{out}");
+
+    // En orden, del más nuevo al más viejo.
+    let i_luis = out.find("luis").expect("luis");
+    let i_ana = out.find("ana").expect("ana");
+    assert!(i_luis < i_ana, "el más nuevo primero:\n{out}");
+
+    // Y contra qué código se calculó, que sale de la absorción más cercana.
+    assert!(out.contains("contra "), "el commit del proyecto:\n{out}");
+}
+
+/// `<uuid>.<N>` filtra a un endpoint.
+#[test]
+fn history_filters_to_one_endpoint() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.1")]);
+
+    let (todo, _, _) = run_in(&root, &["history", &uuid]);
+    let (solo0, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok);
+
+    assert!(todo.contains(".1  hash"), "sin filtro está el endpoint 1:\n{todo}");
+    assert!(!solo0.contains(".1  hash"), "con filtro, no:\n{solo0}");
+}
+
+/// **Un capture que `prune` borró se sigue leyendo**, porque todo commit que lo tenía
+/// lo sigue teniendo. Sin la ref, `prune` sería destructivo para la arqueología.
+#[test]
+fn history_reads_a_capture_that_prune_already_removed() {
+    let (_t, root, uuid, _x) = cut_over();
+
+    // Un `apply` repunta el `link` a un capture nuevo, y deja el viejo sin referentes.
+    git(&root, &["mv", "docs/spec.md", "docs/renombrada.md"]);
+    run_in(&root, &["check", "."]);
+    let (out, err, ok) = run_in(&root, &["apply", "-y"]);
+    assert!(ok, "apply falló:\n{out}{err}");
+
+    // El capture viejo, el que el `accepted.link` todavía nombra, y el nuevo.
+    let (h, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok, "history falló:\n{h}");
+    assert!(h.contains("docs/spec.md"), "la ubicación vieja se sigue leyendo:\n{h}");
+    assert!(h.contains("docs/renombrada.md"), "y la nueva:\n{h}");
+
+    // Y después de un prune, sigue estando: sale del árbol del commit, no del tip.
+    commit(&root, "el rename");
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["capture", "prune"]);
+
+    let (h2, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
+    assert!(ok, "history falló después del prune:\n{h2}");
+    assert!(h2.contains("docs/spec.md"),
+            "todo commit que tenía ese capture lo sigue teniendo:\n{h2}");
+}
+
+/// **Degrada por acto, no por corrida.** Un acto sin `Bilinker-Version` no tiene
+/// comando canónico que leer, y se reporta con lo que sí es derivable de git.
+#[test]
+fn history_degrades_one_deed_at_a_time_over_the_grammar() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Uno con la gramática.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    // Y uno de la forma vieja encima.
+    pre_grammar_commit(&root, &bref, &uuid, "accept .: 9 endpoint(s)");
+
+    let (out, _, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "un acto viejo no rompe la corrida:\n{out}");
+    assert!(out.contains("anterior a la gramática"),
+            "el acto viejo se reporta y dice que no sabe:\n{out}");
+    assert!(!out.contains("accept .: 9 endpoint"),
+            "y **no** adivina el comando del texto libre:\n{out}");
+    assert!(out.contains(&format!("accept {uuid}.0")),
+            "mientras el otro sí lo tiene:\n{out}");
+}
+
+/// Con `--format json`, que es el consumidor principal.
+#[test]
+fn history_has_a_json_format() {
+    let (_t, root, uuid, _x) = cut_over();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", &format!("{uuid}.0")]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid, "--format", "json"]);
+    assert!(ok, "history --format json falló:\n{stderr}");
+
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json válido");
+    assert_eq!(v["uuid"], uuid);
+    assert_eq!(v["from_ref"], true);
+    let deeds = v["deeds"].as_array().expect("array de actos");
+    assert!(!deeds.is_empty());
+    assert_eq!(deeds[0]["kind"], "decisión");
+    assert!(deeds[0]["command"].as_str().unwrap().starts_with("accept "));
+    assert!(deeds[0]["against"].is_string(), "contra qué código se calculó");
+}
+
+/// En un repo que todavía no cortó **degrada explícitamente en vez de mentir**: la
+/// historia sale de la rama, y no incluye los actos que la ref registraría.
+#[test]
+fn history_says_when_there_is_no_ref_to_read() {
+    let (_t, root, uuid) = accepted_layer();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-qm", "los bilinks viven en la rama"]);
+
+    let (out, stderr, ok) = run_in(&root, &["history", &uuid]);
+    assert!(ok, "history falló:\n{stderr}");
+    assert!(out.contains("sin ref"), "callar la diferencia haría parecer completa \
+                                      una vista que no lo es:\n{out}");
+}
+
+// ─── task `1m`: dos personas que aceptan en la misma rama ──────────────────
+
+/// Dos clones de la misma rama, con un remoto compartido entre los dos.
+///
+/// Es el escenario entero de `1m`: Ana y Luis parten del mismo commit de la ref, los
+/// dos aceptan, y uno pushea primero.
+fn two_clones() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf, String) {
+    let (tmp, ana, uuid, _x) = cut_over();
+    // El remoto y el segundo clon en su **propio** tempdir: colgarlos del padre del
+    // primero los pondría en /tmp, compartidos con los demás tests que corren a la
+    // vez.
+    let otros = tempfile::tempdir().unwrap();
+    let base = otros.path().to_path_buf();
+
+    let origin = base.join("origin.git");
+    let out = std::process::Command::new("git")
+        .args(["init", "-q", "--bare"]).arg(&origin).output().unwrap();
+    assert!(out.status.success());
+
+    // **El hook es la única protección**, y sin él nada de esto se sostiene: el `+`
+    // del refspec de push es del cliente, y lo que lo vuelve seguro es que el
+    // servidor rechace. `receive.denyNonFastForwards` no sirve acá — git la chequea
+    // sólo sobre `refs/heads/`— así que quien rechaza es `verify-ref`.
+    let hook = origin.join("hooks/pre-receive");
+    fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    fs::write(&hook, format!(
+        "#!/bin/sh\nexec {} verify-ref --stdin\n", bilinker().display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Los dos fragmentos cambian **antes** del clon: los dos clones parten del mismo
+    // commit del proyecto y con los dos endpoints pidiendo una decisión.
+    fs::write(ana.join("docs/spec.md"), "# Spec\n\nAlgo nuevo.\n").unwrap();
+    fs::write(ana.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&ana, "los dos lados cambian");
+    run_in(&ana, &["sync"]);
+
+    let branch = branch_of(&ana);
+    git(&ana, &["remote", "add", "origin", &origin.display().to_string()]);
+    run_in(&ana, &["init"]);
+    git(&ana, &["push", "-q", "origin", &branch]);
+    let (_, stderr, ok) = run_in(&ana, &["push"]);
+    assert!(ok, "el push inicial de la ref falló:\n{stderr}");
+
+    // El segundo clon, con la misma ref.
+    let luis = base.join("luis");
+    let out = std::process::Command::new("git")
+        .args(["clone", "-q", &origin.display().to_string()])
+        .arg(&luis).output().unwrap();
+    assert!(out.status.success(), "clone: {}", String::from_utf8_lossy(&out.stderr));
+    as_person(&luis, "luis");
+    let (_, stderr, ok) = run_in(&luis, &["init"]);
+    assert!(ok, "init en el clon falló:\n{stderr}");
+
+    as_person(&ana, "ana");
+    (tmp, otros, ana, luis, uuid)
+}
+
+/// Que un clon quede con la ref y los bilinks del remoto.
+fn ref_tip(root: &Path, branch: &str) -> String {
+    rev(root, &format!("refs/bilink/{branch}"))
+}
+
+/// **Dos personas que aceptan endpoints distintos convergen sin conflicto, y los dos
+/// commits sobreviven.** Que sobrevivan no es cuidado: son los dos padres.
+#[test]
+fn two_clones_accepting_different_endpoints_converge_and_keep_both_commits() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    // Ana acepta un endpoint y publica.
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    let de_ana = ref_tip(&ana, &branch);
+    let (_, stderr, ok) = run_in(&ana, &["push"]);
+    assert!(ok, "el push de Ana falló:\n{stderr}");
+
+    // Luis, que partió del mismo commit y no trajo nada, acepta **el otro** endpoint.
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    let de_luis = ref_tip(&luis, &branch);
+
+    // Su push se rechaza, y el error dice que fue divergencia, no reescritura.
+    let (out, err, ok) = run_in(&luis, &["push"]);
+    assert!(!ok, "el push de Luis tiene que rechazarse:\n{out}{err}");
+    assert!(err.contains("las dos historias agregaron"),
+            "nadie reescribió nada, y el mensaje no puede decir que sí:\n{err}");
+    assert!(err.contains("bilinker pull"), "y nombra el comando que corresponde:\n{err}");
+
+    // Y `pull` une sin pedir nada.
+    let (out, err, ok) = run_in(&luis, &["pull"]);
+    assert!(ok, "pull falló:\n{out}{err}");
+    assert!(!out.contains("conflicto"), "endpoints distintos no conflictúan:\n{out}");
+
+    // **Ninguna aceptación se pierde**: los dos commits son los dos padres.
+    let unido = ref_tip(&luis, &branch);
+    let padres = parents_of(&luis, &unido);
+    assert_eq!(padres.len(), 2, "un commit de sincronización tiene dos padres:\n{padres:?}");
+    assert!(padres.contains(&de_luis), "el commit de Luis sigue alcanzable");
+    assert!(padres.contains(&de_ana), "y el de Ana también");
+
+    // Y los dos valores están en el archivo.
+    let bl = bilink_format::BiLink::load(&luis.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    assert!(bl.endpoint.get(0).accepted.is_some(), "lo que aceptó Ana entró");
+    assert!(bl.endpoint.get(1).accepted.is_some(), "y lo de Luis quedó");
+}
+
+/// **Dos clones que aceptan lo mismo convergen sin pedir nada, y el `agree`
+/// resultante tiene a los dos.** Es lo que dice algo verdadero que antes no se podía
+/// decir.
+#[test]
+fn two_clones_accepting_the_same_thing_end_up_with_both_names_in_agree() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    // Los dos aceptan **el mismo endpoint sobre el mismo contenido**: los valores
+    // direccionan por contenido, así que coinciden byte a byte.
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    assert_eq!(agree_of(&luis, &uuid, 0), vec!["luis"]);
+
+    let (out, err, ok) = run_in(&luis, &["pull"]);
+    assert!(ok, "aceptar lo mismo no puede pedir nada:\n{out}{err}");
+    assert!(!out.contains("conflicto"), "los valores direccionan por contenido:\n{out}");
+
+    assert_eq!(agree_of(&luis, &uuid, 0), vec!["ana", "luis"],
+               "el resultado dice que los dos aprobaron");
+    assert_eq!(parents_of(&luis, &ref_tip(&luis, &branch)).len(), 2,
+               "y los dos commits siguen alcanzables");
+}
+
+/// **El mismo endpoint con contenidos distintos es conflicto real, y no se elige por
+/// su cuenta.** Es dos decisiones humanas incompatibles sobre el mismo fragmento.
+#[test]
+fn two_clones_accepting_the_same_endpoint_differently_report_a_conflict() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    // Luis aprueba **otro** contenido para el mismo endpoint: dos decisiones humanas
+    // incompatibles sobre el mismo fragmento.
+    fs::write(luis.join("docs/spec.md"), "# Spec\n\nLo de Luis, que es otra cosa.\n").unwrap();
+    commit(&luis, "la spec cambia de otra forma");
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    let antes = ref_tip(&luis, &branch);
+
+    let (out, _, ok) = run_in(&luis, &["pull"]);
+    assert!(!ok, "un conflicto sale con 1:\n{out}");
+    assert!(out.contains("conflicto"), "y se enumera:\n{out}");
+    assert!(out.contains("no se escribió nada"), "y se dice:\n{out}");
+    assert!(out.contains("bilinker accept"), "y se nombra cómo resolverlo:\n{out}");
+
+    assert_eq!(antes, ref_tip(&luis, &branch), "todo o nada");
+}
+
+/// El fetch de `pull` va a un namespace aparte: la ref local es justo la que no se
+/// quiere pisar, y el refspec sin `+` existe para que un fetch normal falle.
+#[test]
+fn pull_fetches_into_its_own_namespace_and_never_over_the_local_ref() {
+    let (_t, _o, ana, luis, uuid) = two_clones();
+    let branch = branch_of(&ana);
+
+    run_in(&ana, &["check", "."]);
+    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["push"]);
+
+    run_in(&luis, &["check", "."]);
+    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    let propio = ref_tip(&luis, &branch);
+
+    run_in(&luis, &["pull", "--dry-run"]);
+
+    assert_eq!(propio, ref_tip(&luis, &branch), "el dry-run no toca la ref local");
+    let copia = git_out(&luis, &["for-each-ref", "--format=%(refname)", "refs/bilink-remote/"]);
+    assert!(copia.contains(&format!("refs/bilink-remote/origin/{branch}")),
+            "la copia del remoto vive aparte:\n{copia}");
+}
+
+// ─── task `1g`: la ref es protegida ────────────────────────────────────────
+
+/// `verify-ref` sobre un rango, con la salida y el código de salida.
+fn verify(root: &Path, args: &[&str]) -> (String, bool) {
+    let mut a = vec!["verify-ref"];
+    a.extend_from_slice(args);
+    let (out, err, ok) = run_in(root, &a);
+    (format!("{out}{err}"), ok)
+}
+
+/// Lo que bilinker escribe pasa su propia verificación. Es el piso: sin esto, el
+/// hook rechazaría los pushes legítimos.
+#[test]
+fn verify_ref_accepts_what_bilinker_writes() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+    run_in(&root, &["sync"]);
+
+    let (out, ok) = verify(&root, &[&bref]);
+    assert!(ok, "la ref que bilinker escribió no verifica:\n{out}");
+    assert!(out.contains("ok"), "{out}");
+    assert!(out.contains("la firma no se verificó"),
+            "sin allowlist hay que decir que no se verificó, no callarse:\n{out}");
+}
+
+/// Borrar la ref no está permitido: sin esto, "sólo avanza" se esquiva borrándola y
+/// empujándola de nuevo.
+#[test]
+fn verify_ref_rejects_a_delete() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let tip = rev(&root, &bref);
+    let ceros = "0".repeat(40);
+
+    let (out, ok) = pre_receive(&root, &format!("{tip} {ceros} {bref}"));
+    assert!(!ok, "un delete se rechaza:\n{out}");
+    assert!(out.contains("borrar la ref"), "y se dice por qué:\n{out}");
+}
+
+/// La ref es append-only: un no-fast-forward es una reescritura, y reescribirla deja
+/// sin baseline a toda aceptación del repo.
+#[test]
+fn verify_ref_rejects_a_non_fast_forward() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let viejo = rev(&root, &bref);
+
+    // Una historia que no desciende de ésta: el mismo árbol, sin padre.
+    let tree = rev(&root, &format!("{viejo}^{{tree}}"));
+    let nuevo = git_out(&root, &["commit-tree", &tree, "-m", "otra historia"]);
+    let nuevo = nuevo.trim().to_string();
+
+    let (out, ok) = pre_receive(&root, &format!("{viejo} {nuevo} {bref}"));
+    assert!(!ok, "un no-fast-forward se rechaza:\n{out}");
+    assert!(out.contains("append-only"), "y se dice por qué:\n{out}");
+}
+
+/// Un commit con la forma vieja —absorbe y decide a la vez— se rechaza. Es la
+/// invariante 4, leída del lado que puede decir que no.
+#[test]
+fn verify_ref_rejects_a_commit_that_absorbs_and_decides() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    let viejo = rev(&root, &bref);
+    let malo = handmade_commit(&root, &bref, &uuid, true, "accept 00000000-0000-4000-8000-000000000000.0");
+    let (out, ok) = verify(&root, &[&format!("{viejo}..{malo}")]);
+    assert!(!ok, "absorber y decidir a la vez se rechaza:\n{out}");
+    assert!(out.contains("absorbe y decide"), "y se dice por qué:\n{out}");
+}
+
+/// Un capture no se modifica: su id es el hash de su ubicación, así que cambiarlo le
+/// cambia el nombre. Un capture con el mismo nombre y otro contenido es una
+/// ubicación reescrita bajo una identidad ajena.
+#[test]
+fn verify_ref_rejects_a_modified_capture() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let viejo = rev(&root, &bref);
+
+    let cap = fs::read_dir(root.join(".bilink/capture")).unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+        .expect("hay captures").file_name().to_string_lossy().to_string();
+
+    fs::write(root.join(format!(".bilink/capture/{cap}")), "file: otra/cosa.md\n").unwrap();
+    let malo = commit_worktree_bilinks(&root, &bref, "accept 00000000-0000-4000-8000-000000000000.0");
+
+    let (out, ok) = verify(&root, &[&format!("{viejo}..{malo}")]);
+    assert!(!ok, "modificar un capture se rechaza:\n{out}");
+    assert!(out.contains("un capture no se modifica"), "y se dice por qué:\n{out}");
+}
+
+/// **Nadie aprueba en nombre de otro.** Es la fila que convierte `agree` de
+/// atribución en atestación, y no necesita traducir ningún nombre a ninguna clave:
+/// los dos extremos se comparan contra el mismo campo, el autor.
+#[test]
+fn verify_ref_rejects_adding_someone_else_to_agree() {
+    let (_t, root, uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let viejo = rev(&root, &bref);
+
+    // Pablo escribe `- ana` a mano, sobre el bilink del árbol.
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let texto = fs::read_to_string(&path).unwrap()
+        .replace("    accepted:\n      agree:\n      - t\n",
+                 "    accepted:\n      agree:\n      - ana\n      - t\n");
+    fs::write(&path, &texto).unwrap();
+    assert!(texto.contains("- ana"), "el fixture tiene que haber cambiado algo:\n{texto}");
+
+    as_person(&root, "pablo");
+    let malo = commit_worktree_bilinks(&root, &bref, &format!("accept {uuid}.0"));
+
+    let (out, ok) = verify(&root, &[&format!("{viejo}..{malo}")]);
+    assert!(!ok, "aprobar en nombre de otro se rechaza:\n{out}");
+    assert!(out.contains("- ana") && out.contains("pablo"),
+            "y se dice quién agregó a quién:\n{out}");
+}
+
+/// **La gramática no vuelve para atrás.** El prefijo anterior pasa una vez —o el
+/// primer push de un repo que cortó antes se rechazaría entero— y esa puerta se
+/// cierra con una regla de orden.
+#[test]
+fn the_prefix_before_the_grammar_passes_once_and_cannot_come_back() {
+    let (_t, root, uuid, x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+
+    // Una ref como la de un repo que cortó antes de que la gramática existiera: su
+    // historia entera es de la forma vieja, y el primer push la empuja completa.
+    let corte = {
+        let tree = rev(&root, &format!("{bref}^{{tree}}"));
+        let sha = git_out(&root, &["commit-tree", &tree, "-p", &x, "-m", "corte 005"]);
+        sha.trim().to_string()
+    };
+    git(&root, &["update-ref", &bref, &corte]);
+    let viejo_estilo = pre_grammar_commit(&root, &bref, &uuid, "accept .: 9 endpoint(s)");
+    let (out, ok) = verify(&root, &[&bref]);
+    assert!(ok, "el prefijo anterior a la gramática no se rechaza:\n{out}");
+    assert!(out.contains("anteriores a la gramática"), "y se dice:\n{out}");
+
+    // Ahora uno **con** la gramática, y encima otro sin ella: eso ya no es historia
+    // vieja, es alguien esquivando la verificación.
+    let con_gramatica = commit_worktree_bilinks(
+        &root, &bref, &format!("accept {uuid}.0"));
+    let vuelta = pre_grammar_commit(&root, &bref, &uuid, "accept .: otra vez sin trailer");
+
+    let (out, ok) = verify(&root, &[&format!("{viejo_estilo}..{vuelta}")]);
+    let _ = con_gramatica;
+    assert!(!ok, "volver a la forma vieja encima de la nueva se rechaza:\n{out}");
+    assert!(out.contains("no vuelve para atrás"), "y se dice por qué:\n{out}");
+}
+
+/// La firma es lo que ata el commit a una persona. Sin una clave de la allowlist, no
+/// entra.
+#[test]
+fn verify_ref_rejects_a_commit_signed_by_a_key_outside_the_allowlist() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let bref = format!("refs/bilink/{}", branch_of(&root));
+    let viejo = rev(&root, &bref);
+
+    // Una clave, y una allowlist que la tiene.
+    let key = root.join("id_ed25519");
+    let kg = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@t", "-f"])
+        .arg(&key).status();
+    if !matches!(kg, Ok(st) if st.success()) {
+        eprintln!("sin ssh-keygen: se saltea");
+        return;
+    }
+    let pubkey = fs::read_to_string(root.join("id_ed25519.pub")).unwrap();
+    let allow = root.join("allowed_signers");
+    fs::write(&allow, format!("t@t {}", pubkey.trim())).unwrap();
+
+    // Un commit firmado con esa clave verifica.
+    git(&root, &["config", "gpg.format", "ssh"]);
+    git(&root, &["config", "user.signingkey", &key.display().to_string()]);
+    fs::write(root.join("src/Service.java"),
+              "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
+    commit(&root, "el fragmento cambia");
+    run_in(&root, &["check", "."]);
+    git(&root, &["config", "commit.gpgsign", "true"]);
+    run_in(&root, &["accept", "."]);
+    git(&root, &["config", "commit.gpgsign", "false"]);
+
+    let firmado = rev(&root, &bref);
+    let (out, ok) = verify(&root, &[&format!("{viejo}..{firmado}"),
+                                    "--signers", &allow.display().to_string()]);
+    assert!(ok, "un commit firmado por una clave de la allowlist entra:\n{out}");
+    assert!(out.contains("firmados"), "y se dice que se verificó:\n{out}");
+
+    // Y uno sin firma, no.
+    fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
+    commit(&root, "la spec cambia");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    let (out, ok) = verify(&root, &[&format!("{firmado}..{}", rev(&root, &bref)),
+                                    "--signers", &allow.display().to_string()]);
+    assert!(!ok, "sin firma no entra:\n{out}");
+    assert!(out.contains("sin firma de la allowlist"), "y se dice por qué:\n{out}");
+}
+
+/// El hook lee `<viejo> <nuevo> <ref>` y **ignora lo que no es de la ref**: no opina
+/// sobre las ramas del proyecto.
+#[test]
+fn the_hook_ignores_refs_that_are_not_bilink() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let main = branch_of(&root);
+    let tip = rev(&root, "HEAD");
+    let ceros = "0".repeat(40);
+
+    let (out, ok) = pre_receive(&root, &format!("{tip} {ceros} refs/heads/{main}"));
+    assert!(ok, "un delete de una rama del proyecto no es asunto de este hook:\n{out}");
+}
+
+// ─── helpers de `1g` ───────────────────────────────────────────────────────
+
+/// Corre `verify-ref --stdin` con las líneas dadas, como haría un `pre-receive`.
+fn pre_receive(root: &Path, lines: &str) -> (String, bool) {
+    use std::io::Write;
+    let mut child = std::process::Command::new(bilinker())
+        .current_dir(root)
+        .args(["verify-ref", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("verify-ref");
+    child.stdin.as_mut().unwrap().write_all(lines.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
+        out.status.success(),
+    )
+}
+
+/// Un commit sobre la ref escrito a mano, para poder fabricar las formas que
+/// bilinker no escribe. `absorbe` le agrega el tip del proyecto como segundo padre.
+fn handmade_commit(root: &Path, bref: &str, uuid: &str, absorbe: bool, msg: &str) -> String {
+    let tip = rev(root, bref);
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let texto = format!("{}# a mano\n", fs::read_to_string(&path).unwrap());
+    fs::write(&path, texto).unwrap();
+    let sha = commit_worktree_bilinks(root, bref, msg);
+    if !absorbe {
+        return sha;
+    }
+    // El mismo árbol, con el commit del proyecto de segundo padre.
+    let tree = rev(root, &format!("{sha}^{{tree}}"));
+    let proyecto = rev(root, "HEAD");
+    let msg = format!("{msg}\n\nBilinker-Version: {}", bilinker::refmsg::VERSION);
+    let con_dos = git_out(root, &["commit-tree", &tree, "-p", &tip, "-p", &proyecto, "-m", &msg]);
+    let con_dos = con_dos.trim().to_string();
+    git(root, &["update-ref", bref, &con_dos]);
+    con_dos
+}
+
+/// Un commit **sin** `Bilinker-Version`, o sea con la forma que escribía el código
+/// anterior a `1f`. Es lo que un repo que cortó antes tiene en su historia.
+fn pre_grammar_commit(root: &Path, bref: &str, uuid: &str, msg: &str) -> String {
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let texto = format!("{}# a mano\n", fs::read_to_string(&path).unwrap());
+    fs::write(&path, texto).unwrap();
+    commit_bilinks(root, bref, msg, false)
+}
+
+/// Un commit de un padre sobre la ref con el `.bilink/` del árbol de trabajo, sin
+/// pasar por bilinker. Es lo que permite fabricar un commit inválido.
+fn commit_worktree_bilinks(root: &Path, bref: &str, msg: &str) -> String {
+    // Con el trailer: sin él, el commit cae en "anterior a la gramática" y nunca se
+    // llega a la verificación que el test quiere ejercer.
+    commit_bilinks(root, bref, msg, true)
+}
+
+/// El commit, con o sin el trailer de la gramática. El árbol sale del `.bilink/` del
+/// árbol de trabajo, así que el `head` sigue correspondiendo y la guarda no salta.
+fn commit_bilinks(root: &Path, bref: &str, msg: &str, con_gramatica: bool) -> String {
+    let msg = &if con_gramatica {
+        format!("{msg}\n\nBilinker-Version: {}", bilinker::refmsg::VERSION)
+    } else {
+        msg.to_string()
+    };
+    let tip = rev(root, bref);
+    let index = root.join(".git/handmade-index");
+    let _ = fs::remove_file(&index);
+    let g = |args: &[&str]| -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(root)
+            .env("GIT_INDEX_FILE", &index)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    g(&["read-tree", &tip]);
+    for entry in walk_bilinks(root) {
+        g(&["add", "-f", "--", &entry]);
+    }
+    let tree = g(&["write-tree"]);
+    let sha = git_out(root, &["commit-tree", &tree, "-p", &tip, "-m", msg]);
+    let sha = sha.trim().to_string();
+    git(root, &["update-ref", bref, &sha]);
+    // El `head` sigue al commit, o la guarda de materialización saltaría después.
+    fs::write(root.join(".bilink/head"),
+              format!("branch {}\ncommit {sha}\n", branch_of(root))).unwrap();
+    sha
+}
+
+/// Los archivos de `.bilink/` que se commitean — sin `cache/`, `index/` ni `head`.
+fn walk_bilinks(root: &Path) -> Vec<String> {
+    fn rec(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().to_string();
+            if ["cache", "index", "head"].iter().any(|d| rel.starts_with(&format!(".bilink/{d}"))) {
+                continue;
+            }
+            if p.is_dir() { rec(&p, base, out) } else { out.push(rel) }
+        }
+    }
+    let mut out = Vec::new();
+    rec(&root.join(".bilink"), root, &mut out);
+    out.sort();
+    out
 }
 
 // ─── task `1n`: quiénes aprobaron ──────────────────────────────────────────

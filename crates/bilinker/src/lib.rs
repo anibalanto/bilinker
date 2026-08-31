@@ -6,6 +6,9 @@
 //! diciendo `bilinker::link` y `bilinker::bilink`.
 pub use bilink_format::{bilink, link, VERSION as FORMAT_VERSION};
 
+/// El tipo del archivo de bilink, para quien lo lee de un árbol de git.
+pub use bilink_format::BiLink as BiLinkFile;
+
 pub mod accept;
 pub mod adopt;
 pub mod apply;
@@ -20,9 +23,11 @@ pub mod get;
 pub mod git;
 pub mod grammar;
 pub mod hash;
+pub mod history;
 pub mod index;
 pub mod init;
 pub mod issue;
+pub mod pull;
 pub mod push;
 pub mod query;
 pub mod refmsg;
@@ -30,3 +35,4 @@ pub mod review;
 pub mod state;
 pub mod sync;
 pub mod track;
+pub mod verify;

@@ -140,7 +140,7 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
 ///
 /// La fila que **no** existe es la que hace a `adopt` asimétrico: un campo que sólo
 /// yo cambié se queda como está, y no viaja para el otro lado.
-fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -> Result<Vec<Change>> {
+pub(crate) fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -> Result<Vec<Change>> {
     let base_bl = base.map(|b| read_bilinks(repo, b)).transpose()?.unwrap_or_default();
     let mine_bl = read_bilinks(repo, mine)?;
     let theirs_bl = read_bilinks(repo, theirs)?;
@@ -229,7 +229,7 @@ fn agree_to_bring(mine: Option<&Accepted>, theirs: Option<&Accepted>) -> Option<
 
 /// Escribe los campos que entran limpios, tomando el `accepted` entero del vecino
 /// para ese endpoint: las dos dimensiones que cambiaron llegan juntas y coherentes.
-fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Result<()> {
+pub(crate) fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Result<()> {
     let theirs_bl = read_bilinks(repo, theirs)?;
     let mut touched: BTreeMap<&String, Vec<u8>> = BTreeMap::new();
     for c in changes.iter().filter(|c| c.row == Row::Clean) {

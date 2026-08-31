@@ -27,6 +27,27 @@ pub struct PushReport {
     pub moved:  bool,
 }
 
+/// A qué remoto se le habla.
+///
+/// Con uno solo, ése. Con varios gana `origin`; si no está, se pide elegir —
+/// adivinar sería adivinar **con quién** sincronizás, que es la clase de cosa que no
+/// se adivina. Lo comparten `push` y [`pull`](crate::pull), que hablan con el mismo.
+pub fn pick_remote(repo: &Repo, remote: Option<&str>) -> Result<String> {
+    if let Some(r) = remote {
+        return Ok(r.to_string());
+    }
+    match crate::config::remotes(&repo.root)?.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => bail!("el repo no tiene ningún remoto"),
+        many if many.iter().any(|r| r == "origin") => Ok("origin".to_string()),
+        many => bail!(
+            "hay más de un remoto ({}) y ninguno es `origin`.\n  \
+             Elegir con `--remote <nombre>`.",
+            many.join(", ")
+        ),
+    }
+}
+
 /// Empuja `refs/bilink/<branch>` al remoto.
 ///
 /// Sin rama, la actual. El push es **siempre fast-forward** porque la ref es
@@ -41,28 +62,7 @@ pub fn push(dir: &Path, branch: Option<&str>, remote: Option<&str>) -> Result<Pu
     };
     let tip = repo.require_ref_tip(&branch)?;
 
-    let remotes = crate::config::remotes(&repo.root)?;
-    let remote = match remote {
-        Some(r) => r.to_string(),
-        None => match remotes.as_slice() {
-            [one] => one.clone(),
-            [] => bail!("el repo no tiene ningún remoto: no hay dónde publicar"),
-            many => {
-                // Con varios remotos, elegir por nosotros sería adivinar a quién le
-                // publicás.
-                if many.iter().any(|r| r == "origin") {
-                    "origin".to_string()
-                } else {
-                    bail!(
-                        "hay más de un remoto ({}) y ninguno es `origin`.\n  \
-                         Elegir con `bilinker push --remote <nombre>`.",
-                        many.join(", ")
-                    )
-                }
-            }
-        },
-    };
-
+    let remote = pick_remote(&repo, remote)?;
     let refname = Repo::ref_name(&branch);
     let before = remote_tip(&repo, &remote, &refname);
 

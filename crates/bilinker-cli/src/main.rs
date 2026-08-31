@@ -165,6 +165,46 @@ enum Command {
         remote: Option<String>,
     },
 
+    /// Qué le pasó a un bilink: quién aceptó qué, cuándo y contra qué código
+    ///
+    /// Los demás comandos miran el presente; éste mira la ref, que es donde vive el
+    /// registro de decisiones. No escribe nada: arma una vista.
+    History {
+        /// <uuid> o <uuid>.<N>
+        target: String,
+        /// json, para un consumidor que no es una persona
+        #[arg(long)]
+        format: Option<String>,
+    },
+
+    /// Trae lo que otro aceptó en la misma rama, y lo une con lo tuyo
+    ///
+    /// Es el caso 3.b: los dos lados cuelgan de la misma absorción, así que el
+    /// árbol de código no se elige. `adopt` es para otra rama.
+    Pull {
+        /// De cuál traer. Default: el único que haya, u `origin`
+        remote: Option<String>,
+        /// Muestra qué entraría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Verifica que una refs/bilink/* tenga la forma que promete
+    ///
+    /// La misma verificación del lado del servidor —donde rechaza un push— y del
+    /// lado del que recibe una ref ajena. No resuelve ninguna query y no escribe
+    /// nada: es lo único que un hook puede correr sin efectos.
+    VerifyRef {
+        /// <viejo>..<nuevo>, o una ref. Default: la ref de la rama actual
+        range: Option<String>,
+        /// El allowed_signers de ssh. Sin él, la firma no se verifica y se dice
+        #[arg(long)]
+        signers: Option<std::path::PathBuf>,
+        /// Lee "<viejo> <nuevo> <ref>" por línea: el protocolo de un pre-receive
+        #[arg(long)]
+        stdin: bool,
+    },
+
     /// Crea refs/bilink/<branch> para una rama que no la tiene
     ///
     /// Hereda los bilinks del commit de otra ref cuyo commit absorbido siga siendo
@@ -450,7 +490,15 @@ fn main() -> anyhow::Result<()> {
 
     // `init` se configura a sí mismo; `migrate` corre en repos que todavía no
     // cortaron y no puede exigir una ref que no existe.
-    if !matches!(cli.command, Command::Init { .. } | Command::Migrate { .. }) {
+    //
+    // Y `verify-ref` **no toca el árbol de trabajo**: verifica una ref, que puede ser
+    // ajena, de otra rama, o la que un push está proponiendo. Materializar antes
+    // sería escribir —lo único que un hook no puede hacer— y además fallaría justo
+    // donde más se lo necesita: sobre una ref que no corresponde a este árbol.
+    if !matches!(
+        cli.command,
+        Command::Init { .. } | Command::Migrate { .. } | Command::VerifyRef { .. }
+    ) {
         match bilinker::init::prelude(&cwd)? {
             bilinker::init::Materialization::Rematerialized { from, to } => {
                 eprintln!("materializado: {} → refs/bilink/… @ {}",
@@ -1047,8 +1095,50 @@ Eliminar? [y/N] ");
             print_sync(bilinker::sync::sync(&cwd, dry_run)?, dry_run);
         }
 
+        Command::VerifyRef { range, signers, stdin } => {
+            use bilinker::verify;
+            let signers = signers.as_deref();
+
+            let objetivos: Vec<(String, Option<String>, String)> = if stdin {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                verify::parse_stdin(&buf)
+                    .into_iter()
+                    .map(|(o, n, r)| (r, Some(o), n))
+                    .collect()
+            } else {
+                vec![verify::target(&cwd, range.as_deref())?]
+            };
+
+            let mut rechazos = 0usize;
+            for (refname, old, new) in objetivos {
+                let r = verify::verify(&cwd, &refname, old.as_deref(), &new, signers)?;
+                print_verify(&r);
+                rechazos += r.rejected();
+            }
+            if rechazos > 0 {
+                std::process::exit(1);
+            }
+        }
+
         Command::Push { branch, remote } => {
-            let r = bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref())?;
+            let r = match bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref()) {
+                Ok(r) => r,
+                Err(e) => {
+                    // **Un non-fast-forward tiene dos causas**, y confundirlas manda
+                    // a mirar un incidente donde no hubo ninguno. `git merge-base`
+                    // las separa, así que no hace falta adivinar.
+                    let elegido = bilinker::push::pick_remote(
+                        &bilinker::bilink_ref::Repo::open(&cwd)?, remote.as_deref());
+                    if let Ok(rem) = elegido {
+                        if let Ok(diag) = bilinker::pull::diagnose_rejection(&cwd, &rem) {
+                            eprintln!("error: {diag}");
+                            std::process::exit(1);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
             if r.moved {
                 println!("publicado: refs/bilink/{} @ {} → {}",
                          r.branch, short(&r.tip), r.remote);
@@ -1071,6 +1161,22 @@ Eliminar? [y/N] ");
                     r.branch, short(&r.sha), r.files
                 ),
             }
+        }
+
+        Command::History { target, format } => {
+            let (uuid, n) = bilinker::history::parse_target(&target)?;
+            let h = bilinker::history::history(&cwd, &uuid, n)?;
+            if format.as_deref() == Some("json") {
+                println!("{}", serde_json::to_string_pretty(&h)?);
+            } else {
+                print_history(&h);
+            }
+        }
+
+        Command::Pull { remote, dry_run } => {
+            let r = bilinker::pull::pull(&cwd, remote.as_deref(), dry_run)?;
+            print_pull(&r, dry_run);
+            if r.conflicts() > 0 { std::process::exit(1); }
         }
 
         Command::Adopt { branch, dry_run } => {
@@ -1594,6 +1700,138 @@ fn print_accept_result(r: &bilinker::accept::AcceptResult) {
     if !r.wrote {
         println!("        ya estabas en el set y los valores no se movieron — nada que agregar");
     }
+}
+
+/// La historia de un bilink.
+///
+/// **Lo que no se sabe se dice.** Un acto anterior a la gramática no tiene comando
+/// que leer, y ponerle uno derivado del texto libre sería fabricar precisión.
+fn print_history(h: &bilinker::history::History) {
+    println!("{}  {}", h.uuid, h.path);
+    if !h.from_ref {
+        println!("sin ref: la historia sale de la rama, y no incluye los actos que la \
+                  ref registraría");
+    }
+    if h.deeds.is_empty() {
+        println!("\nsin actos");
+        return;
+    }
+
+    for d in &h.deeds {
+        let comando = d.command.as_deref().unwrap_or("(anterior a la gramática)");
+        println!("\n  {}  {:<8} {:<11}  {:<15}  {comando}",
+                 short(&d.commit), d.author, &d.date[..10.min(d.date.len())], d.kind);
+        if let Some(a) = &d.against {
+            println!("           contra {}", short(a));
+        }
+        for c in &d.changes {
+            println!("           .{}  {:<14} {} → {}", c.n, c.field,
+                     abbrev(c.before.as_deref()), abbrev(c.after.as_deref()));
+            for cap in &c.captures {
+                // La query se aplana: es multilínea en el archivo, y acá cada acto
+                // tiene que caber en su renglón para que el orden se lea.
+                let q = cap.query.as_deref().map(one_line);
+                println!("               {}  {}  {}", &cap.id[..8.min(cap.id.len())],
+                         cap.file, q.as_deref().unwrap_or("(archivo entero)"));
+            }
+        }
+    }
+}
+
+/// Una query en un renglón, recortada.
+fn one_line(q: &str) -> String {
+    let plano = q.split_whitespace().collect::<Vec<_>>().join(" ");
+    if plano.len() > 60 { format!("{}…", &plano[..60]) } else { plano }
+}
+
+/// Un valor de la historia, acortado si es un hash. `—` para lo que no estaba.
+fn abbrev(v: Option<&str>) -> String {
+    match v {
+        None => "—".to_string(),
+        Some(s) if s.len() > 20 && s.chars().all(|c| c.is_ascii_hexdigit()) =>
+            format!("{}…", &s[..8]),
+        Some(s) if s.len() > 40 => format!("{}…", &s[..40]),
+        Some(s) => s.to_string(),
+    }
+}
+
+/// El informe de `pull`.
+fn print_pull(r: &bilinker::pull::PullResult, dry_run: bool) {
+    use bilinker::adopt::Row;
+
+    if r.up_to_date {
+        println!("refs/bilink/{} ya tiene lo de {} — nada que traer", r.branch, r.remote);
+        return;
+    }
+    if r.fast_forward {
+        println!("refs/bilink/{} avanzó a {} — no hubo nada que unir",
+                 r.branch, short(r.sha.as_deref().unwrap_or("")));
+        return;
+    }
+
+    match &r.base {
+        Some(b) => println!("base {} · aceptaciones de {} en {}..\n",
+                            short(b), r.remote, short(b)),
+        None => println!("sin base de merge con {} — toda diferencia es conflicto\n", r.remote),
+    }
+
+    for (row, label) in [(Row::Clean, "entra limpio"), (Row::Converged, "ya coincidía"),
+                         (Row::Conflict, "conflicto   ")] {
+        for c in r.changes.iter().filter(|c| c.row == row) {
+            println!("  {label}  {}.{}  {}", &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension);
+            if row == Row::Conflict {
+                println!("                  acá:   {}", c.mine.as_deref().unwrap_or("—"));
+                println!("                  allá:  {}", c.theirs.as_deref().unwrap_or("—"));
+            }
+        }
+    }
+
+    if r.conflicts() > 0 {
+        let primero = r.changes.iter().find(|c| c.row == Row::Conflict).expect("hay uno");
+        println!("\nno se escribió nada. Resolver aceptando uno de los dos: \
+                  `bilinker accept {}.{}`",
+                 &primero.uuid[..8.min(primero.uuid.len())], primero.n);
+        return;
+    }
+    if dry_run {
+        println!("\ndry-run: no se escribió nada");
+        return;
+    }
+    match &r.sha {
+        Some(sha) => println!("\ncommit:  refs/bilink/{} @ {}   ({} endpoint(s))",
+                              r.branch, short(sha), r.brought()),
+        None => println!("\nnada que traer"),
+    }
+}
+
+/// El informe de `verify-ref`.
+///
+/// **Lo que no se verificó se dice.** Confundir "verifiqué y está bien" con "no
+/// verifiqué" sería el peor resultado posible de una herramienta de verificación.
+fn print_verify(r: &bilinker::verify::Report) {
+    println!("{}  {} commit(s)\n", r.refname, r.verdicts.len());
+
+    let rechazados = r.rejected();
+    if rechazados == 0 {
+        let previos = r.pre_grammar();
+        let firmados = if r.signatures_checked { ", firmados" } else { "" };
+        println!("  ✓  {:>3}  con la gramática{firmados}", r.verdicts.len() - previos);
+        if previos > 0 {
+            println!("  ·  {previos:>3}  anteriores a la gramática — forma no verificada");
+        }
+        if !r.signatures_checked {
+            println!("\nsin allowlist: la firma no se verificó");
+        }
+        println!("\nok");
+        return;
+    }
+
+    for v in r.verdicts.iter().filter(|v| !v.faults.is_empty()) {
+        for f in &v.faults {
+            println!("  ✗  {}  {f}", short(&v.commit));
+        }
+    }
+    println!("\n{rechazados} de {} rechazados", r.verdicts.len());
 }
 
 /// El estado de la capa, agrupado por archivo.
