@@ -145,14 +145,24 @@ enum Command {
     /// Alinea refs/bilink/<branch> con la rama del proyecto, absorbiéndola
     ///
     /// Cubre el caso en que el proyecto avanzó y nadie aceptó nada. No verifica
-    /// nada: no corre tree-sitter, no resuelve captures y no escribe la cache.
+    /// nada: no corre tree-sitter, no resuelve captures y no escribe la cache. Y no
+    /// publica: para eso está `bilinker push`.
     Sync {
         /// Mostrar qué haría sin escribir nada
         #[arg(long)]
         dry_run: bool,
-        /// Empujar refs/bilink/<branch> al remoto después de commitear
+    },
+
+    /// Publica refs/bilink/<branch> en el remoto
+    ///
+    /// `git push` a secas no la empuja —está fuera de refs/heads/— y el refspec lo
+    /// arma bilinker: ninguna interacción con refs/bilink/* se hace tipeando git.
+    Push {
+        /// Rama cuya ref publicar. Default: la rama actual
+        branch: Option<String>,
+        /// Remoto al cual publicar. Default: el único, u `origin`
         #[arg(long)]
-        push: bool,
+        remote: Option<String>,
     },
 
     /// Crea refs/bilink/<branch> para una rama que no la tiene
@@ -1017,8 +1027,19 @@ Eliminar? [y/N] ");
             print_init(bilinker::init::init(&cwd, dry_run)?, dry_run);
         }
 
-        Command::Sync { dry_run, push } => {
-            print_sync(bilinker::sync::sync(&cwd, dry_run, push)?, dry_run);
+        Command::Sync { dry_run } => {
+            print_sync(bilinker::sync::sync(&cwd, dry_run)?, dry_run);
+        }
+
+        Command::Push { branch, remote } => {
+            let r = bilinker::push::push(&cwd, branch.as_deref(), remote.as_deref())?;
+            if r.moved {
+                println!("publicado: refs/bilink/{} @ {} → {}",
+                         r.branch, short(&r.tip), r.remote);
+            } else {
+                println!("refs/bilink/{} ya estaba en {} @ {}",
+                         r.branch, r.remote, short(&r.tip));
+            }
         }
 
         Command::Track { branch, from } => {
@@ -1210,9 +1231,6 @@ fn print_sync(r: bilinker::sync::SyncResult, dry_run: bool) {
             }
         }
         (None, _) => println!("commit:   refs/bilink/{}  {} → {}", r.branch, short(&r.from), short(&r.to)),
-    }
-    if r.pushed {
-        println!("push:     refs/bilink/{} → origin", r.branch);
     }
     if dry_run {
         println!("\ndry-run: no se escribió nada");

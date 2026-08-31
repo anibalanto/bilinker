@@ -103,7 +103,7 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
     }
 
     // `●b` — absorber el tip. No hay que pedirla: escribir sobre la ref la exige.
-    let absorb = crate::sync::sync(dir, false, false)?;
+    let absorb = crate::sync::sync(dir, false)?;
 
     // Las decisiones del vecino, en el árbol de trabajo.
     apply_changes(&repo, &changes, &theirs)?;
