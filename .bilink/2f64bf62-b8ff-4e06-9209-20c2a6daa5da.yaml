@@ -4,4 +4,7 @@ endpoint:
     link: path <
   1:
     link: capture 5bcc1e095095f54d2fdf253c36400d8c
+    accepted:
+      link: capture 5bcc1e095095f54d2fdf253c36400d8c
+      hash: 69320f58a0bd1307af09ba152c39280086840fcbee2f78ec5e486c25751fd0f3
     name: el-parser
