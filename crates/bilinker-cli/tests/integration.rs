@@ -2860,3 +2860,67 @@ fn the_frontier_is_additive_and_needs_no_migration() {
                "ningún archivo existente usa los tipos nuevos: no hay qué migrar");
     let _ = uuid;
 }
+
+/// El clon de un proveedor **no entra al commit de la ref**, y no por suerte.
+///
+/// Vive en `.bilink/<alias>/` y es otro repo entero: se trae, se descarta y se
+/// vuelve a traer, y su procedencia es su propio remoto. Lo que lo deja afuera es la
+/// enumeración que construye el árbol —la misma frontera de repo que frena el
+/// recorrido de capas— y **no una línea en ningún `.gitignore`**: la exclusión del
+/// lado del proyecto ya la puso `init` en `.git/info/exclude`, una vez y por clon.
+#[test]
+fn a_provider_clone_never_enters_the_ref() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+    consume(&consumer, &uuid);
+    run_in(&consumer, &["check", "."]);
+    run_in(&consumer, &["accept", "."]);
+
+    // El consumidor corta a la ref con el clon del proveedor ya en el árbol.
+    git_commit_all(&consumer, "los bilinks, todavía en la rama");
+    let (out, err, ok) = corte(&consumer);
+    assert!(ok, "el corte falló:\n{out}\n{err}");
+
+    let bref = format!("refs/bilink/{}", branch_of(&consumer));
+    let files = git_out(&consumer, &["ls-tree", "-r", "--name-only", &bref]);
+
+    assert!(!files.lines().any(|f| f.starts_with(".bilink/hsi/")),
+            "el clon del proveedor no es contenido de esta capa:\n{files}");
+    assert!(files.contains(".bilink/.hsi.toml"),
+            "pero su declaración sí: es de quien la escribe:\n{files}");
+    assert!(files.contains(&format!(".bilink/{uuid}.yaml")),
+            "y los bilinks propios también:\n{files}");
+
+    // Y el clon sigue en el árbol de trabajo, donde `check` lo necesita.
+    assert!(consumer.join(".bilink/hsi/.bilink").is_dir(),
+            "no se commitea, pero no se borra");
+}
+
+/// `bilinker fetch` **no toca ningún `.gitignore`.**
+///
+/// La exclusión de `.bilink/` del lado del proyecto la puso `init` una sola vez, y
+/// la del commit de la ref es la enumeración. Escribir el alias en un archivo
+/// versionado sería una escritura de contenido para resolver algo que es del índice.
+#[test]
+fn fetch_writes_no_ignore_rules() {
+    let (_t, _p, consumer, uuid) = provider_and_consumer();
+
+    consume(&consumer, &uuid);
+    let rule = fs::read_to_string(consumer.join(".bilink/.gitignore")).unwrap_or_default();
+
+    // La regla que sí está es la de siempre —`cache/` e `index/`— y la escribió
+    // quien creó la capa, no el fetch.
+    assert!(!rule.contains("hsi"), "el alias no aparece en ninguna regla:\n{rule}");
+
+    // Ni en el `.gitignore` del proyecto, que nadie toca nunca.
+    assert!(!consumer.join(".gitignore").exists()
+            || !fs::read_to_string(consumer.join(".gitignore")).unwrap().contains("hsi"),
+            "el .gitignore del proyecto está versionado: tocarlo cambiaría su rama");
+
+    // Y la exclusión que de verdad rige del lado del proyecto la pone `init`, una
+    // sola vez y por clon — no `fetch`, y no una regla por alias.
+    let (_, stderr, ok) = run_in(&consumer, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+    let exclude = fs::read_to_string(consumer.join(".git/info/exclude")).unwrap_or_default();
+    assert!(exclude.contains(".bilink/"),
+            "un solo patrón cubre el directorio entero, clones incluidos:\n{exclude}");
+}
