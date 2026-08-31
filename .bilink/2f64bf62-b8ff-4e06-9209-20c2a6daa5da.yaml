@@ -1,0 +1,7 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 5bcc1e095095f54d2fdf253c36400d8c
+    name: el-parser
