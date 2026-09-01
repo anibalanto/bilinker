@@ -312,11 +312,153 @@ fn an_unknown_mode_lists_the_ones_that_exist() {
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new", "--yes",
         "--tip", "docs/spec.md:1:1",
-        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+        "--as.1", "django-view", "--tip", "src/Service.java:6:5",
     ]);
     assert!(!ok);
-    assert!(stderr.contains("no hay un modo `spring-controller`"), "{stderr}");
+    assert!(stderr.contains("no hay un modo `django-view`"), "{stderr}");
     assert!(stderr.contains("interface"), "{stderr}");
+    assert!(stderr.contains("spring-controller"), "{stderr}");
+}
+
+/// `--as spring-controller` compone la ruta de dos anotaciones y deja el cuerpo afuera.
+#[test]
+fn as_spring_controller_composes_the_route_from_two_annotations() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("4 fragmentos"), "cuatro partes de una sola posición:\n{stderr}");
+
+    let cap = capture_file_of(&root);
+    assert_eq!(cap.matches("@target").count(), 4, "{cap}");
+    assert!(cap.contains(r#"(#eq? @n0 "RequestMapping")"#), "el prefijo de la clase:\n{cap}");
+    assert!(cap.contains(r#"(#eq? @n1 "GetMapping")"#),     "la ruta del método:\n{cap}");
+    assert!(cap.contains(r#"/permissions/from-token"#),     "el ancla es la ruta:\n{cap}");
+    assert!(!cap.contains("getPermissions"),
+            "el nombre del método no ancla ni se captura:\n{cap}");
+    assert!(!cap.contains("(block)"), "el cuerpo no entra:\n{cap}");
+}
+
+/// El contrato es la ruta y la forma: renombrar el método no es un cambio, y el
+/// tipo de retorno sí.
+#[test]
+fn a_spring_endpoint_survives_a_rename_and_sees_the_shape() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "{stderr}");
+
+    let java = root.join("src/Service.java");
+    let edit = |from: &str, to: &str| {
+        let src = fs::read_to_string(&java).unwrap();
+        fs::write(&java, src.replace(from, to)).unwrap();
+    };
+
+    edit("getPermissions", "permisosDelToken");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "renombrar el método no cambia el contrato:\n{out}");
+
+    edit("svc.permissionsOf(token)", "svc.otra(token)");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "el cuerpo tampoco:\n{out}");
+
+    edit("List<PublicAuthorityDto>", "List<HSIRoleInfoDto>");
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "el tipo de retorno sí:\n{out}");
+}
+
+/// Cambiar el prefijo de ruta de la clase también, porque entra en el fragmento.
+#[test]
+fn a_spring_endpoint_sees_the_class_prefix() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "."]);
+
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "la ruta compuesta entra en el fragmento:\n{out}");
+}
+
+/// La detección sugiere y no elige: sin `--as`, el capture es el nodo entero.
+#[test]
+fn detection_suggests_and_does_not_choose() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("sugerencia: `--as.1 spring-controller`"), "{stderr}");
+
+    let cap = capture_file_of(&root);
+    assert_eq!(cap.matches("@target").count(), 1, "sin --as, el nodo entero:\n{cap}");
+    assert!(cap.contains("getPermissions"), "{cap}");
+}
+
+/// Un generador toma una posición: dos cosas señaladas son dos contratos.
+#[test]
+fn a_generator_takes_one_position() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(!ok, "{stderr}");
+    assert!(stderr.contains("toma una posición"), "{stderr}");
+}
+
+/// `--as spring-controller` sobre un método sin ruta dice qué falta.
+#[test]
+fn as_spring_controller_needs_a_route() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(!ok, "{stderr}");
+    assert!(stderr.contains("no tiene anotación de ruta"), "{stderr}");
+    assert!(stderr.contains("--as interface"), "el error dice qué probar:\n{stderr}");
+}
+
+/// El capture que deja un plugin es indistinguible de uno escrito a mano: sólo
+/// `file` y `query`, sin rastro de quién lo generó.
+#[test]
+fn a_generated_capture_leaves_no_trace() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let cap = capture_file_of(&root);
+    assert!(!cap.contains("spring"), "el capture no dice quién lo generó:\n{cap}");
+    assert!(!cap.contains("generator"), "{cap}");
+    let campos: Vec<&str> = cap.lines()
+        .filter(|l| !l.starts_with(' ') && l.contains(':'))
+        .map(|l| l.split(':').next().unwrap())
+        .collect();
+    assert_eq!(campos, vec!["file", "query"], "sólo los dos campos de siempre:\n{cap}");
 }
 
 /// Un workspace con tres métodos, para señalar dos y dejar uno afuera.

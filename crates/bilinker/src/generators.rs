@@ -1,0 +1,251 @@
+//! Los generadores de query que este binario conoce.
+//!
+//! Uno es del núcleo —[`Interface`], que sólo sabe de gramática— y el otro sabe de
+//! un framework —[`SpringController`]. Los dos se piden igual, `--as <nombre>`, y
+//! los dos **desaparecen**: lo que queda escrito es una query normal.
+//!
+//! Agregar otro framework es agregar otra `impl` acá. Ver
+//! [`CaptureGenerator`](crate::capture::CaptureGenerator).
+
+use anyhow::{bail, Result};
+use tree_sitter::Node;
+
+use crate::capture::{CaptureGenerator, GenCtx, Generated};
+use crate::grammar;
+use crate::query;
+
+// ─── interface: la firma sin el cuerpo ────────────────────────────────────────
+
+/// La firma: el nodo señalado **menos su cuerpo**.
+///
+/// Es lo único que se puede saber sin saber de ningún framework: la gramática nombra
+/// el campo del cuerpo, y la firma es todo lo demás.
+pub struct Interface;
+
+impl CaptureGenerator for Interface {
+    fn name(&self) -> &'static str { "interface" }
+
+    fn describe(&self) -> &'static str {
+        "la firma sin el cuerpo: el nodo menos su campo `body`"
+    }
+
+    /// Aplica donde haya un cuerpo que sacar. No aplica sobre un nodo que ya es sólo
+    /// firma: no habría nada que el modo agregue.
+    fn applies(&self, file: &str, _source: &str, node: Node) -> bool {
+        grammar::body_field(grammar::language_for_file(file))
+            .and_then(|f| node.child_by_field_name(f))
+            .is_some()
+    }
+
+    fn query<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Generated<'t>> {
+        let field = grammar::body_field(ctx.lang).ok_or_else(|| anyhow::anyhow!(
+            "`--as interface` no sabe qué es el cuerpo en {}.\n       \
+             Señalar las partes a mano, o agregar {} a la tabla.", ctx.lang, ctx.lang
+        ))?;
+
+        // Un nodo sin cuerpo se captura entero: si la gramática no le da campo
+        // `body` —la firma de un método en una interface de TypeScript— la firma
+        // *es* el nodo, y no hay nada que sacarle.
+        let targets: Vec<Node> = match node.child_by_field_name(field) {
+            None => vec![node],
+            Some(body) => {
+                let mut cursor = node.walk();
+                let parts: Vec<Node> = node.named_children(&mut cursor)
+                    .filter(|n| n.id() != body.id())
+                    .collect();
+                if parts.is_empty() {
+                    bail!(
+                        "el `{}` de la línea {} es todo cuerpo: no hay firma que capturar.",
+                        node.kind(), node.start_position().row + 1
+                    );
+                }
+                parts
+            }
+        };
+
+        Ok(Generated {
+            query: crate::capture::pattern_for(ctx, &[node], &targets),
+            targets,
+        })
+    }
+}
+
+// ─── spring-controller: el endpoint, no el método ─────────────────────────────
+
+/// Las anotaciones con que Spring marca la ruta de un método.
+const MAPPINGS: &[&str] = &[
+    "GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping",
+    "RequestMapping",
+];
+
+/// La anotación con que Spring marca el prefijo de ruta de una clase.
+const CLASS_MAPPING: &str = "RequestMapping";
+
+/// El contrato de un endpoint de Spring: la ruta compuesta y la forma que devuelve.
+///
+/// Señalás **el método** y salen cuatro fragmentos: el `@RequestMapping` de la
+/// clase, la anotación de ruta del método, el tipo de retorno y los parámetros.
+///
+/// **La ruta compuesta es el caso que no tenía salida.** Sale de dos anotaciones en
+/// nodos distintos, y el literal completo no aparece en ningún lado del archivo.
+///
+/// **El nombre del método no se captura.** Renombrarlo no cambia el contrato del
+/// endpoint; meterlo en el fragmento haría que un refactor interno disparara drift,
+/// que es lo que capturar la firma existe para dejar de hacer.
+pub struct SpringController;
+
+impl CaptureGenerator for SpringController {
+    fn name(&self) -> &'static str { "spring-controller" }
+
+    fn describe(&self) -> &'static str {
+        "el endpoint de Spring: la ruta compuesta, el tipo de retorno y los parámetros"
+    }
+
+    fn applies(&self, file: &str, source: &str, node: Node) -> bool {
+        grammar::language_for_file(file) == "java"
+            && node.kind() == "method_declaration"
+            && route_annotation(node, source).is_some()
+    }
+
+    fn query<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Generated<'t>> {
+        if ctx.lang != "java" {
+            bail!("`--as spring-controller` es de Java, y esto es {}.", ctx.lang);
+        }
+        if node.kind() != "method_declaration" {
+            bail!(
+                "`--as spring-controller` va sobre un método, y la posición señala un `{}`.",
+                node.kind()
+            );
+        }
+        let Some(route) = route_annotation(node, ctx.source) else {
+            bail!(
+                "el método de la línea {} no tiene anotación de ruta ({}).\n       \
+                 Sin ruta no hay endpoint que describir: probar `--as interface`.",
+                node.start_position().row + 1, MAPPINGS.join(", ")
+            );
+        };
+
+        let class = enclosing_class(node);
+        let class_mapping = class.and_then(|c| class_annotation(c, ctx.source));
+
+        // El tipo de retorno y los parámetros. El nombre queda afuera a propósito.
+        let mut targets: Vec<Node> = Vec::new();
+        if let Some(m) = class_mapping { targets.push(m); }
+        targets.push(route);
+        for field in ["type", "parameters"] {
+            if let Some(child) = node.child_by_field_name(field) { targets.push(child); }
+        }
+
+        // **El ancla es la ruta, no el nombre del método.** Un refactor renombra el
+        // método y no la ruta, y lo que el bilink describe es el contrato. Es el
+        // reverso de que una ruta compuesta no sirva de ancla: el pedazo que aporta
+        // el método sí existe como literal.
+        let query = spring_pattern(ctx, class, node, class_mapping, route);
+
+        Ok(Generated { query, targets })
+    }
+}
+
+/// La anotación de ruta de un método, si la tiene.
+fn route_annotation<'t>(node: Node<'t>, source: &str) -> Option<Node<'t>> {
+    annotation_named(node, MAPPINGS, source)
+}
+
+/// El `@RequestMapping` de la clase, si lo tiene.
+fn class_annotation<'t>(class: Node<'t>, source: &str) -> Option<Node<'t>> {
+    annotation_named(class, &[CLASS_MAPPING], source)
+}
+
+/// La primera anotación de `node` cuyo nombre esté en `names`.
+///
+/// Busca en el hijo `modifiers`, que es donde la gramática de Java cuelga las
+/// anotaciones — antes del nombre y del tipo, que es también por qué el orden de las
+/// partes de un patrón importa.
+fn annotation_named<'t>(node: Node<'t>, names: &[&str], source: &str) -> Option<Node<'t>> {
+    let mut c = node.walk();
+    let modifiers: Vec<Node> = node.children(&mut c)
+        .filter(|n| n.kind() == "modifiers")
+        .collect();
+    for m in modifiers {
+        let mut c2 = m.walk();
+        let found = m.children(&mut c2)
+            .filter(|n| matches!(n.kind(), "annotation" | "marker_annotation"))
+            .find(|n| n.child_by_field_name("name")
+                .map(|id| names.contains(&&source[id.byte_range()]))
+                .unwrap_or(false));
+        if found.is_some() { return found; }
+    }
+    None
+}
+
+fn enclosing_class<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "class_declaration" { return Some(n); }
+        cur = n.parent();
+    }
+    None
+}
+
+/// El patrón de un endpoint, anclado por el literal de su ruta.
+///
+/// Las capturas se numeran `@nK` de afuera hacia adentro, como las que escribe el
+/// núcleo: así el **último** predicado es el de la ruta, y es el que `recapture` y
+/// la búsqueda de anclas renombradas van a mirar. El ancla de un endpoint es su
+/// ruta, así que eso es exactamente lo que corresponde.
+fn spring_pattern(
+    ctx:           &GenCtx<'_>,
+    class:         Option<Node>,
+    method:        Node,
+    class_mapping: Option<Node>,
+    route:         Node,
+) -> String {
+    let source = ctx.source;
+    let esc = query::escape_query_string;
+    let mut k = 0usize;
+    let mut cap = || { let c = format!("@n{k}"); k += 1; c };
+
+    // La anotación de la clase: aporta el prefijo de la ruta.
+    let class_pat = class_mapping.map(|m| {
+        let c = cap();
+        let name = m.child_by_field_name("name")
+            .map(|n| &source[n.byte_range()]).unwrap_or(CLASS_MAPPING);
+        format!("(modifiers\n    ({kind}\n      name: (identifier) {c} (#eq? {c} \"{name}\")) @target)",
+                kind = m.kind(), name = esc(name))
+    });
+
+    // La anotación del método: aporta el resto de la ruta, y es el ancla.
+    let route_name = route.child_by_field_name("name")
+        .map(|n| &source[n.byte_range()]).unwrap_or("RequestMapping");
+    let cn = cap();
+    let route_pat = match route.child_by_field_name("arguments") {
+        Some(args) => {
+            let ca = cap();
+            let fields = format!(
+                "name: (identifier) {cn} (#eq? {cn} \"{name}\")\n          \
+                 arguments: ({akind}) {ca} (#eq? {ca} \"{lit}\")",
+                name  = esc(route_name),
+                akind = args.kind(),
+                lit   = esc(&source[args.byte_range()]));
+            format!("({kind}\n          {fields}) @target", kind = route.kind())
+        }
+        None => format!("({kind}\n          name: (identifier) {cn} (#eq? {cn} \"{name}\")) @target",
+                        kind = route.kind(), name = esc(route_name)),
+    };
+
+    let mut method_parts = vec![format!("(modifiers\n        {route_pat})")];
+    for field in ["type", "parameters"] {
+        if let Some(child) = method.child_by_field_name(field) {
+            method_parts.push(format!("{field}: ({}) @target", child.kind()));
+        }
+    }
+    let method_pat = format!("(method_declaration\n      {})", method_parts.join("\n      "));
+
+    match (class, class_pat) {
+        (Some(class), Some(cp)) => format!(
+            "({kind}\n  {cp}\n  body: (class_body\n    {method_pat}))", kind = class.kind()),
+        (Some(class), None) => format!(
+            "({kind}\n  body: (class_body\n    {method_pat}))", kind = class.kind()),
+        _ => method_pat,
+    }
+}
