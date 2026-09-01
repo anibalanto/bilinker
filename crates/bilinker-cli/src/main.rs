@@ -347,9 +347,9 @@ enum ChainCommand {
     ///
     /// Examples:
     ///   bilinker chain new --tip commands/capture.md --tip '>impl/crates/bilinker/src/capture.rs:16:1'
-    ///   bilinker chain new --tip spec/Foo.java --tip '>impl/src/Foo.java:42:5'
+    ///   bilinker chain new --tip spec/Foo.java --tip '>impl/src/Foo.java:42:5,58:5'
     New {
-        /// Tip: STRATUM_PATH[:LINE:COL]  (specify exactly twice)
+        /// Tip: STRATUM_PATH[:LINE:COL[,LINE:COL]...]  (specify exactly twice)
         #[arg(long = "tip", value_name = "REF", action = ArgAction::Append)]
         tip: Vec<String>,
         /// Intermediate layer (can repeat, order matters)
@@ -371,6 +371,12 @@ enum ChainCommand {
         /// El `name` del endpoint 1
         #[arg(long = "name.1", value_name = "ETIQUETA")]
         name1: Option<String>,
+        /// Muestra qué capturaría y no escribe nada
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// No pregunta: para scripts y para CI
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Show complete state of a chain
     Status { uuid: String },
@@ -411,29 +417,88 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 /// `Simple` token is the file; preceding tokens (`Down`, `Up`) are the layer.
 /// Returns `(layer_fs_path, endpoint)` where `layer_fs_path` is relative to
 /// the project root and is used both for bilink placement and as the git root.
-fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bilinker::link::LinkEndpoint)> {
-    use bilinker::link::LinkEndpoint;
+/// Lo que un `--tip` pide, resuelto y todavía **sin escribir**.
+///
+/// Separar el plan de la escritura es lo que hace posible la vista previa: un
+/// capture es opaco después de escrito, así que hay que poder mostrar qué agarró la
+/// query mientras todavía se puede no escribirla.
+struct TipPlan {
+    /// La capa, relativa a la raíz del proyecto.
+    layer_fs:   PathBuf,
+    /// La capa, absoluta.
+    layer_root: PathBuf,
+    kind:       TipKind,
+}
+
+enum TipKind {
+    /// La punta abierta del proveedor: no captura nada de este lado.
+    Abstract,
+    /// El archivo entero, sin query.
+    WholeFile { file: String },
+    /// N posiciones señaladas, ya resueltas a una query con N `@target`.
+    Fragment  { file: String, capture: bilinker::capture::CaptureResult },
+}
+
+impl TipPlan {
+    /// La vista de lo que este tip capturaría, si captura algo.
+    fn preview(&self) -> anyhow::Result<Option<(bilinker::preview::Preview, String)>> {
+        let TipKind::Fragment { file, capture } = &self.kind else { return Ok(None) };
+        let source = std::fs::read_to_string(self.layer_root.join(file))?;
+        let label  = format!("{} :: {}", self.layer_fs.display(), file);
+        Ok(Some((bilinker::preview::Preview::of(&label, &source, &capture.ranges), source)))
+    }
+
+    /// El mismo tip con otras posiciones — lo que devuelve una vista editada.
+    fn repoint(&self, lines: &[usize]) -> anyhow::Result<TipPlan> {
+        let TipKind::Fragment { file, .. } = &self.kind else {
+            anyhow::bail!("este tip no captura posiciones");
+        };
+        let sel: Vec<_> = lines.iter().map(|&l| ((l, 1), (l, 1))).collect();
+        let capture = bilinker::capture::capture_many(&self.layer_root, file, &sel)?;
+        Ok(TipPlan {
+            layer_fs:   self.layer_fs.clone(),
+            layer_root: self.layer_root.clone(),
+            kind:       TipKind::Fragment { file: file.clone(), capture },
+        })
+    }
+
+    /// Escribe el capture y devuelve el endpoint que lo referencia.
+    fn write(&self) -> anyhow::Result<bilinker::link::LinkEndpoint> {
+        use bilinker::link::LinkEndpoint;
+        Ok(match &self.kind {
+            TipKind::Abstract => LinkEndpoint::Abstract,
+            TipKind::WholeFile { file } => {
+                let (uuid, _, _) = bilinker::capture::capture_file_whole(&self.layer_root, file)?;
+                LinkEndpoint::Capture(uuid)
+            }
+            TipKind::Fragment { capture, .. } => {
+                let (uuid, _, _) = capture.capture.write_in(&self.layer_root)?;
+                LinkEndpoint::Capture(uuid)
+            }
+        })
+    }
+}
+
+/// Un tip: `abstract`, o un path Stratum con cero o más posiciones.
+///
+/// Las posiciones extra van separadas por coma después de la primera —
+/// `Foo.java:8:1,15:5` — y cada una resuelve a su nodo. De todas sale **una** query
+/// con un `@target` por nodo: el patrón único es lo que las ancla entre sí.
+fn plan_tip(root: &Path, tip_str: &str) -> anyhow::Result<TipPlan> {
     use stratum::PathToken;
 
     // `abstract` es un tip, no un path: la punta que publica el proveedor. Vive en
     // la capa actual —el bilink es suyo— y no captura nada, porque no hay fragmento
     // de este lado que aprobar.
     if tip_str.trim() == "abstract" {
-        return Ok((PathBuf::from("."), LinkEndpoint::Abstract));
+        return Ok(TipPlan {
+            layer_fs:   PathBuf::from("."),
+            layer_root: root.to_path_buf(),
+            kind:       TipKind::Abstract,
+        });
     }
 
-    // Extract optional :line:col suffix
-    let parts: Vec<&str> = tip_str.rsplitn(3, ':').collect();
-    let (path_str, pos) = if parts.len() == 3
-        && parts[0].parse::<usize>().is_ok()
-        && parts[1].parse::<usize>().is_ok()
-    {
-        let col:  usize = parts[0].parse()?;
-        let line: usize = parts[1].parse()?;
-        (parts[2], Some((line, col)))
-    } else {
-        (tip_str, None)
-    };
+    let (path_str, positions) = split_tip_positions(tip_str)?;
 
     let tokens = stratum::parse_path(path_str)
         .map_err(|e| anyhow::anyhow!("invalid stratum path '{}': {}", path_str, e))?;
@@ -451,14 +516,175 @@ fn parse_stratum_tip(root: &Path, tip_str: &str) -> anyhow::Result<(PathBuf, bil
     let layer_fs   = layer_tokens_to_fs_path(&layer_tokens)?;
     let layer_root = root.join(&layer_fs);
 
-    let (uuid, _, _reused) = if let Some((line, col)) = pos {
-        bilinker::capture::capture_to_file(&layer_root, &file_str, (line, col), (line, col))?
+    let kind = if positions.is_empty() {
+        TipKind::WholeFile { file: file_str }
     } else {
-        bilinker::capture::capture_file_whole(&layer_root, &file_str)?
+        let sel: Vec<_> = positions.iter().map(|&p| (p, p)).collect();
+        let capture = bilinker::capture::capture_many(&layer_root, &file_str, &sel)?;
+        TipKind::Fragment { file: file_str, capture }
     };
-    let endpoint = LinkEndpoint::Capture(uuid);
 
-    Ok((layer_fs, endpoint))
+    Ok(TipPlan { layer_fs, layer_root, kind })
+}
+
+/// Parte un tip en su path y sus posiciones.
+///
+/// La coma separa posiciones y no aparece en la primera: `Foo.java:8:1,15:5,16:5`.
+/// Escribirlas todas con `:` sería ambiguo con un path que lleve números, y repetir
+/// el flag ya significa *el otro extremo*.
+fn split_tip_positions(tip_str: &str) -> anyhow::Result<(&str, Vec<(usize, usize)>)> {
+    let mut chunks = tip_str.split(',');
+    let head = chunks.next().unwrap_or(tip_str);
+
+    // La primera posición viene pegada al path, como siempre.
+    let parts: Vec<&str> = head.rsplitn(3, ':').collect();
+    let (path_str, first) = if parts.len() == 3
+        && parts[0].parse::<usize>().is_ok()
+        && parts[1].parse::<usize>().is_ok()
+    {
+        (parts[2], Some((parts[1].parse::<usize>()?, parts[0].parse::<usize>()?)))
+    } else {
+        (head, None)
+    };
+
+    let mut positions = Vec::new();
+    if let Some(p) = first { positions.push(p); }
+
+    for chunk in chunks {
+        let (line, col) = chunk.trim().split_once(':').ok_or_else(|| anyhow::anyhow!(
+            "una posición extra se escribe `<línea>:<columna>`, se recibió '{chunk}'"
+        ))?;
+        if first.is_none() {
+            anyhow::bail!(
+                "'{tip_str}' tiene posiciones extra pero no la primera: \
+                 se escribe `<path>:<línea>:<columna>,<línea>:<columna>`"
+            );
+        }
+        positions.push((line.trim().parse()?, col.trim().parse()?));
+    }
+    Ok((path_str, positions))
+}
+
+/// Muestra qué capturaría cada tip y deja corregirlo, antes de escribir.
+///
+/// Devuelve si hay que escribir. Con `--dry-run` muestra y devuelve `true` para que
+/// quien llama corte después; con `--yes` no pregunta.
+///
+/// **Sin terminal no hay a quién preguntarle**, así que se escribe: un `chain new`
+/// adentro de un script no puede quedarse esperando una tecla que nadie va a
+/// apretar. La confirmación existe para la persona que está mirando.
+fn confirm_tips(plans: &mut [TipPlan], dry_run: bool, yes: bool) -> anyhow::Result<bool> {
+    use std::io::IsTerminal;
+
+    let mut vistas = Vec::new();
+    for (i, plan) in plans.iter().enumerate() {
+        if let Some((preview, source)) = plan.preview()? {
+            vistas.push((i, preview.label.clone(), preview.render(&source)));
+        }
+    }
+    if vistas.is_empty() { return Ok(true); }
+
+    for (_, _, vista) in &vistas {
+        eprintln!();
+        eprint!("{vista}");
+    }
+
+    if yes || dry_run { return Ok(true); }
+    if !std::io::stdin().is_terminal() { return Ok(true); }
+
+    let editor = git_editor();
+    let prompt = match &editor {
+        Some(_) => "\n¿escribir? [y/N/e(ditar)] ",
+        None    => "\n¿escribir? [y/N] ",
+    };
+
+    eprint!("{prompt}");
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer)? == 0 { return Ok(false); }
+
+    match answer.trim() {
+        "y" | "Y" => Ok(true),
+        "e" | "E" if editor.is_some() => {
+            // **Un solo buffer para los dos tips.** Abrir un editor por tip haría
+            // corregir a ciegas el segundo: lo que se está revisando es el vínculo,
+            // no cada punta por su cuenta.
+            let buffer: String = vistas.iter()
+                .map(|(_, _, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let edited = edit_buffer(editor.as_deref().expect("hay editor"), &buffer)?;
+
+            for (i, label, _) in &vistas {
+                let Some(chunk) = section_of(&edited, label, &vistas) else {
+                    eprintln!("falta el encabezado `{label}` en lo editado: no se escribió nada.");
+                    return Ok(false);
+                };
+                let marks = bilinker::preview::Preview::marks_in(chunk);
+                if marks.is_empty() {
+                    eprintln!("`{label}` volvió sin ninguna marca: no hay qué capturar.");
+                    return Ok(false);
+                }
+                plans[*i] = plans[*i].repoint(&marks)?;
+            }
+            // Lo editado se vuelve a mostrar: la corrección también se revisa.
+            confirm_tips(plans, dry_run, yes)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// El tramo del buffer que corresponde a un encabezado: desde su línea hasta el
+/// encabezado siguiente, o hasta el final.
+fn section_of<'a>(buffer: &'a str, label: &str, all: &[(usize, String, String)]) -> Option<&'a str> {
+    let start = buffer.find(label)?;
+    let rest  = &buffer[start + label.len()..];
+    let end = all.iter()
+        .filter(|(_, l, _)| l != label)
+        .filter_map(|(_, l, _)| rest.find(l.as_str()))
+        .min()
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// El editor que git usaría, con su misma precedencia.
+///
+/// `git var GIT_EDITOR` contesta lo que git realmente va a abrir —`$GIT_EDITOR`,
+/// `core.editor`, `$VISUAL`, `$EDITOR`, el fallback del sistema— en vez de leer un
+/// solo lugar y acertar a veces. Es el mismo criterio por el que quién acepta sale
+/// de `git var GIT_AUTHOR_IDENT` y no de `user.name`.
+fn git_editor() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["var", "GIT_EDITOR"])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let ed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!ed.is_empty()).then_some(ed)
+}
+
+/// Abre el buffer en el editor y devuelve lo que quedó.
+fn edit_buffer(editor: &str, buffer: &str) -> anyhow::Result<String> {
+    let path = std::env::temp_dir().join(format!("bilinker-capture-{}.txt", std::process::id()));
+    let ayuda = "\n# Las líneas con ▸ son las que se capturan. Sacá o agregá marcas y guardá.\n                 # Cada línea marcada resuelve a su nodo: marcar tres líneas de una\n                 # función marca la función una vez.\n                 # Sin ninguna marca, no se escribe nada.\n";
+    std::fs::write(&path, format!("{buffer}{ayuda}"))?;
+
+    // Vía shell, como git: `core.editor` puede llevar argumentos.
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\"", ))
+        .arg(editor)
+        .arg(&path)
+        .status()
+        .map_err(|e| anyhow::anyhow!("no se pudo abrir el editor `{editor}`: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("el editor `{editor}` salió con error");
+    }
+
+    let edited = std::fs::read_to_string(&path)?;
+    let _ = std::fs::remove_file(&path);
+    Ok(edited)
 }
 
 /// Converts layer navigation tokens (Up / Down only) to a filesystem path
@@ -1261,12 +1487,12 @@ Eliminar? [y/N] ");
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid, kind, name0, name1, from_repo } => {
+            ChainCommand::New { tip, mid, kind, name0, name1, from_repo, dry_run, yes } => {
                 let root = project_root(&cwd)?;
 
                 // Con `--from-repo`, el tip del proveedor lo aporta el flag: quien
                 // consume escribe **un solo** `--tip`, el suyo.
-                let (from_repo_uuid, tips) = match &from_repo {
+                let (from_repo_uuid, mut plans, remote) = match &from_repo {
                     Some(spec) => {
                         if tip.len() != 1 {
                             anyhow::bail!(
@@ -1277,22 +1503,35 @@ Eliminar? [y/N] ");
                         let (alias, uuid) = spec.split_once(':').ok_or_else(|| {
                             anyhow::anyhow!("--from-repo se escribe `<alias>:<uuid>`")
                         })?;
-                        let (layer, ep) = parse_stratum_tip(&root, &tip[0])?;
+                        let plan = plan_tip(&root, &tip[0])?;
                         let remote = (
-                            layer.clone(),
+                            plan.layer_fs.clone(),
                             bilink_format::LinkEndpoint::Repo(alias.to_string()),
                         );
-                        (Some(uuid.to_string()), vec![remote, (layer, ep)])
+                        (Some(uuid.to_string()), vec![plan], Some(remote))
                     }
                     None => {
                         if tip.len() != 2 {
                             anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                         }
-                        let (layer0, ep0) = parse_stratum_tip(&root, &tip[0])?;
-                        let (layer1, ep1) = parse_stratum_tip(&root, &tip[1])?;
-                        (None, vec![(layer0, ep0), (layer1, ep1)])
+                        (None, vec![plan_tip(&root, &tip[0])?, plan_tip(&root, &tip[1])?], None)
                     }
                 };
+
+                // La vista previa, y la oportunidad de corregirla. Un capture es
+                // opaco después de escrito: acá todavía se puede no escribirlo.
+                if !confirm_tips(&mut plans, dry_run, yes)? {
+                    eprintln!("no se escribió nada.");
+                    return Ok(());
+                }
+                if dry_run { return Ok(()); }
+
+                let mut tips: Vec<(PathBuf, bilink_format::LinkEndpoint)> = Vec::new();
+                if let Some(r) = remote { tips.push(r); }
+                for plan in &plans {
+                    tips.push((plan.layer_fs.clone(), plan.write()?));
+                }
+
                 let mids: Vec<PathBuf> = mid.iter().map(PathBuf::from).collect();
 
                 // `kind` y `name` son declaración, y todo archivo de bilinker sale

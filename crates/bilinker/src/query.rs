@@ -12,6 +12,7 @@ use bilink_format::{ByteRange, Ranges, FRAGMENT_SEPARATOR};
 /// ruta que sale de dos anotaciones distintas—, sin dejar de ser estructural: son
 /// nodos, no rangos de bytes, así que la referencia sobrevive a que el código se
 /// mueva. Ver `concepts/capture.md` § "El fragmento son los `@target`".
+#[derive(Debug, Clone)]
 pub struct Fragment {
     /// Los rangos, recortados y en orden de archivo.
     pub ranges: Ranges,
@@ -107,6 +108,18 @@ fn write_gap(text: &str, out: &mut String) {
 /// Se queda con el **primer match** del patrón, igual que antes: la query lleva
 /// predicados que la hacen única, y varios matches significan que no los tiene.
 pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Result<Option<Fragment>> {
+    Ok(fragments(language, source, query_str, true)?.into_iter().next())
+}
+
+/// Todos los matches del patrón, cada uno con **todas** sus partes.
+///
+/// Es lo que usa la verificación al generar una query: un patrón que matchea dos
+/// veces no identifica nada, y hay que poder decirlo antes de escribir el capture.
+pub fn find_all_fragments(language: Language, source: &str, query_str: &str) -> Result<Vec<Fragment>> {
+    fragments(language, source, query_str, false)
+}
+
+fn fragments(language: Language, source: &str, query_str: &str, first_only: bool) -> Result<Vec<Fragment>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(source, None).context("parse failed")?;
@@ -120,6 +133,7 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
+    let mut out = Vec::new();
 
     while let Some(m) = matches.next() {
         let mut nodes: Vec<Node> = m.captures.iter()
@@ -129,6 +143,7 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
         if nodes.is_empty() { continue; }
 
         nodes.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+        nodes.dedup_by_key(|n| (n.start_byte(), n.end_byte()));
 
         let sexp = nodes.iter()
             .map(|n| shape_and_tokens(*n, source))
@@ -142,10 +157,13 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
             })
             .collect();
 
-        let ranges = Ranges::new(parts).expect("hay al menos un @target");
-        return Ok(Some(Fragment { ranges, sexp }));
+        out.push(Fragment {
+            ranges: Ranges::new(parts).expect("hay al menos un @target"),
+            sexp,
+        });
+        if first_only { break; }
     }
-    Ok(None)
+    Ok(out)
 }
 
 /// Un match de la query: rango del `@target`, su S-expression, y el texto del
