@@ -27,6 +27,7 @@ pub mod history;
 pub mod index;
 pub mod init;
 pub mod issue;
+pub mod preview;
 pub mod pull;
 pub mod push;
 pub mod query;

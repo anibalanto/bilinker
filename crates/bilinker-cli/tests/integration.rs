@@ -175,6 +175,171 @@ fn run_in(root: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+/// Un workspace con tres métodos, para señalar dos y dejar uno afuera.
+fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), concat!(
+        "public class Service {\n",
+        "    public int uno(int a) {\n",
+        "        return a + 1;\n",
+        "    }\n",
+        "\n",
+        "    public int dos(int b) {\n",
+        "        return b * 2;\n",
+        "    }\n",
+        "\n",
+        "    public int tres(int c) {\n",
+        "        return c - 3;\n",
+        "    }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "tres"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    (tmp, root)
+}
+
+fn capture_file_of(root: &std::path::Path) -> String {
+    let dir = root.join(".bilink/capture");
+    std::fs::read_dir(&dir).unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .find(|c| c.contains("Service.java"))
+        .expect("no hay capture de Service.java")
+}
+
+/// Dos posiciones en un tip son **una** query con dos `@target`, anclada una vez.
+#[test]
+fn a_tip_with_two_positions_makes_one_query_with_two_targets() {
+    let (_tmp, root) = workspace_with_three_methods();
+
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(ok, "chain new failed:\n{stderr}");
+
+    let cap = capture_file_of(&root);
+    assert_eq!(cap.matches("@target").count(), 2, "faltan @target:\n{cap}");
+    assert!(cap.contains("\"uno\"") && cap.contains("\"tres\""), "{cap}");
+    assert!(cap.contains("\"Service\""), "el patrón se ancla una vez, en la clase:\n{cap}");
+    assert!(!cap.contains("\"dos\""), "el método del medio no entra:\n{cap}");
+}
+
+/// El fragmento es la concatenación, y `get` la muestra por partes.
+#[test]
+fn get_shows_a_two_part_fragment_as_two_spans() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let uuid = stdout.lines().next().unwrap().trim_start_matches("Created chain: ").trim();
+
+    run_in(&root, &["check", "."]);
+    let (frag, stderr, ok) = run_in(&root, &["get", &format!("{uuid}.1")]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("lines 2–4, 10–12"), "los dos tramos:\n{stderr}");
+    assert!(frag.contains("uno") && frag.contains("tres"), "{frag}");
+    assert!(!frag.contains("dos"), "lo que no se capturó no se muestra:\n{frag}");
+}
+
+/// Lo que quedó afuera puede cambiar sin disparar drift. Lo capturado, no.
+#[test]
+fn drift_fires_only_for_the_captured_parts() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "accept failed:\n{stderr}");
+
+    let java = root.join("src/Service.java");
+    let src  = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("return b * 2;", "return b * 22222;")).unwrap();
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "el método del medio no es del fragmento:\n{out}");
+
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("return c - 3;", "return c - 4;")).unwrap();
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "una parte capturada sí dispara drift:\n{out}");
+}
+
+/// Una parte adentro de otra se contaría dos veces: se rechaza y se dice cuál.
+#[test]
+fn a_part_inside_another_is_refused() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:1:1,6:5",
+    ]);
+    assert!(!ok, "un fragmento no puede contener a otro");
+    assert!(stderr.contains("contiene a la otra"), "{stderr}");
+    assert!(stderr.contains("method_declaration") && stderr.contains("class_declaration"), "{stderr}");
+}
+
+/// La vista previa dice qué se capturó y qué quedó afuera.
+#[test]
+fn the_preview_marks_what_is_captured() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("src/Service.java"), "el archivo va de encabezado:\n{stderr}");
+    assert!(stderr.contains("2 fragmentos · 2–4, 10–12"), "{stderr}");
+    assert!(stderr.contains("queda afuera"), "{stderr}");
+
+    let marcada = stderr.lines().find(|l| l.contains("public int uno")).unwrap();
+    assert!(marcada.contains('▸'), "lo capturado va marcado: {marcada}");
+    let libre = stderr.lines().find(|l| l.contains("public int dos")).unwrap();
+    assert!(!libre.contains('▸'), "lo que no entra se ve sin marcar: {libre}");
+}
+
+/// `--dry-run` muestra lo mismo y no escribe nada.
+#[test]
+fn dry_run_shows_the_preview_and_writes_nothing() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--dry-run",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5,10:5",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("2 fragmentos"), "{stderr}");
+    assert!(!root.join(".bilink").exists() ||
+            std::fs::read_dir(root.join(".bilink")).unwrap()
+                .filter_map(|e| e.ok())
+                .all(|e| e.path().extension().and_then(|x| x.to_str()) != Some("yaml")),
+            "--dry-run no escribe bilinks");
+}
+
+/// Una posición sola sigue produciendo exactamente la query de siempre.
+#[test]
+fn one_position_still_makes_a_single_target_query() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let cap = capture_file_of(&root);
+    assert_eq!(cap.matches("@target").count(), 1, "{cap}");
+    assert!(cap.contains("\"dos\""), "{cap}");
+}
+
 #[test]
 fn chain_new_direct_link_creates_single_file() {
     let (_tmp, root) = isolated_workspace();

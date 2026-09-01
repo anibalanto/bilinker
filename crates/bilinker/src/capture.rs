@@ -221,6 +221,12 @@ pub struct CaptureResult {
     pub capture: Capture,
     pub hash: String,
     pub commit: String,
+    /// Los rangos que la query resuelve, en orden de archivo — uno por `@target`.
+    ///
+    /// Es lo que se hashea, y es lo que la vista previa marca: sin esto, quien crea
+    /// un capture no tiene con qué ver si la query agarró lo que quería, y un
+    /// capture es opaco después de escrito.
+    pub ranges: Ranges,
 }
 
 pub fn capture(
@@ -229,6 +235,28 @@ pub fn capture(
     start: (usize, usize), // (line, col) 1-based
     end: (usize, usize),
 ) -> Result<CaptureResult> {
+    capture_many(root, file, &[(start, end)])
+}
+
+/// Un capture de N partes: una query con un `@target` por posición señalada.
+///
+/// **Las posiciones se descartan.** Sirven para *encontrar* los nodos —cada una
+/// resuelve al ancla estable más cercana, igual que una sola— y lo que se guarda es
+/// la query. El orden en que se pasan tampoco se guarda: el fragmento va en orden de
+/// archivo.
+///
+/// **La query se ancla una sola vez**, en el ancla estable que contiene a todas las
+/// partes. Eso es lo que las ancla *entre sí*: `@RequestMapping` **de la clase que
+/// contiene** al método, y no "el primer `@RequestMapping` del archivo". Una lista
+/// de queries independientes perdería justamente eso.
+pub fn capture_many(
+    root: &Path,
+    file: &str,
+    sel:  &[((usize, usize), (usize, usize))],
+) -> Result<CaptureResult> {
+    if sel.is_empty() {
+        bail!("un capture con posiciones necesita al menos una");
+    }
     let commit = git::head_commit_for_file(root, file)?;
     let file_path = root.join(file);
     let source = std::fs::read_to_string(&file_path)
@@ -240,50 +268,74 @@ pub fn capture(
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(&source, None).context("parse failed")?;
 
-    let start_point = Point { row: start.0 - 1, column: start.1 - 1 };
-    let end_point   = Point { row: end.0 - 1,   column: end.1 - 1 };
-
     let root_node = tree.root_node();
-    let node = root_node
-        .named_descendant_for_point_range(start_point, end_point)
-        .context("no named node at selection")?;
+    let anchors   = stable_anchor_kinds(lang);
 
-    let anchors = stable_anchor_kinds(lang);
-    let target = walk_up_to_anchor(node, anchors).unwrap_or(node);
-
-    let anchor = target.parent()
-        .and_then(|p| walk_up_to_anchor(p, anchors));
-
-    // For YAML block_sequence_item: use it directly as @target (contains the whole item)
-    let (target, anchor) = if target.kind() == "block_sequence_item" {
-        (target, None)
-    } else if let Some(a) = anchor {
-        if a.kind() == "block_sequence_item" {
-            (a, None)
-        } else {
-            (target, Some(a))
+    // Cada posición a su nodo, sin repetir: dos posiciones adentro de la misma
+    // función son la misma función, no dos partes.
+    let mut targets: Vec<Node> = Vec::new();
+    let mut standalone = false;
+    for (start, end) in sel {
+        let (node, alone) = target_node_at(root_node, *start, *end, anchors)?;
+        standalone |= alone;
+        if !targets.iter().any(|t| t.id() == node.id()) {
+            targets.push(node);
         }
+    }
+    targets.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+
+    // **Ninguna parte puede contener a otra.** El fragmento es la concatenación, así
+    // que una parte adentro de otra se contaría dos veces — y el hash pasaría a
+    // depender de un solapamiento que nadie quiso. Cuando pasa, no es un capture
+    // raro: es que una posición resolvió más arriba de lo que se señaló, y decirlo
+    // es más útil que capturar cualquier cosa.
+    if let Some((outer, inner)) = nested_pair(&targets) {
+        bail!(
+            "una parte contiene a la otra: el `{}` de la línea {} está adentro del \
+             `{}` de la línea {}, y el fragmento las contaría dos veces.\n       \
+             Cada posición resuelve al ancla estable más cercana; señalar algo \
+             adentro del ancla externa no la hace más chica.",
+            inner.kind(), inner.start_position().row + 1,
+            outer.kind(), outer.start_position().row + 1,
+        );
+    }
+
+    // El ancla del patrón: la estable más cercana que contenga a todas las partes.
+    // Con una sola parte es la de siempre —la que la envuelve—, y por eso una query
+    // de un `@target` sale idéntica a la que salía.
+    let lca  = targets.iter().copied().reduce(lowest_common_ancestor)
+        .expect("al menos una posición");
+    let pattern_root = if standalone && targets.len() == 1 {
+        lca
     } else {
-        (target, anchor)
+        let from = if targets.iter().any(|t| t.id() == lca.id()) { lca.parent() } else { Some(lca) };
+        from.and_then(|n| walk_up_to_anchor(n, anchors)).unwrap_or(lca)
     };
 
-    let query = match anchor {
-        None => query_for_node(target, &source, &mut 0, lang),
-        Some(a) if a.id() == target.id() => query_for_node(target, &source, &mut 0, lang),
-        Some(a) => {
-            let path = build_path(a, target);
-            query_from_path(&path, &source, &mut 0, lang)
+    // El camino de cada parte, fundido en un árbol: los tramos compartidos se
+    // escriben una vez, que es lo que hace que el patrón sea uno solo.
+    let mut kids: std::collections::HashMap<usize, Vec<Node>> = std::collections::HashMap::new();
+    for t in &targets {
+        let path = build_path(pattern_root, *t);
+        for pair in path.windows(2) {
+            let entry = kids.entry(pair[0].id()).or_default();
+            if !entry.iter().any(|n| n.id() == pair[1].id()) {
+                entry.push(pair[1]);
+            }
         }
-    };
+    }
+    let target_ids: std::collections::HashSet<usize> = targets.iter().map(|n| n.id()).collect();
 
-    // La query tiene que identificar al nodo seleccionado y a ninguno otro. Un
+    let query = emit_pattern(pattern_root, &kids, &target_ids, &source, &mut 0, lang);
+
+    // La query tiene que identificar a los nodos seleccionados y a ninguno otro. Un
     // ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`—
     // matchea el primer nodo de ese tipo del archivo, y el capture apuntaría a
     // otra cosa sin fallar. Un capture mal anclado es peor que uno roto: reporta
     // OK sobre una correspondencia que no existe.
-    verify_query_identifies(language.clone(), &source, &query, target, file)?;
+    let ranges = verify_query_identifies(language.clone(), &source, &query, &targets, file)?;
 
-    // **La selección elige un nodo, no un rango de bytes.**
+    // **La selección elige nodos, no rangos de bytes.**
     //
     // Un rango adentro de un nodo se corre con cualquier edición encima suya
     // dentro del mismo nodo, así que su granularidad es ilusoria: se rompe todo
@@ -292,20 +344,14 @@ pub fn capture(
     // valiendo". Lo que se pierde es atribución, no detección: `hash` dice que
     // cambió y `hash_ast` si fue sólo espaciado.
     //
-    // Así que la selección se usa para **encontrar** el nodo y después se
+    // Así que la selección se usa para **encontrar** los nodos y después se
     // descarta. Si hace falta más precisión, la respuesta es una query — que nombre
     // algo más chico, o que nombre varios nodos y deje el resto afuera—, no un
     // recorte sobre una que nombra algo más grande.
-    //
-    // Acá se toma **una** selección y sale un `@target`. Generar una query de
-    // varios es lo que hace `new` con N posiciones, y todavía no está.
 
-    // El mismo recorte que aplica la resolución: el hash tiene que ser el del
-    // fragmento que `check` va a comparar, no el del nodo crudo.
-    let (frag_start, frag_end) =
-        crate::query::trim_edges(&source, target.start_byte(), target.end_byte());
-    let fragment = &source[frag_start..frag_end.min(source.len())];
-    let hash = hash::sha256(fragment.as_bytes());
+    // El recorte lo aplicó la resolución, parte por parte: el hash tiene que ser el
+    // del fragmento que `check` va a comparar, no el de los nodos crudos.
+    let hash = hash::sha256(ranges.text(&source).as_bytes());
 
     Ok(CaptureResult {
         capture: Capture {
@@ -314,7 +360,108 @@ pub fn capture(
         },
         hash,
         commit,
+        ranges,
     })
+}
+
+/// El nodo que una posición señala: el ancla estable más cercana que la contiene.
+///
+/// El `bool` dice que ese nodo tiene que ser la raíz del patrón y no colgar de un
+/// ancla de arriba. Pasa con un item de secuencia YAML, que se identifica solo por
+/// su `id:` y cuyo ancestro es la secuencia entera.
+fn target_node_at<'a>(
+    root:    Node<'a>,
+    start:   (usize, usize),
+    end:     (usize, usize),
+    anchors: &[&str],
+) -> Result<(Node<'a>, bool)> {
+    let start_point = Point { row: start.0 - 1, column: start.1 - 1 };
+    let end_point   = Point { row: end.0 - 1,   column: end.1 - 1 };
+
+    let node = root
+        .named_descendant_for_point_range(start_point, end_point)
+        .context("no named node at selection")?;
+
+    let target = walk_up_to_anchor(node, anchors).unwrap_or(node);
+    if target.kind() == "block_sequence_item" {
+        return Ok((target, true));
+    }
+    match target.parent().and_then(|p| walk_up_to_anchor(p, anchors)) {
+        Some(a) if a.kind() == "block_sequence_item" => Ok((a, true)),
+        _ => Ok((target, false)),
+    }
+}
+
+/// El primer par de partes donde una contiene a la otra, si lo hay.
+///
+/// Los nodos vienen ordenados por posición, así que alcanza con comparar cada uno
+/// con los siguientes mientras arranquen antes de que él termine.
+fn nested_pair<'a>(targets: &[Node<'a>]) -> Option<(Node<'a>, Node<'a>)> {
+    for (i, outer) in targets.iter().enumerate() {
+        for inner in &targets[i + 1..] {
+            if inner.start_byte() >= outer.end_byte() { break; }
+            if inner.end_byte() <= outer.end_byte() { return Some((*outer, *inner)); }
+        }
+    }
+    None
+}
+
+/// El ancestro común más profundo de dos nodos.
+fn lowest_common_ancestor<'a>(a: Node<'a>, b: Node<'a>) -> Node<'a> {
+    let mut chain = std::collections::HashSet::new();
+    let mut cur = Some(a);
+    while let Some(n) = cur {
+        chain.insert(n.id());
+        cur = n.parent();
+    }
+    let mut cur = Some(b);
+    while let Some(n) = cur {
+        if chain.contains(&n.id()) { return n; }
+        cur = n.parent();
+    }
+    b
+}
+
+/// El patrón de un nodo: su predicado de nombre, los hijos que llevan a una parte,
+/// y su propio `@target` si lo es.
+///
+/// **Las partes salen en orden de archivo**, y el predicado de nombre con ellas. No
+/// es cosmético: tree-sitter exige que los hijos de un patrón vayan en el orden de
+/// la gramática, y en Java las anotaciones van antes del nombre. Emitir el nombre
+/// primero por costumbre produce un *impossible pattern* en cuanto una parte cae en
+/// los modificadores.
+fn emit_pattern(
+    node:    Node,
+    kids:    &std::collections::HashMap<usize, Vec<Node>>,
+    targets: &std::collections::HashSet<usize>,
+    source:  &str,
+    counter: &mut usize,
+    lang:    &str,
+) -> String {
+    let pred = real_name_predicate(node, source, counter, lang);
+    let pred_pos = grammar::name_field(lang, node.kind())
+        .or(Some("name"))
+        .and_then(|f| node.child_by_field_name(f))
+        .map(|n| n.start_byte())
+        .unwrap_or(node.start_byte());
+
+    let mut parts: Vec<(usize, String)> = Vec::new();
+    if !pred.is_empty() { parts.push((pred_pos, pred)); }
+
+    if let Some(children) = kids.get(&node.id()) {
+        for kid in children {
+            let field = field_name_for_child(node, kid.id())
+                .map(|f| format!("{f}: "))
+                .unwrap_or_default();
+            let inner = emit_pattern(*kid, kids, targets, source, counter, lang);
+            parts.push((kid.start_byte(), format!("\n  {field}{inner}")));
+        }
+    }
+    parts.sort_by_key(|(pos, _)| *pos);
+
+    let body: String = parts.into_iter().map(|(_, s)| s).collect();
+    let pattern = format!("({}{})", node.kind(), body);
+    if targets.contains(&node.id()) { format!("{pattern} @target") } else { pattern }
 }
 
 fn build_path<'a>(ancestor: Node<'a>, descendant: Node<'a>) -> Vec<Node<'a>> {
@@ -342,59 +489,62 @@ fn node_contains(node: Node, target_id: usize) -> bool {
     false
 }
 
-/// La query resuelve al nodo capturado, exactamente una vez.
+/// La query resuelve a los nodos capturados, exactamente una vez.
 ///
 /// Se verifica acá y no en `check` porque acá todavía se puede no escribir: un
 /// capture que apunta al nodo equivocado se acepta en OK y no vuelve a mirarse.
+///
+/// Devuelve los rangos resueltos —ya recortados— para no volver a correr la query:
+/// son los mismos que `check` va a comparar, y los que la vista previa marca.
 fn verify_query_identifies(
-    language: tree_sitter::Language,
-    source:   &str,
+    language:  tree_sitter::Language,
+    source:    &str,
     query_str: &str,
-    target:   Node,
-    file:     &str,
-) -> Result<()> {
-    let hits = query::find_all_targets(language, source, query_str)?;
+    targets:   &[Node],
+    file:      &str,
+) -> Result<Ranges> {
+    let esperado: Vec<(usize, usize)> = targets.iter()
+        .map(|t| query::trim_edges(source, t.start_byte(), t.end_byte()))
+        .collect();
+
+    let hits = query::find_all_fragments(language, source, query_str)?;
+    let n = targets.len();
+    let kinds = || targets.iter().map(|t| t.kind()).collect::<Vec<_>>().join(", ");
+
     match hits.as_slice() {
-        [m] if m.start == target.start_byte() && m.end == target.end_byte() => Ok(()),
-        [] => bail!(
-            "la query generada no matchea ningún nodo en {file}:\n{query_str}"
-        ),
-        [m] => bail!(
-            "la query generada apunta a otro nodo: bytes {}~{} en vez de {}~{}. \
-             El ancla `{}` no tiene con qué distinguirse en {file}:\n{query_str}",
-            m.start, m.end, target.start_byte(), target.end_byte(), target.kind()
-        ),
+        [] => bail!("la query generada no matchea ningún nodo en {file}:\n{query_str}"),
+        [f] => {
+            let got: Vec<(usize, usize)> = f.ranges.parts().iter()
+                .map(|r| (r.start, r.end))
+                .collect();
+            if got == esperado {
+                return Ok(f.ranges.clone());
+            }
+            if got.len() != n {
+                bail!(
+                    "la query generada captura {} parte(s) y se señalaron {n} en {file}. \
+                     Las anclas `{}` no caen todas bajo un mismo patrón:\n{query_str}",
+                    got.len(), kinds()
+                );
+            }
+            bail!(
+                "la query generada apunta a otros nodos: {} en vez de {}. \
+                 El ancla `{}` no tiene con qué distinguirse en {file}:\n{query_str}",
+                fmt_ranges(&got), fmt_ranges(&esperado), kinds()
+            )
+        }
         hits => bail!(
-            "la query generada matchea {} nodos. El ancla `{}` no tiene con qué \
+            "la query generada matchea {} veces. El ancla `{}` no tiene con qué \
              distinguirse en {file}:\n{query_str}\n\n\
              Seleccionar un nodo con nombre propio adentro —una función, un método— \
              da un ancla única sin inventar un criterio.",
-            hits.len(), target.kind()
+            hits.len(), kinds()
         ),
     }
 }
 
-fn query_for_node(node: Node, source: &str, counter: &mut usize, lang: &str) -> String {
-    let name_pred = real_name_predicate(node, source, counter, lang);
-    format!("({}{}) @target", node.kind(), name_pred)
-}
-
-fn query_from_path(path: &[Node], source: &str, counter: &mut usize, lang: &str) -> String {
-    assert!(!path.is_empty());
-    let node = path[0];
-    let name_pred = real_name_predicate(node, source, counter, lang);
-
-    if path.len() == 1 {
-        return format!("({}{}) @target", node.kind(), name_pred);
-    }
-
-    let next = path[1];
-    let field = field_name_for_child(node, next.id())
-        .map(|f| format!("{f}: "))
-        .unwrap_or_default();
-
-    let inner = query_from_path(&path[1..], source, counter, lang);
-    format!("({}{}\n  {field}{inner})", node.kind(), name_pred)
+fn fmt_ranges(rs: &[(usize, usize)]) -> String {
+    rs.iter().map(|(a, b)| format!("{a}~{b}")).collect::<Vec<_>>().join(",")
 }
 
 fn real_name_predicate(node: Node, source: &str, counter: &mut usize, lang: &str) -> String {
