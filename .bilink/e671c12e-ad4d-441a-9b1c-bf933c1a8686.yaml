@@ -9,3 +9,9 @@ endpoint:
       hash: 4242252ff55aeebc288246a99d365cf750be184061f54d0179ee64ed38466308
   1:
     link: capture fa7c5237e0a5dd7600550bb37d4d7033
+    accepted:
+      agree:
+      - Anibal
+      link: capture fa7c5237e0a5dd7600550bb37d4d7033
+      hash: ec5349430cb6847019e3bbee5921d6d77bfcba7003eae9a22a3cbcb1934e9f0b
+      hash_ast: 597f2ec4ea015a8fd930010dc6cd06a8b41a82db780cd482dc1c2f8caeb94f6b
