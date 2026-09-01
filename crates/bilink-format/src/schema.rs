@@ -101,6 +101,17 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // No hay migración: ningún archivo existente lo lleva, y su ausencia sigue
     // significando lo que significaba.
     ("3.5.0", "685a031d0ef3c40f6af7549f092bb9a244b2c17f9b514ee215ecb02d7d3ccb3c"),
+    // 3.6.0 pliega el vecindario en **un** campo con tres estados: `n1` adquirido
+    // —`{hash, hash_ast}`—, `n1: declined`, o ausente. Reemplaza a `hash_n1`,
+    // `hash_ast_n1` y la marca suelta que 3.5.0 había agregado.
+    //
+    // **No es aditivo, y aun así no hay migración**: al 2026-09-01 no existe un solo
+    // archivo con `hash_n1` escrito. Se verificó sobre `.bilink/` de accreta y de las
+    // cinco capas impl, y la razón de fondo es que escribirlo pide un language server
+    // corriendo, que todavía no pasó en ningún repo. La ventana se cierra sola el día
+    // que alguien acepte con el daemon prendido — de ahí que el cambio de forma vaya
+    // ahora y no después.
+    ("3.6.0", "cb3afb41005b3a860b6f7595af3978fcdd08e83c5e0fd55bf46100d0ac432366"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

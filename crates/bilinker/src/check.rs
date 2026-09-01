@@ -185,7 +185,9 @@ fn compare_contract(
     range:    Option<&Ranges>,
     nb:       crate::neighbours::Provider<'_>,
 ) -> Result<Option<EndpointState>> {
-    let Some(expected) = &accepted.hash_n1 else { return Ok(None) };
+    // Sólo un vecindario **adquirido** se compara: una renuncia no tiene con qué,
+    // y la ausencia significa que el fragmento no tiene firma resoluble.
+    let Some(expected) = accepted.n1.as_ref().and_then(|n| n.acquired()) else { return Ok(None) };
     let (Some(p), Some(range)) = (nb, range) else {
         return Ok(Some(EndpointState::ContractUnverified));
     };
@@ -197,12 +199,12 @@ fn compare_contract(
     };
 
     let folded = crate::neighbours::fold(layer, &locs)?;
-    if folded.hash == *expected {
+    if folded.hash == expected.hash {
         return Ok(None);
     }
     // Sólo formato en el vecindario: el texto difiere y las s-expressions no. Como
     // con `hash_ast`, la pregunta sólo se hace donde los dos lados lo tienen.
-    if let (Some(a), Some(b)) = (&folded.hash_ast, &accepted.hash_ast_n1) {
+    if let (Some(a), Some(b)) = (&folded.hash_ast, &expected.hash_ast) {
         if a == b { return Ok(Some(EndpointState::ContractRestyled)); }
     }
     Ok(Some(EndpointState::ContractAltered))
@@ -640,8 +642,6 @@ mod tests {
             link: None,
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
-            hash_n1: None,
-            hash_ast_n1: None,
             n1: None,
         };
         let range = Ranges::one(0, after.len());
@@ -681,9 +681,8 @@ mod tests {
             link: None,
             hash: String::new(),
             hash_ast: None,
-            hash_n1,
-            hash_ast_n1,
-            n1: None,
+            n1: hash_n1.map(|hash| bilink_format::N1::Acquired(
+                bilink_format::Neighbourhood { hash, hash_ast: hash_ast_n1 })),
         }
     }
 

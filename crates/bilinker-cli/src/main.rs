@@ -132,7 +132,7 @@ enum Command {
         /// Aprueba sólo el contenido: escribe accepted.hash
         #[arg(long)]
         content: bool,
-        /// Acepta renunciando al vecindario: escribe n1: declined y ningún hash_n1
+        /// Acepta renunciando al vecindario: escribe n1: declined en vez de los folds
         #[arg(long = "no-n1")]
         no_n1: bool,
         /// Sólo con --no-n1, y sólo donde éste baja una cobertura que ya estaba

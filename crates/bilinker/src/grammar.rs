@@ -115,7 +115,7 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
 ///
 /// **Una clase o un DTO no están acá**, y es deliberado: su declaración no menciona
 /// tipos del modo en que los menciona una firma. Es el mismo corte que hace la spec
-/// cuando enumera dónde `hash_n1` está legítimamente ausente.
+/// cuando enumera dónde `n1` está legítimamente ausente.
 pub fn signature_kinds(lang: &str) -> &'static [&'static str] {
     match lang {
         "java" => &["method_declaration", "constructor_declaration"],
