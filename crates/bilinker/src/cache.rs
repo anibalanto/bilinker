@@ -16,13 +16,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use bilink_format::{ByteRange, Capture};
+use bilink_format::{Capture, Ranges};
 
 use crate::state::{CaptureState, EndpointState};
 
 /// Lo que `check` sabe de un capture: dónde cayó, y si resuelve.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaptureCache {
+    /// Los rangos del fragmento, `start~end` separados por coma: uno por `@target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,11 +126,12 @@ impl Cache {
         self.captures.get(id)?.state.as_deref()?.parse().ok()
     }
 
-    pub fn capture_range(&self, id: &str) -> Option<ByteRange> {
+    /// Los rangos del fragmento, uno por `@target`. Ver [`Ranges`].
+    pub fn capture_ranges(&self, id: &str) -> Option<Ranges> {
         self.captures.get(id)?.range.as_deref()?.parse().ok()
     }
 
-    pub fn set_capture(&mut self, id: &str, state: CaptureState, range: Option<&ByteRange>) {
+    pub fn set_capture(&mut self, id: &str, state: CaptureState, range: Option<&Ranges>) {
         self.captures.insert(id.to_string(), CaptureCache {
             range: range.map(|r| r.to_string()),
             state: Some(state.to_string()),
@@ -191,14 +193,14 @@ mod tests {
     fn the_cache_round_trips() {
         let dir = tempdir().unwrap();
         let mut c = Cache::default();
-        c.set_capture("abc", CaptureState::Resolved, Some(&ByteRange { start: 10, end: 20 }));
+        c.set_capture("abc", CaptureState::Resolved, Some(&Ranges::one(10, 20)));
         c.set_endpoint_state("7f3d", 0, EndpointState::Relocated);
         c.set_commit("7f3d", 0, "deadbeef");
         c.save(dir.path()).unwrap();
 
         let back = Cache::load(dir.path());
         assert_eq!(back.capture_state("abc"), Some(CaptureState::Resolved));
-        assert_eq!(back.capture_range("abc"), Some(ByteRange { start: 10, end: 20 }));
+        assert_eq!(back.capture_ranges("abc"), Some(Ranges::one(10, 20)));
         assert_eq!(back.endpoint_state("7f3d", 0), Some(EndpointState::Relocated));
         assert_eq!(back.commit("7f3d", 0), Some("deadbeef"));
     }

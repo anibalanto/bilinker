@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use bilink_format::bilink::bilink_files;
-use bilink_format::{BiLink, ByteRange, Capture, LinkEndpoint};
+use bilink_format::{BiLink, Capture, LinkEndpoint, Ranges};
 
 use crate::cache::Cache;
 use crate::state::{CaptureState, EndpointState};
@@ -45,7 +45,7 @@ pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
     // Un mismo capture se resuelve **una sola vez**, aunque lo referencien varios
     // endpoints. La comparación contra `accepted` sí corre por endpoint, porque
     // cada uno tiene el suyo.
-    let mut resolved: HashMap<String, (CaptureState, Option<ByteRange>)> = HashMap::new();
+    let mut resolved: HashMap<String, (CaptureState, Option<Ranges>)> = HashMap::new();
 
     for path in bilink_files(&layer.join(".bilink")) {
         let Ok(bl) = BiLink::load(&path) else { continue };
@@ -72,7 +72,7 @@ fn check_endpoint(
     bl: &BiLink,
     uuid: &str,
     n: u8,
-    resolved: &mut HashMap<String, (CaptureState, Option<ByteRange>)>,
+    resolved: &mut HashMap<String, (CaptureState, Option<Ranges>)>,
     cache: &mut Cache,
 ) -> Result<EndpointState> {
     let e = bl.endpoint.get(n);
@@ -163,7 +163,7 @@ pub(crate) fn resolve_capture(
     cap: &Capture,
     accepted: Option<&bilink_format::Accepted>,
     commit: Option<&str>,
-) -> Result<(CaptureState, Option<ByteRange>)> {
+) -> Result<(CaptureState, Option<Ranges>)> {
     let path = layer.join(&cap.file);
 
     if !path.exists() {
@@ -182,14 +182,13 @@ pub(crate) fn resolve_capture(
 
     // Sin query, el capture es el archivo entero.
     let Some(query_str) = &cap.query else {
-        return Ok((CaptureState::Resolved, Some(ByteRange { start: 0, end: source.len() })));
+        return Ok((CaptureState::Resolved, Some(Ranges::one(0, source.len()))));
     };
 
     let lang     = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
 
-    let Some((node_start, node_end, _)) =
-        query::find_target_with_sexp(language.clone(), &source, query_str)?
+    let Some(fragment) = query::find_fragment(language.clone(), &source, query_str)?
     else {
         // La query no matchea: ¿el anchor se renombró, o el fragmento desapareció?
         let hash = accepted.map(|a| a.hash.as_str());
@@ -202,7 +201,7 @@ pub(crate) fn resolve_capture(
         return Ok((CaptureState::Unanchored, None));
     };
 
-    Ok((CaptureState::Resolved, Some(ByteRange { start: node_start, end: node_end })))
+    Ok((CaptureState::Resolved, Some(fragment.ranges)))
 }
 
 // ─── dimensión 2: ¿coincide con lo aceptado? ──────────────────────────────────
@@ -243,12 +242,13 @@ pub(crate) fn compare_content(
     layer: &Path,
     cap: &Capture,
     accepted: &bilink_format::Accepted,
-    range: Option<&ByteRange>,
+    range: Option<&Ranges>,
     commit: &mut CommitSource<'_>,
 ) -> Result<EndpointState> {
     let source = std::fs::read_to_string(layer.join(&cap.file))?;
     let Some(r) = range else { return Ok(EndpointState::Unresolved) };
-    let fragment = &source[r.start..r.end.min(source.len())];
+    let fragment = r.text(&source);
+    let fragment = fragment.as_str();
 
     if hash::sha256(fragment.as_bytes()) == accepted.hash {
         return Ok(EndpointState::Ok);
@@ -280,8 +280,8 @@ pub(crate) fn compare_content(
     if grammar::ast_discriminates_content(lang) {
         if let (Some(expected_ast), Some(q)) = (&accepted.hash_ast, &cap.query) {
             let language = grammar::for_language(lang)?;
-            if let Some((_, _, sexp)) = query::find_target_with_sexp(language, &source, q)? {
-                if hash::sha256(sexp.as_bytes()) == *expected_ast {
+            if let Some(f) = query::find_fragment(language, &source, q)? {
+                if hash::sha256(f.sexp.as_bytes()) == *expected_ast {
                     return Ok(EndpointState::Restyled);
                 }
             }
@@ -522,7 +522,7 @@ fn git_fragment_vanished(layer_root: &Path, file: &str, hash: Option<&str>) -> b
 ///
 /// El rango es un derivado: con la cache fría no está, y este comando cae a vacío
 /// en vez de resolver. Quien lo necesite corre `check` primero.
-pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, ByteRange)>> {
+pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, Ranges)>> {
     let mut results = Vec::new();
     for layer_root in crate::index::layer_roots(root) {
         let Ok(rel) = file_path.strip_prefix(&layer_root) else { continue };
@@ -535,7 +535,7 @@ pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, B
             let bilink_path = bilink_dir.join(format!("{uuid}.yaml"));
             let Ok(bl) = BiLink::load(&bilink_path) else { continue };
             let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
-            if let Some(r) = cache.capture_range(id) {
+            if let Some(r) = cache.capture_ranges(id) {
                 results.push((bilink_path, n, r));
             }
         }
@@ -553,10 +553,10 @@ mod tests {
 
     fn sexp_hash(source: &str, query: &str) -> String {
         let language = grammar::for_language("markdown").unwrap();
-        let (_, _, sexp) = query::find_target_with_sexp(language, source, query)
+        let f = query::find_fragment(language, source, query)
             .unwrap()
             .expect("la query debería resolver");
-        hash::sha256(sexp.as_bytes())
+        hash::sha256(f.sexp.as_bytes())
     }
 
     /// Sobre prosa, un `hash_ast` guardado no se consulta aunque coincida.
@@ -580,7 +580,7 @@ mod tests {
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
         };
-        let range = ByteRange { start: 0, end: after.len() };
+        let range = Ranges::one(0, after.len());
 
         let mut derive = || None;
         let mut src = CommitSource { derive: &mut derive };

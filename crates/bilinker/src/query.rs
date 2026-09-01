@@ -2,9 +2,22 @@ use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
-/// Run a tree-sitter query against `source` and return the byte range of the `@target` capture.
-pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<Option<(usize, usize)>> {
-    Ok(find_target_with_sexp(language, source, query_str)?.map(|(s, e, _)| (s, e)))
+use bilink_format::{ByteRange, Ranges, FRAGMENT_SEPARATOR};
+
+/// Lo que la query nombra: uno o más nodos, con su huella.
+///
+/// Una query puede llevar **más de una** captura `@target`, y entonces el fragmento
+/// es la concatenación de sus rangos en orden de archivo. Es lo que permite decir
+/// menos que un nodo —la firma de un método sin su cuerpo— y más que un nodo —una
+/// ruta que sale de dos anotaciones distintas—, sin dejar de ser estructural: son
+/// nodos, no rangos de bytes, así que la referencia sobrevive a que el código se
+/// mueva. Ver `concepts/capture.md` § "El fragmento son los `@target`".
+pub struct Fragment {
+    /// Los rangos, recortados y en orden de archivo.
+    pub ranges: Ranges,
+    /// Las s-expressions de los nodos, en el mismo orden, unidas por el separador
+    /// del fragmento. Ver [`shape_and_tokens`].
+    pub sexp: String,
 }
 
 /// El rango de un fragmento **sin el espacio que lo rodea**.
@@ -19,6 +32,11 @@ pub fn find_target(language: Language, source: &str, query_str: &str) -> Result<
 /// contenido, y el espacio que lo separa de sus vecinos es de los dos. Va en el
 /// único lugar donde un nodo se convierte en rango, así que no hay forma de
 /// obtener uno sin recortar.
+///
+/// Con varios `@target` se llama **una vez por parte**, antes de concatenar:
+/// recortar la concatenación dejaría los bordes internos a merced de dónde termina
+/// un nodo y empieza el otro, que es el contexto del que esto existe para
+/// independizar.
 pub(crate) fn trim_edges(source: &str, start: usize, end: usize) -> (usize, usize) {
     let b = source.as_bytes();
     let (mut s, mut e) = (start.min(source.len()), end.min(source.len()));
@@ -75,9 +93,20 @@ fn write_gap(text: &str, out: &mut String) {
 }
 
 
-/// Como `find_target`, pero además devuelve la huella del nodo: forma del árbol y
-/// tokens, estable ante cambios de espaciado. Ver [`shape_and_tokens`].
-pub fn find_target_with_sexp(language: Language, source: &str, query_str: &str) -> Result<Option<(usize, usize, String)>> {
+/// El fragmento que la query nombra: **todos** sus `@target`, no sólo el primero.
+///
+/// Los rangos salen ordenados por posición en el archivo, no por el orden en que la
+/// query los nombra: ese orden es un detalle de cómo se escribió el patrón, y el
+/// fragmento —que es lo que se hashea— no puede depender de él.
+///
+/// Cada rango se recorta por separado antes de concatenar. Recortar la
+/// concatenación dejaría los bordes internos a merced de dónde termina un nodo y
+/// empieza el otro, que es justo el contexto del que [`trim_edges`] existe para
+/// independizar.
+///
+/// Se queda con el **primer match** del patrón, igual que antes: la query lleva
+/// predicados que la hacen única, y varios matches significan que no los tiene.
+pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Result<Option<Fragment>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(source, None).context("parse failed")?;
@@ -93,13 +122,28 @@ pub fn find_target_with_sexp(language: Language, source: &str, query_str: &str) 
     let mut matches = cursor.matches(&query, root, source.as_bytes());
 
     while let Some(m) = matches.next() {
-        for cap in m.captures {
-            if cap.index == target_idx {
-                let sexp = shape_and_tokens(cap.node, source);
-                let (s, e) = trim_edges(source, cap.node.start_byte(), cap.node.end_byte());
-                return Ok(Some((s, e, sexp)));
-            }
-        }
+        let mut nodes: Vec<Node> = m.captures.iter()
+            .filter(|cap| cap.index == target_idx)
+            .map(|cap| cap.node)
+            .collect();
+        if nodes.is_empty() { continue; }
+
+        nodes.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+
+        let sexp = nodes.iter()
+            .map(|n| shape_and_tokens(*n, source))
+            .collect::<Vec<_>>()
+            .join(FRAGMENT_SEPARATOR);
+
+        let parts = nodes.iter()
+            .map(|n| {
+                let (start, end) = trim_edges(source, n.start_byte(), n.end_byte());
+                ByteRange { start, end }
+            })
+            .collect();
+
+        let ranges = Ranges::new(parts).expect("hay al menos un @target");
+        return Ok(Some(Fragment { ranges, sexp }));
     }
     Ok(None)
 }
@@ -192,6 +236,97 @@ pub fn relax_name_predicates(query_str: &str) -> String {
 
     // Limpiar espacios dobles que deja la remoción.
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod fragment_tests {
+    use super::*;
+
+    fn rust(src: &str, query: &str) -> Fragment {
+        let language = crate::grammar::for_language("rust").unwrap();
+        find_fragment(language, src, query).unwrap().expect("la query debería resolver")
+    }
+
+    const SRC: &str = "fn f(a: u8) -> u8 {\n    let x = a;\n    x\n}\n";
+
+    /// El caso de siempre: un `@target`, un rango, y el fragmento es el nodo.
+    #[test]
+    fn one_target_is_the_node_and_nothing_else() {
+        let f = rust(SRC, r#"(function_item name: (identifier) @n0 (#eq? @n0 "f")) @target"#);
+        assert_eq!(f.ranges.parts().len(), 1);
+        assert_eq!(f.ranges.text(SRC), SRC.trim_end());
+    }
+
+    /// El fragmento es de N partes, en orden de archivo. Que el orden sea el del
+    /// archivo y no el de la query lo fija [`bilink_format::Ranges::new`]; acá lo
+    /// que se comprueba es que las N partes lleguen.
+    #[test]
+    fn several_targets_make_a_fragment_of_several_parts() {
+        let q = r#"(function_item
+                      name: (identifier) @target
+                      return_type: (primitive_type) @target) @fn"#;
+        let f = rust(SRC, q);
+        assert_eq!(f.ranges.parts().len(), 2);
+        assert_eq!(f.ranges.text(SRC), "f\nu8");
+    }
+
+    /// El separador es `\n`, y entra en el hash. Cambiarlo movería el de todos los
+    /// captures multi-fragmento a la vez, así que queda fijado acá.
+    #[test]
+    fn the_separator_is_a_newline() {
+        assert_eq!(bilink_format::FRAGMENT_SEPARATOR, "\n");
+        let q = r#"(function_item
+                      name: (identifier) @target
+                      return_type: (primitive_type) @target) @fn"#;
+        let f = rust(SRC, q);
+        assert_eq!(f.ranges.text(SRC), ["f", "u8"].join(bilink_format::FRAGMENT_SEPARATOR));
+    }
+
+    /// La firma sin el cuerpo: el cuerpo cambia y el fragmento no.
+    #[test]
+    fn the_signature_survives_a_change_in_the_body() {
+        let q = r#"(function_item
+                      name: (identifier) @target
+                      parameters: (parameters) @target
+                      return_type: (primitive_type) @target) @fn"#;
+        let otro = "fn f(a: u8) -> u8 {\n    a + 1\n}\n";
+        assert_eq!(rust(SRC, q).ranges.text(SRC), rust(otro, q).ranges.text(otro));
+    }
+
+    /// Y sí cambia cuando cambia el tipo de retorno — el caso que rompió a
+    /// `retinar`: la ruta seguía igual y lo que devolvía era otra cosa.
+    #[test]
+    fn the_signature_changes_when_the_return_type_does() {
+        let q = r#"(function_item
+                      name: (identifier) @target
+                      parameters: (parameters) @target
+                      return_type: (primitive_type) @target) @fn"#;
+        let otro = "fn f(a: u8) -> u16 {\n    let x = a;\n    x\n}\n";
+        assert_ne!(rust(SRC, q).ranges.text(SRC), rust(otro, q).ranges.text(otro));
+    }
+
+    /// Cada parte se recorta por su cuenta. Recortar la concatenación dejaría los
+    /// bordes internos a merced de dónde termina un nodo y empieza el otro.
+    #[test]
+    fn each_part_is_trimmed_on_its_own() {
+        let f = rust(SRC, r#"(function_item
+                                name: (identifier) @target
+                                body: (block) @target) @fn"#);
+        for r in f.ranges.parts() {
+            assert!(!SRC[r.start..r.end].starts_with(char::is_whitespace));
+            assert!(!SRC[r.start..r.end].ends_with(char::is_whitespace));
+        }
+    }
+
+    /// La huella sigue al fragmento: una s-expression por nodo, en el mismo orden
+    /// y con el mismo separador.
+    #[test]
+    fn the_fingerprint_is_one_sexp_per_node() {
+        let f = rust(SRC, r#"(function_item
+                                name: (identifier) @target
+                                return_type: (primitive_type) @target) @fn"#);
+        assert_eq!(f.sexp.split(bilink_format::FRAGMENT_SEPARATOR).count(), 2);
+    }
 }
 
 #[cfg(test)]

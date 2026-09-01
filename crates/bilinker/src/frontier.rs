@@ -407,7 +407,7 @@ pub fn published(layer: &Path) -> Result<Vec<Abstraction>> {
 
         let text = crate::capture::absolute_range(layer, &cap).ok().flatten().and_then(|r| {
             let src = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
-            Some(src.get(r.start..r.end.min(src.len()))?.to_string())
+            Some(r.text(&src))
         });
 
         out.push(Abstraction {

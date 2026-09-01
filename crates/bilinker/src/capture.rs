@@ -5,7 +5,7 @@ use tree_sitter::{Node, Parser, Point};
 use crate::git;
 use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
-use bilink_format::{ByteRange, Capture};
+use bilink_format::{Capture, Ranges};
 use crate::query;
 
 /// La ubicación aprobada de un endpoint, si el endpoint es estructural.
@@ -128,11 +128,9 @@ pub fn accepted_text(
         Some(q) => {
             let lang     = grammar::language_for_file(&cap.file);
             let language = grammar::for_language(lang).ok()?;
-            let (start, end, _) =
-                crate::query::find_target_with_sexp(language, &old_source, q).ok()??;
-            let (s, e) = (start, end);
-            if s > e || e > old_source.len() { return None; }
-            old_source[s..e].to_string()
+            let fragment = crate::query::find_fragment(language, &old_source, q).ok()??;
+            if fragment.ranges.end() > old_source.len() { return None; }
+            fragment.ranges.text(&old_source)
         }
     };
 
@@ -202,22 +200,21 @@ fn history_root(layer: &Path) -> String {
         .unwrap_or_else(|| "HEAD".to_string())
 }
 
-/// Byte range absoluto del fragmento en su archivo, resolviendo la query.
-pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<ByteRange>> {
+/// Los rangos absolutos del fragmento en su archivo, resolviendo la query.
+pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<Ranges>> {
     let path = layer.join(&cap.file);
     if !path.exists() { return Ok(None); }
     let source = std::fs::read_to_string(&path)?;
 
     let Some(query_str) = &cap.query else {
-        return Ok(Some(ByteRange { start: 0, end: source.len() }));
+        return Ok(Some(Ranges::one(0, source.len())));
     };
     let lang     = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
-    let Some((node_start, node_end, _)) =
-        crate::query::find_target_with_sexp(language, &source, query_str)? else {
+    let Some(fragment) = crate::query::find_fragment(language, &source, query_str)? else {
         return Ok(None);
     };
-    Ok(Some(ByteRange { start: node_start, end: node_end }))
+    Ok(Some(fragment.ranges))
 }
 
 pub struct CaptureResult {
@@ -296,8 +293,12 @@ pub fn capture(
     // cambió y `hash_ast` si fue sólo espaciado.
     //
     // Así que la selección se usa para **encontrar** el nodo y después se
-    // descarta. Si hace falta más precisión, la respuesta es una query que
-    // nombre algo más chico, no un recorte sobre una que nombra algo más grande.
+    // descarta. Si hace falta más precisión, la respuesta es una query — que nombre
+    // algo más chico, o que nombre varios nodos y deje el resto afuera—, no un
+    // recorte sobre una que nombra algo más grande.
+    //
+    // Acá se toma **una** selección y sale un `@target`. Generar una query de
+    // varios es lo que hace `new` con N posiciones, y todavía no está.
 
     // El mismo recorte que aplica la resolución: el hash tiene que ser el del
     // fragmento que `check` va a comparar, no el del nodo crudo.

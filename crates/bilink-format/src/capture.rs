@@ -19,13 +19,21 @@ use sha2::{Digest, Sha256};
 /// **No hay sub-rango.** Un rango de bytes adentro de un nodo se corre con
 /// cualquier edición encima suya dentro del mismo nodo: su granularidad es
 /// ilusoria, se rompe todo el tiempo y hay que repuntarlo. Si hace falta más
-/// precisión, la respuesta es una query que nombre algo más chico.
+/// precisión, la respuesta es una query — que nombre algo más chico, o que nombre
+/// varios nodos y deje el resto afuera.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Capture {
     /// Path relativo a la raíz de la capa.
     pub file: String,
-    /// Query tree-sitter con captura `@target`. Ausente = el archivo completo.
+    /// Query tree-sitter con una o más capturas `@target`. Ausente = el archivo
+    /// completo.
+    ///
+    /// Con varias, el fragmento es la concatenación de los `@target` en orden de
+    /// archivo, unida por [`crate::FRAGMENT_SEPARATOR`]. Sigue siendo un string y
+    /// no una lista: un patrón único ancla los fragmentos entre sí, y tree-sitter
+    /// lo matchea entero o no lo matchea — con una lista habría resolución parcial,
+    /// que es un fragmento a medias sin estado que lo nombre.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
 }

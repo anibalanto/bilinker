@@ -66,7 +66,8 @@ impl LanguageServer for Backend {
         let cursor_byte = line_col_to_byte(&source, pos.line as usize + 1, pos.character as usize + 1);
 
         let covering: Vec<_> = results.iter()
-            .filter(|(_, _, range)| range.start <= cursor_byte && cursor_byte < range.end)
+            .filter(|(_, _, range)| range.parts().iter()
+                .any(|r| r.start <= cursor_byte && cursor_byte < r.end))
             .collect();
 
         if covering.is_empty() { return Ok(None); }
@@ -80,15 +81,15 @@ impl LanguageServer for Backend {
             // Try to get the content of the other side
             let other_side = if *n == 0 { 1u8 } else { 0u8 };
             let content = match get(&root, uuid, other_side, None, None) {
-                Ok(r) => format!("`{}` lines {}–{}\n```{}\n{}\n```",
-                    r.file, r.start_line, r.end_line,
+                Ok(r) => format!("`{}` lines {}\n```{}\n{}\n```",
+                    r.file, r.line_span(),
                     lang_from_file(&r.file), r.content),
                 Err(e) => {
                     self.client.log_message(
                         MessageType::ERROR,
                         format!("get {uuid}.{other_side}: {e:#}"),
                     ).await;
-                    format!("bytes {}–{}", range.start, range.end)
+                    format!("bytes {range}")
                 }
             };
 
@@ -117,7 +118,7 @@ impl LanguageServer for Backend {
         use std::collections::BTreeMap;
         let mut by_line: BTreeMap<usize, Vec<String>> = BTreeMap::new();
         for (bilink_path, n, range) in &results {
-            let line = byte_to_line(&source, range.start);
+            let line = byte_to_line(&source, range.start());
             let uuid = bilink_path.file_stem()
                 .and_then(|s| s.to_str()).unwrap_or("?");
             by_line.entry(line)

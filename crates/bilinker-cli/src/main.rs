@@ -678,7 +678,7 @@ Eliminar? [y/N] ");
                     let before   = before.as_deref().map(parse_pos).transpose()?;
                     let after    = after.as_deref().map(parse_pos).transpose()?;
                     let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
-                    eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
+                    eprintln!("# {}  lines {}", result.file, result.line_span());
                     println!("{}", result.content);
 
                 }
@@ -697,7 +697,7 @@ Eliminar? [y/N] ");
                 for (bilink_path, n, range) in results {
                     let source = std::fs::read_to_string(&file_path).unwrap_or_default();
                     let byte = line_col_to_byte(&source, line, col);
-                    if byte >= range.start && byte < range.end {
+                    if range.parts().iter().any(|r| byte >= r.start && byte < r.end) {
                         let uuid  = bilink_path.file_stem()
                             .and_then(|s| s.to_str()).unwrap_or("?");
                         let bl    = bilink_format::BiLink::load(&bilink_path)?;
@@ -715,7 +715,7 @@ Eliminar? [y/N] ");
                         .and_then(|s| s.to_str()).unwrap_or("?");
                     let bl    = bilink_format::BiLink::load(&bilink_path)?;
                     let other = &bl.endpoint.get(1 - n).link;
-                    println!("{uuid}.{n}  {other}  bytes {}–{}", range.start, range.end);
+                    println!("{uuid}.{n}  {other}  bytes {range}");
                 }
             }
         }
@@ -2079,10 +2079,10 @@ fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
             let Ok(cap) = bilink_format::Capture::load_in(&layer, id) else { continue };
             // El rango sale de la cache. Con cache fría no hay nodo canónico que
             // emitir: lattice necesita `check` corrido antes de consultar.
-            let Some(range) = cache.capture_range(id) else { continue };
+            let Some(range) = cache.capture_ranges(id) else { continue };
             tips.push(TipNode {
-                canonical: format!("{}::{}#{}~{}",
-                    layer_label(base, &layer), cap.file, range.start, range.end),
+                canonical: format!("{}::{}#{range}",
+                    layer_label(base, &layer), cap.file),
                 state:  cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into()),
                 commit: cache.commit(uuid, n).unwrap_or("").to_string(),
             });

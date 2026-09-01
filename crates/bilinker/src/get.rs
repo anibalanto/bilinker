@@ -1,7 +1,7 @@
 use std::path::Path;
 use anyhow::{bail, Context, Result};
 
-use bilink_format::{BiLink, ByteRange, Capture, LinkEndpoint};
+use bilink_format::{BiLink, Capture, LinkEndpoint, Ranges, FRAGMENT_SEPARATOR};
 
 use crate::cache::Cache;
 use crate::state::CaptureState;
@@ -12,8 +12,21 @@ use bilink_format::link::StratumPath;
 pub struct GetResult {
     pub content: String,
     pub file: String,
-    pub start_line: usize,
-    pub end_line: usize,
+    /// Los tramos de líneas que se muestran, 1-based e inclusivos: uno por parte
+    /// del fragmento. Son una lista y no un par porque un fragmento de varios
+    /// `@target` no ocupa un tramo contiguo, y un par tendría que mentir eligiendo
+    /// el que las abarca a todas.
+    pub lines: Vec<(usize, usize)>,
+}
+
+impl GetResult {
+    /// Los tramos como los imprime la salida: `12–14, 30–33`.
+    pub fn line_span(&self) -> String {
+        self.lines.iter()
+            .map(|(a, b)| format!("{a}–{b}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 pub struct DiffResult {
@@ -90,7 +103,7 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
     }
 
     let mut cache = Cache::load(root);
-    let range = e.link.capture_id().and_then(|id| cache.capture_range(id));
+    let range = e.link.capture_id().and_then(|id| cache.capture_ranges(id));
 
     // El commit se deriva si la cache no lo tiene: una cache fría —un clon fresco,
     // otra rama— no puede dejar sin `--diff` a un endpoint que sí tiene aceptación.
@@ -185,7 +198,7 @@ fn diff_structural(
     root: &Path,
     cap: &Capture,
     commit: &str,
-    stored_range: Option<&ByteRange>,
+    stored_range: Option<&Ranges>,
     hash: Option<&str>,
 ) -> Result<DiffResult> {
     // "after": current fragment via AST query
@@ -213,13 +226,13 @@ fn diff_structural(
         file: cap.file.clone(),
         layer_root: root.to_path_buf(),
         commit: commit.to_string(),
-        start_line: after_result.start_line,
-        end_line: after_result.end_line,
+        start_line: after_result.lines.first().map_or(1, |l| l.0),
+        end_line: after_result.lines.last().map_or(1, |l| l.1),
         diff,
     })
 }
 
-fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&ByteRange>) -> Result<String> {
+fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&Ranges>) -> Result<String> {
     // `git show <commit>:<path>` resuelve el path contra la raíz del **repo**, no
     // contra el `-C`. Una capa que no sea la raíz de su repo —`subsystems/lattice`
     // dentro de accreta— necesita la traducción o el comando falla.
@@ -236,12 +249,8 @@ fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&ByteR
     let source = String::from_utf8_lossy(&output.stdout);
 
     let fragment = match range {
-        Some(r) => {
-            let start = r.start.min(source.len());
-            let end   = r.end.min(source.len());
-            source[start..end].to_string()
-        }
-        None => source.into_owned(),
+        Some(r) => r.text(&source),
+        None    => source.into_owned(),
     };
 
     Ok(fragment)
@@ -287,8 +296,8 @@ fn find_function_body(source: &str, lang: &str, callee_name: &str) -> Option<(us
         let query_str = format!(
             "({anchor_kind} {field}: ({name_node_type}) @name (#eq? @name \"{escaped}\")) @target"
         );
-        if let Ok(Some((s, e))) = query::find_target(language.clone(), source, &query_str) {
-            return Some((s, e));
+        if let Ok(Some(f)) = query::find_fragment(language.clone(), source, &query_str) {
+            return Some((f.ranges.start(), f.ranges.end()));
         }
     }
     None
@@ -348,7 +357,7 @@ fn traverse_layer_for_diff(
     root: &Path,
     layer_path: StratumPath,
     uuid: &str,
-) -> Result<(std::path::PathBuf, Capture, Option<String>, Option<ByteRange>, Option<String>)> {
+) -> Result<(std::path::PathBuf, Capture, Option<String>, Option<Ranges>, Option<String>)> {
     let adjacent_root = {
         let p = stratum::resolve(root, root, layer_path.tokens())
             .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
@@ -366,7 +375,7 @@ fn traverse_layer_for_diff(
 
     let cache  = Cache::load(&adjacent_root);
     let commit = cache.commit(uuid, n).map(String::from);
-    let range  = adjacent_bl.endpoint.get(n).link.capture_id().and_then(|id| cache.capture_range(id));
+    let range  = adjacent_bl.endpoint.get(n).link.capture_id().and_then(|id| cache.capture_ranges(id));
     let hash   = adjacent_bl.endpoint.get(n).accepted.as_ref().map(|a| a.hash.clone());
 
     Ok((adjacent_root, cap, commit, range, hash))
@@ -456,35 +465,40 @@ fn resolve(
         return Ok(GetResult {
             content: source,
             file: cap.file.clone(),
-            start_line: 1,
-            end_line: total,
+            lines: vec![(1, total)],
         });
     };
 
     let lang = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
 
-    let (node_start, node_end) = query::find_target(language, &source, query_str)?
+    let fragment = query::find_fragment(language, &source, query_str)?
         .ok_or_else(|| fail(root, cap))?;
-
-    let (frag_start, frag_end) = (node_start, node_end);
-
-    let line_start = byte_to_line(&source, frag_start);
-    let line_end   = byte_to_line(&source, frag_end.saturating_sub(1));
 
     let before_rows = before.map(|(r, _)| r).unwrap_or(0);
     let after_rows  = after.map(|(r, _)| r).unwrap_or(0);
+    let last_line   = count_lines(&source).saturating_sub(1);
 
-    let ctx_start = line_start.saturating_sub(before_rows);
-    let ctx_end   = (line_end + after_rows).min(count_lines(&source).saturating_sub(1));
+    // Una parte por `@target`, cada una con su contexto y su tramo de líneas. Se
+    // muestran unidas por el mismo separador que las une en el `hash`: lo que se
+    // lee es el fragmento, no un recorte del archivo entre la primera y la última.
+    let mut blocks = Vec::new();
+    let mut lines  = Vec::new();
+    for part in fragment.ranges.parts() {
+        let line_start = byte_to_line(&source, part.start);
+        let line_end   = byte_to_line(&source, part.end.saturating_sub(1));
 
-    let content = extract_lines(&source, ctx_start, ctx_end);
+        let ctx_start = line_start.saturating_sub(before_rows);
+        let ctx_end   = (line_end + after_rows).min(last_line);
+
+        blocks.push(extract_lines(&source, ctx_start, ctx_end));
+        lines.push((ctx_start + 1, ctx_end + 1));
+    }
 
     Ok(GetResult {
-        content,
+        content: blocks.join(FRAGMENT_SEPARATOR),
         file: cap.file.clone(),
-        start_line: ctx_start + 1,
-        end_line: ctx_end + 1,
+        lines,
     })
 }
 
