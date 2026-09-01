@@ -89,6 +89,18 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // *conservarlos*: `Accepted` tiene `deny_unknown_fields`, así que le falla y le
     // falla explícito — la versión es lo que le permite decir por qué.
     ("3.4.0", "d9f899c1df0be5b3b18691ed67ced79d9b82f31ecacbf8728df0c0c6c28083db"),
+    // 3.5.0 agrega `accepted.n1`, con un solo valor: `declined`. Dice que alguien
+    // **renunció** al vecindario, y no que el fragmento no tenga uno.
+    //
+    // **Aditivo, y sube igual.** Un parser de 3.4.0 no puede leer el campo —
+    // `deny_unknown_fields`— así que falla explícito y la versión le dice por qué.
+    // Lo que no puede pasar es que lo ignore: leería la renuncia como *"este
+    // fragmento no tiene firma resoluble"*, que es la confusión que el campo existe
+    // para cerrar.
+    //
+    // No hay migración: ningún archivo existente lo lleva, y su ausencia sigue
+    // significando lo que significaba.
+    ("3.5.0", "685a031d0ef3c40f6af7549f092bb9a244b2c17f9b514ee215ecb02d7d3ccb3c"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

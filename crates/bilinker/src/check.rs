@@ -642,6 +642,7 @@ mod tests {
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
             hash_n1: None,
             hash_ast_n1: None,
+            n1: None,
         };
         let range = Ranges::one(0, after.len());
 
@@ -682,6 +683,7 @@ mod tests {
             hash_ast: None,
             hash_n1,
             hash_ast_n1,
+            n1: None,
         }
     }
 

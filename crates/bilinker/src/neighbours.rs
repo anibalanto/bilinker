@@ -46,6 +46,39 @@ pub trait Neighbours {
 /// Quién resuelve el vecindario en esta corrida, si hay alguien.
 pub type Provider<'a> = Option<&'a dyn Neighbours>;
 
+/// Si el fragmento **tiene** vecindario, que es distinto de si alguien pudo mirarlo.
+///
+/// Se contesta con la gramática y sin proveedor, y de eso dependen dos cosas: que el
+/// aviso de `accept` aparezca sólo donde corresponde —sobre prosa o un DTO sería
+/// ruido, porque ahí la ausencia de `hash_n1` ya era la correcta— y que una ausencia
+/// sin `n1: declined` tenga un solo significado.
+///
+/// Se camina hacia **arriba** desde cada `@target`: un capture de contrato señala el
+/// tipo de retorno, los parámetros y las anotaciones de ruta, y ninguno de esos nodos
+/// *es* la firma — todos son hijos suyos.
+pub fn has_resolvable_signature(layer: &Path, file: &str, ranges: &Ranges) -> bool {
+    use tree_sitter::Parser;
+
+    let lang = grammar::language_for_file(file);
+    let kinds = grammar::signature_kinds(lang);
+    if kinds.is_empty() { return false; }
+
+    let Ok(language) = grammar::for_language(lang) else { return false };
+    let Ok(source) = std::fs::read_to_string(layer.join(file)) else { return false };
+    let mut parser = Parser::new();
+    if parser.set_language(&language).is_err() { return false }
+    let Some(tree) = parser.parse(&source, None) else { return false };
+
+    ranges.parts().iter().any(|r| {
+        let mut node = tree.root_node().descendant_for_byte_range(r.start, r.end);
+        while let Some(n) = node {
+            if kinds.contains(&n.kind()) { return true }
+            node = n.parent();
+        }
+        false
+    })
+}
+
 /// Los dos hashes plegados de un vecindario.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folded {

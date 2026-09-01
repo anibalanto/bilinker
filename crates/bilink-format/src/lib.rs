@@ -15,7 +15,7 @@ pub mod link;
 pub mod schema;
 pub mod version;
 
-pub use bilink::{Accepted, BiLink, Endpoint, Endpoints};
+pub use bilink::{Accepted, BiLink, Endpoint, Endpoints, N1};
 pub use capture::Capture;
 pub use ignore::write_ignore;
 pub use link::{ByteRange, LinkEndpoint, Ranges, ENDPOINT_PREFIXES, FRAGMENT_SEPARATOR};

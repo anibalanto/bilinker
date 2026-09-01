@@ -148,6 +148,33 @@ pub struct Accepted {
     /// ningún estado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_ast_n1: Option<String>,
+    /// Que alguien haya **renunciado** al vecindario, y no que no lo haya.
+    ///
+    /// Sin este campo, el mismo fragmento en el mismo estado produce un `accepted`
+    /// con `hash_n1` o sin él según si había un language server prendido en esa
+    /// máquina — la determinación la toma el ambiente, que no es parte del estado
+    /// del fragmento, y se rompe la invariante 4.
+    ///
+    /// Con él, quien decide es el flag —igual que `--place` y `--content`— y una
+    /// ausencia **sin** `n1` vuelve a tener un solo significado: el fragmento no
+    /// tiene firma resoluble. Ver `concepts/accept.md` § "`n1: declined` es lo que
+    /// vuelve determinista la renuncia".
+    ///
+    /// Y es lo único que cruza la frontera: el consumidor recibe una copia opaca y
+    /// no puede volver a mirar la gramática del fragmento ajeno para reconstruirlo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n1: Option<N1>,
+}
+
+/// Por qué un `accepted` no lleva vecindario.
+///
+/// Un solo valor: la renuncia es lo único que hay que escribir, porque es lo único
+/// que no se puede derivar mirando el fragmento.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum N1 {
+    /// Alguien aceptó sin el nivel 1, a propósito.
+    Declined,
 }
 
 impl Accepted {
@@ -162,6 +189,7 @@ impl Accepted {
             && self.hash_ast == other.hash_ast
             && self.hash_n1 == other.hash_n1
             && self.hash_ast_n1 == other.hash_ast_n1
+            && self.n1 == other.n1
     }
 }
 
@@ -259,6 +287,7 @@ mod tests {
             hash_ast: Some("1b9e44a2".into()),
             hash_n1: None,
             hash_ast_n1: None,
+            n1: None,
         });
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();

@@ -132,6 +132,12 @@ enum Command {
         /// Aprueba sólo el contenido: escribe accepted.hash
         #[arg(long)]
         content: bool,
+        /// Acepta renunciando al vecindario: escribe n1: declined y ningún hash_n1
+        #[arg(long = "no-n1")]
+        no_n1: bool,
+        /// Sólo con --no-n1, y sólo donde éste baja una cobertura que ya estaba
+        #[arg(long, requires = "no_n1")]
+        force: bool,
     },
 
     /// Pone a punto el clon: exclude, refspec y materialización de .bilink/
@@ -1303,7 +1309,7 @@ Eliminar? [y/N] ");
             }
         },
 
-        Command::Accept { target, place, content } => {
+        Command::Accept { target, place, content, no_n1, force } => {
             // Dispatch: uuid.N  |  uuid (both endpoints)  |  path / "."
             let is_uuid_n = (target.ends_with(".0") || target.ends_with(".1"))
                 && target[..target.len()-2].chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -1311,10 +1317,13 @@ Eliminar? [y/N] ");
                 || std::path::Path::new(&target).exists();
 
             // Qué dimensiones aprueba. Sin flags, las dos.
-            let what = match (place, content) {
-                (true, false) => bilinker::accept::What::place_only(),
-                (false, true) => bilinker::accept::What::content_only(),
-                _             => bilinker::accept::What::default(),
+            let what = bilinker::accept::What {
+                no_n1, force,
+                ..match (place, content) {
+                    (true, false) => bilinker::accept::What::place_only(),
+                    (false, true) => bilinker::accept::What::content_only(),
+                    _             => bilinker::accept::What::default(),
+                }
             };
 
             // **Un commit por aceptación, no por invocación.** Cada endpoint aprobado

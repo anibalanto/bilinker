@@ -178,6 +178,8 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
             // y fabricarlo pediría resolver tipos, que una migración no hace.
             hash_n1: None,
             hash_ast_n1: None,
+            // El formato 1 no tenía vecindario, así que nadie renunció a ninguno.
+            n1: None,
         }),
         None => { p.pending += 1; None }
     };
