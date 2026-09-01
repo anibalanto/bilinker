@@ -217,6 +217,38 @@ pub fn absolute_range(layer: &Path, cap: &Capture) -> Result<Option<Ranges>> {
     Ok(Some(fragment.ranges))
 }
 
+/// Qué parte del nodo señalado se captura.
+///
+/// **Es un nombre y no una flag booleana** porque hay más de uno: el atajo del
+/// núcleo y los plugins se piden igual, `--as interface` y `--as spring-controller`,
+/// y un `--interface` booleano habría dejado a los plugins como ciudadanos de
+/// segunda.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// El nodo entero. Es lo que pasa sin `--as`.
+    #[default]
+    Node,
+    /// La firma: el nodo **menos su cuerpo**.
+    Interface,
+}
+
+impl Mode {
+    /// Los modos que hay, con qué hace cada uno. Es lo que lista `--as` sin valor.
+    pub const ALL: &'static [(&'static str, &'static str)] = &[
+        ("interface", "la firma sin el cuerpo: el nodo menos su campo `body`"),
+    ];
+
+    pub fn parse(name: &str) -> Result<Mode> {
+        match name {
+            "interface" => Ok(Mode::Interface),
+            other => bail!(
+                "no hay un modo `{other}`.\n       Los que hay: {}",
+                Self::ALL.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+}
+
 pub struct CaptureResult {
     pub capture: Capture,
     pub hash: String,
@@ -254,6 +286,16 @@ pub fn capture_many(
     file: &str,
     sel:  &[((usize, usize), (usize, usize))],
 ) -> Result<CaptureResult> {
+    capture_as(root, file, sel, Mode::Node)
+}
+
+/// Como [`capture_many`], eligiendo qué parte de cada nodo señalado se captura.
+pub fn capture_as(
+    root: &Path,
+    file: &str,
+    sel:  &[((usize, usize), (usize, usize))],
+    mode: Mode,
+) -> Result<CaptureResult> {
     if sel.is_empty() {
         bail!("un capture con posiciones necesita al menos una");
     }
@@ -273,15 +315,22 @@ pub fn capture_many(
 
     // Cada posición a su nodo, sin repetir: dos posiciones adentro de la misma
     // función son la misma función, no dos partes.
+    let mut pointed: Vec<Node> = Vec::new();
     let mut targets: Vec<Node> = Vec::new();
     let mut standalone = false;
     for (start, end) in sel {
         let (node, alone) = target_node_at(root_node, *start, *end, anchors)?;
         standalone |= alone;
-        if !targets.iter().any(|t| t.id() == node.id()) {
-            targets.push(node);
+        if !pointed.iter().any(|t| t.id() == node.id()) {
+            pointed.push(node);
+        }
+        for part in expand(node, mode, lang)? {
+            if !targets.iter().any(|t| t.id() == part.id()) {
+                targets.push(part);
+            }
         }
     }
+    pointed.sort_by_key(|n| (n.start_byte(), n.end_byte()));
     targets.sort_by_key(|n| (n.start_byte(), n.end_byte()));
 
     // **Ninguna parte puede contener a otra.** El fragmento es la concatenación, así
@@ -300,15 +349,19 @@ pub fn capture_many(
         );
     }
 
-    // El ancla del patrón: la estable más cercana que contenga a todas las partes.
-    // Con una sola parte es la de siempre —la que la envuelve—, y por eso una query
-    // de un `@target` sale idéntica a la que salía.
-    let lca  = targets.iter().copied().reduce(lowest_common_ancestor)
+    // **El ancla la deciden las posiciones señaladas, no las partes.** Con
+    // `--as interface` las partes son hijos del método, y anclar en su ancestro
+    // común daría el método a secas — sin la clase que lo distingue de otro método
+    // homónimo en el mismo archivo. Lo que hay que anclar es lo que se señaló.
+    //
+    // Con una posición sola es el ancla de siempre —la que la envuelve—, y por eso
+    // una query de un `@target` sale idéntica a la que salía.
+    let lca = pointed.iter().copied().reduce(lowest_common_ancestor)
         .expect("al menos una posición");
-    let pattern_root = if standalone && targets.len() == 1 {
+    let pattern_root = if standalone && pointed.len() == 1 {
         lca
     } else {
-        let from = if targets.iter().any(|t| t.id() == lca.id()) { lca.parent() } else { Some(lca) };
+        let from = if pointed.len() == 1 { lca.parent() } else { Some(lca) };
         from.and_then(|n| walk_up_to_anchor(n, anchors)).unwrap_or(lca)
     };
 
@@ -362,6 +415,41 @@ pub fn capture_many(
         commit,
         ranges,
     })
+}
+
+/// Qué partes del nodo señalado captura cada modo.
+///
+/// `Interface` es *todo el nodo menos su cuerpo*, y eso es literalmente lo único que
+/// bilinker sabe de una firma: la gramática nombra el campo del cuerpo, y la firma
+/// es el resto. **Un lenguaje que no está en la tabla falla en vez de adivinar** —
+/// la misma decisión que `capture` toma cuando no puede identificar un nodo.
+fn expand<'a>(node: Node<'a>, mode: Mode, lang: &str) -> Result<Vec<Node<'a>>> {
+    match mode {
+        Mode::Node => Ok(vec![node]),
+        Mode::Interface => {
+            let field = grammar::body_field(lang).ok_or_else(|| anyhow::anyhow!(
+                "`--as interface` no sabe qué es el cuerpo en {lang}.\n       \
+                 Señalar las partes a mano, o agregar {lang} a la tabla."
+            ))?;
+            // Un nodo sin cuerpo se captura entero: si la gramática no le da campo
+            // `body` —la firma de un método en una interface de TypeScript— la
+            // firma *es* el nodo, y no hay nada que sacarle.
+            let Some(body) = node.child_by_field_name(field) else {
+                return Ok(vec![node]);
+            };
+            let mut cursor = node.walk();
+            let parts: Vec<Node> = node.named_children(&mut cursor)
+                .filter(|n| n.id() != body.id())
+                .collect();
+            if parts.is_empty() {
+                bail!(
+                    "el `{}` de la línea {} es todo cuerpo: no hay firma que capturar.",
+                    node.kind(), node.start_position().row + 1
+                );
+            }
+            Ok(parts)
+        }
+    }
 }
 
 /// El nodo que una posición señala: el ancla estable más cercana que la contiene.
@@ -438,30 +526,48 @@ fn emit_pattern(
     counter: &mut usize,
     lang:    &str,
 ) -> String {
-    let pred = real_name_predicate(node, source, counter, lang);
-    let pred_pos = grammar::name_field(lang, node.kind())
-        .or(Some("name"))
-        .and_then(|f| node.child_by_field_name(f))
-        .map(|n| n.start_byte())
-        .unwrap_or(node.start_byte());
+    let (mut pred, pred_node) = real_name_predicate(node, source, counter, lang);
+    let pred_pos = pred_node.map(|n| n.start_byte()).unwrap_or(node.start_byte());
+
+    let mut children: Vec<Node> = kids.get(&node.id()).cloned().unwrap_or_default();
+
+    // **El nombre puede ser a la vez el ancla y una parte.** Pasa con
+    // `--as interface`: la firma incluye el nombre, y el nombre es lo que la query
+    // usa para encontrar el nodo. Es un solo nodo del AST, así que lleva las dos
+    // capturas juntas en vez de emitirse dos veces.
+    if let Some(pn) = pred_node {
+        if targets.contains(&pn.id()) {
+            pred = mark_target_in_predicate(&pred);
+            children.retain(|k| k.id() != pn.id());
+        }
+    }
 
     let mut parts: Vec<(usize, String)> = Vec::new();
     if !pred.is_empty() { parts.push((pred_pos, pred)); }
 
-    if let Some(children) = kids.get(&node.id()) {
-        for kid in children {
-            let field = field_name_for_child(node, kid.id())
-                .map(|f| format!("{f}: "))
-                .unwrap_or_default();
-            let inner = emit_pattern(*kid, kids, targets, source, counter, lang);
-            parts.push((kid.start_byte(), format!("\n  {field}{inner}")));
-        }
+    for kid in children {
+        let field = field_name_for_child(node, kid.id())
+            .map(|f| format!("{f}: "))
+            .unwrap_or_default();
+        let inner = emit_pattern(kid, kids, targets, source, counter, lang);
+        parts.push((kid.start_byte(), format!("\n  {field}{inner}")));
     }
     parts.sort_by_key(|(pos, _)| *pos);
 
     let body: String = parts.into_iter().map(|(_, s)| s).collect();
     let pattern = format!("({}{})", node.kind(), body);
     if targets.contains(&node.id()) { format!("{pattern} @target") } else { pattern }
+}
+
+/// Agrega `@target` a la captura del predicado, antes del `#eq?`.
+///
+/// Cirugía sobre el string y no una estructura, porque el predicado tiene una sola
+/// forma y la escribe una sola función: `… {cap} (#eq? {cap} "…")`.
+fn mark_target_in_predicate(pred: &str) -> String {
+    match pred.find(" (#eq?") {
+        Some(i) => format!("{} @target{}", &pred[..i], &pred[i..]),
+        None    => pred.to_string(),
+    }
 }
 
 fn build_path<'a>(ancestor: Node<'a>, descendant: Node<'a>) -> Vec<Node<'a>> {
@@ -547,49 +653,61 @@ fn fmt_ranges(rs: &[(usize, usize)]) -> String {
     rs.iter().map(|(a, b)| format!("{a}~{b}")).collect::<Vec<_>>().join(",")
 }
 
-fn real_name_predicate(node: Node, source: &str, counter: &mut usize, lang: &str) -> String {
+/// El predicado que identifica al nodo, y **el nodo del AST que ese predicado
+/// captura** cuando lo hay.
+///
+/// El nodo hace falta por dos cosas: para ordenar el predicado entre las partes
+/// —en Java las anotaciones van antes del nombre— y porque con `--as interface` el
+/// nombre es a la vez el ancla y una parte capturada, y hay que escribir las dos
+/// cosas sobre el mismo nodo en vez de emitirlo dos veces.
+///
+/// Los casos especiales devuelven `None`: su predicado cae sobre un heading, una
+/// celda o una clave, que nunca son parte de una firma.
+fn real_name_predicate<'a>(
+    node: Node<'a>, source: &str, counter: &mut usize, lang: &str,
+) -> (String, Option<Node<'a>>) {
     // Special case: markdown section — use heading text as predicate
     if node.kind() == "section" {
         if let Some(pred) = markdown_section_predicate(node, source, counter) {
-            return pred;
+            return (pred, None);
         }
     }
     // Special case: markdown pipe_table_row — la primera celda lo discrimina
     if node.kind() == "pipe_table_row" {
         if let Some(pred) = markdown_table_row_predicate(node, source, counter) {
-            return pred;
+            return (pred, None);
         }
     }
     // Special case: YAML block_sequence_item — use id: or first key as predicate
     if node.kind() == "block_sequence_item" {
         if let Some(pred) = yaml_sequence_item_predicate(node, source, counter) {
-            return pred;
+            return (pred, None);
         }
     }
     // Special case: YAML block_mapping_pair — use key as predicate
     if node.kind() == "block_mapping_pair" {
         if let Some(pred) = yaml_mapping_pair_predicate(node, source, counter) {
-            return pred;
+            return (pred, None);
         }
     }
     // Special case: Rust impl_item — no tiene campo `name`; lo identifica el tipo
     // y, si es la implementación de un trait, el trait.
     if lang == "rust" && node.kind() == "impl_item" {
         if let Some(pred) = rust_impl_predicate(node, source, counter) {
-            return pred;
+            return (pred, None);
         }
     }
     // El campo que lleva el nombre depende del lenguaje y del tipo de nodo; la
     // tabla vive en `grammar`. `name` es el caso mayoritario y el default.
     let field = grammar::name_field(lang, node.kind()).unwrap_or("name");
     let Some(name_child) = node.child_by_field_name(field) else {
-        return String::new();
+        return (String::new(), None);
     };
     let name_type = name_child.kind();
     let name_text = query::escape_query_string(&source[name_child.byte_range()]);
     let cap = format!("@n{counter}");
     *counter += 1;
-    format!("\n  {field}: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
+    (format!("\n  {field}: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")"), Some(name_child))
 }
 
 /// Predicado de un `impl` de Rust: el tipo implementado y, si lo hay, el trait.

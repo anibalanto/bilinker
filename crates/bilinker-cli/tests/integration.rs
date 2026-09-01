@@ -209,6 +209,116 @@ fn an_anchor_whose_name_has_a_quote_is_captured() {
     assert!(!uuid.trim().is_empty(), "{stderr}");
 }
 
+/// Un controller con anotaciones, cuerpo y firma — el caso de `1d`.
+fn workspace_with_a_controller() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/public-api/user\")\n",
+        "public class Service {\n",
+        "\n",
+        "    @GetMapping(\"/permissions/from-token\")\n",
+        "    public List<PublicAuthorityDto> getPermissions(String token)\n",
+        "    {\n",
+        "        return svc.permissionsOf(token);\n",
+        "    }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "ctl"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    (tmp, root)
+}
+
+/// `--as interface` captura la firma y deja el cuerpo afuera, anclada en la clase.
+#[test]
+fn as_interface_captures_the_signature_without_the_body() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let cap = capture_file_of(&root);
+    assert!(cap.contains("(modifiers) @target"),      "las anotaciones del método:\n{cap}");
+    assert!(cap.contains("type: (generic_type) @target"), "el tipo de retorno:\n{cap}");
+    assert!(cap.contains("parameters: (formal_parameters) @target"), "los parámetros:\n{cap}");
+    assert!(cap.contains(r#"@n1 @target (#eq? @n1 "getPermissions")"#),
+            "el nombre es a la vez ancla y parte:\n{cap}");
+    // El `body:` que hay es el de la clase, el camino hasta el método. El del
+    // método —un `(block)`— no aparece.
+    assert!(!cap.contains("(block)"), "el cuerpo del método no entra:\n{cap}");
+    assert!(cap.contains("body: (class_body"), "{cap}");
+    assert!(cap.contains(r#"(#eq? @n0 "Service")"#),
+            "la firma se ancla en la clase, no en el método suelto:\n{cap}");
+}
+
+/// El caso de `1d`, literal: el cuerpo cambia y no pasa nada; el tipo de retorno
+/// cambia y se entera.
+#[test]
+fn as_interface_ignores_the_body_and_sees_the_return_type() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    assert!(ok, "{stderr}");
+
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("svc.permissionsOf(token)", "svc.otraCosa(token)")).unwrap();
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "un refactor adentro del cuerpo no es drift:\n{out}");
+
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("List<PublicAuthorityDto>", "List<HSIRoleInfoDto>")).unwrap();
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "el tipo de retorno sí:\n{out}");
+}
+
+/// En un lenguaje sin entrada en la tabla, falla y dice qué hacer.
+#[test]
+fn as_interface_refuses_a_language_it_does_not_know() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--as.0", "interface", "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(!ok, "markdown no tiene cuerpo que sacar");
+    assert!(stderr.contains("no sabe qué es el cuerpo en markdown"), "{stderr}");
+    assert!(stderr.contains("a mano"), "el error dice qué hacer:\n{stderr}");
+}
+
+/// `--as` sin valor lista los modos.
+#[test]
+fn as_without_a_value_lists_the_modes() {
+    let (_tmp, root) = isolated_git_workspace();
+    let (stdout, _, ok) = run_in(&root, &["chain", "new", "--as"]);
+    assert!(ok);
+    assert!(stdout.contains("interface"), "{stdout}");
+}
+
+/// Un modo que no existe se dice, con los que sí.
+#[test]
+fn an_unknown_mode_lists_the_ones_that_exist() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(!ok);
+    assert!(stderr.contains("no hay un modo `spring-controller`"), "{stderr}");
+    assert!(stderr.contains("interface"), "{stderr}");
+}
+
 /// Un workspace con tres métodos, para señalar dos y dejar uno afuera.
 fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
     let (tmp, root) = isolated_git_workspace();
