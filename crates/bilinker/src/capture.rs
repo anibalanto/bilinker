@@ -586,7 +586,7 @@ fn real_name_predicate(node: Node, source: &str, counter: &mut usize, lang: &str
         return String::new();
     };
     let name_type = name_child.kind();
-    let name_text = &source[name_child.byte_range()];
+    let name_text = query::escape_query_string(&source[name_child.byte_range()]);
     let cap = format!("@n{counter}");
     *counter += 1;
     format!("\n  {field}: ({name_type}) {cap} (#eq? {cap} \"{name_text}\")")
@@ -600,8 +600,7 @@ fn rust_impl_predicate(node: Node, source: &str, counter: &mut usize) -> Option<
     let mut out = String::new();
     for field in ["trait", "type"] {
         let Some(child) = node.child_by_field_name(field) else { continue };
-        let text = &source[child.byte_range()];
-        if text.contains('"') { continue; }
+        let text = query::escape_query_string(&source[child.byte_range()]);
         let cap = format!("@n{counter}");
         *counter += 1;
         out.push_str(&format!("\n  {field}: ({}) {cap} (#eq? {cap} \"{text}\")", child.kind()));
@@ -621,10 +620,8 @@ fn rust_impl_predicate(node: Node, source: &str, counter: &mut usize) -> Option<
 fn markdown_table_row_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
     let mut c = node.walk();
     let first = node.children(&mut c).find(|n| n.kind() == "pipe_table_cell")?;
-    let text = &source[first.byte_range()];
-    // Las comillas romperían la query, y una celda que las lleve no se puede
-    // usar como predicado: mejor fallar acá que emitir algo que no parsea.
-    if text.contains('"') || text.trim().is_empty() { return None; }
+    if source[first.byte_range()].trim().is_empty() { return None; }
+    let text = query::escape_query_string(&source[first.byte_range()]);
     let cap = format!("@n{counter}");
     *counter += 1;
     Some(format!("\n  (pipe_table_cell) {cap} (#eq? {cap} \"{text}\")"))
@@ -633,7 +630,7 @@ fn markdown_table_row_predicate(node: Node, source: &str, counter: &mut usize) -
 /// For a YAML `block_sequence_item`, find the `id:` pair inside and use its value as predicate.
 fn yaml_sequence_item_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
     // Walk children to find block_node → block_mapping → block_mapping_pair(key=id)
-    let id_value = find_yaml_id_in_sequence_item(node, source)?;
+    let id_value = query::escape_query_string(&find_yaml_id_in_sequence_item(node, source)?);
     let cap = format!("@n{counter}");
     *counter += 1;
     Some(format!(
@@ -647,7 +644,7 @@ fn find_yaml_id_in_sequence_item<'a>(node: Node<'a>, source: &str) -> Option<Str
         if source[key.byte_range()].trim() == "id" {
             let val = node.child_by_field_name("value")?;
             let v = source[val.byte_range()].trim()
-                .trim_matches('"').trim_matches('\'').replace('"', "\\\"");
+                .trim_matches('"').trim_matches('\'').to_string();
             if !v.is_empty() { return Some(v); }
         }
         return None;
@@ -665,8 +662,8 @@ fn find_yaml_id_in_sequence_item<'a>(node: Node<'a>, source: &str) -> Option<Str
 /// For a YAML `block_mapping_pair`, use the key text as predicate.
 fn yaml_mapping_pair_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
     let key_node = node.child_by_field_name("key")?;
-    let key_text = source[key_node.byte_range()].trim().replace('"', "\\\"");
-    if key_text.is_empty() { return None; }
+    if source[key_node.byte_range()].trim().is_empty() { return None; }
+    let key_text = query::escape_query_string(source[key_node.byte_range()].trim());
     let key_type = key_node.kind();
     let cap = format!("@n{counter}");
     *counter += 1;
@@ -683,7 +680,7 @@ fn markdown_section_predicate(node: Node, source: &str, counter: &mut usize) -> 
             for j in 0..child.child_count() {
                 let inline = child.child(j)?;
                 if inline.kind() == "inline" || inline.kind().contains("inline") {
-                    let text = source[inline.byte_range()].trim().replace('"', "\\\"");
+                    let text = query::escape_query_string(source[inline.byte_range()].trim());
                     let cap = format!("@n{counter}");
                     *counter += 1;
                     return Some(format!(
