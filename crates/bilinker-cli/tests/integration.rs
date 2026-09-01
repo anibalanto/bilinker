@@ -396,6 +396,113 @@ fn a_spring_endpoint_sees_the_class_prefix() {
     assert!(out.contains("ALTERED"), "la ruta compuesta entra en el fragmento:\n{out}");
 }
 
+/// Un controller donde la anotación de verbo no lleva literal: la ruta la aporta
+/// entera la clase, y dos hermanos comparten la misma anotación pelada. Es la mitad
+/// de la superficie de una api real.
+fn workspace_with_markerless_verbs() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Booking.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/public-api/institution/booking\")\n",
+        "public class Booking {\n",
+        "\n",
+        "    @GetMapping\n",
+        "    public List<PublicAppointmentListDto> getBookingList(Integer id)\n",
+        "    {\n",
+        "        return svc.list(id);\n",
+        "    }\n",
+        "\n",
+        "    @GetMapping\n",
+        "    public List<PublicProfessionalDto> getProfessionals(Integer id)\n",
+        "    {\n",
+        "        return svc.professionals(id);\n",
+        "    }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "ctl"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    (tmp, root)
+}
+
+/// **Sin literal en la anotación, el ancla es el nombre del método** — y sólo el
+/// ancla. Sin esto el único predicado sería el nombre de la anotación, que no
+/// distingue un endpoint de sus hermanos.
+#[test]
+fn a_markerless_verb_anchors_on_the_method_name() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let cap = capture_of(&root, "Booking.java");
+    let name = cap.lines().find(|l| l.contains("getBookingList"))
+        .unwrap_or_else(|| panic!("el nombre no entró en la query:\n{cap}"));
+    assert!(name.contains("#eq?"), "el nombre entra como predicado:\n{cap}");
+    // Y **no** como `@target`, que es el reparto inverso al de `--as interface`:
+    // renombrar no cambia el contrato del endpoint, así que tiene que ser una
+    // relocalización y no un cambio de contenido.
+    assert!(!name.contains("@target"), "el nombre ancla y no es contenido:\n{cap}");
+}
+
+/// Y ancla en el hermano correcto: tocar el otro endpoint de la misma clase, con la
+/// misma anotación pelada, no mueve nada.
+#[test]
+fn a_markerless_endpoint_ignores_its_sibling() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    let java = root.join("src/Booking.java");
+    let edit = |from: &str, to: &str| {
+        let src = fs::read_to_string(&java).unwrap();
+        fs::write(&java, src.replace(from, to)).unwrap();
+    };
+
+    edit("PublicProfessionalDto", "OtraCosaDto");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "el contrato del hermano no es el propio:\n{out}");
+
+    edit("PublicAppointmentListDto", "HSIRoleInfoDto");
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "el propio tipo de retorno sí:\n{out}");
+}
+
+/// **Lo que cuesta**: sin literal propio no hay nada más que distinga un endpoint de
+/// sus hermanos, así que renombrar el método rompe el ancla y hay que repuntarlo. El
+/// precio de no anclar sería peor — un vínculo que apunta a otro endpoint y contesta
+/// OK.
+#[test]
+fn renaming_a_markerless_endpoint_costs_a_recapture() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
+
+    let java = root.join("src/Booking.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("getBookingList", "listarTurnos")).unwrap();
+
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "renombrar rompe el ancla, y eso se reporta:\n{out}");
+    assert!(out.contains("UNRESOLVED"), "y el capture es el que no resuelve:\n{out}");
+}
+
 /// La detección sugiere y no elige: sin `--as`, el capture es el nodo entero.
 #[test]
 fn detection_suggests_and_does_not_choose() {
@@ -486,12 +593,17 @@ fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 fn capture_file_of(root: &std::path::Path) -> String {
+    capture_of(root, "Service.java")
+}
+
+/// El capture de un archivo cualquiera, para los fixtures que no usan `Service.java`.
+fn capture_of(root: &std::path::Path, file: &str) -> String {
     let dir = root.join(".bilink/capture");
     std::fs::read_dir(&dir).unwrap()
         .filter_map(|e| e.ok())
         .map(|e| std::fs::read_to_string(e.path()).unwrap())
-        .find(|c| c.contains("Service.java"))
-        .expect("no hay capture de Service.java")
+        .find(|c| c.contains(file))
+        .unwrap_or_else(|| panic!("no hay capture de {file}"))
 }
 
 /// Dos posiciones en un tip son **una** query con dos `@target`, anclada una vez.

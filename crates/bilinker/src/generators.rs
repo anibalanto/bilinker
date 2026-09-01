@@ -234,8 +234,32 @@ fn spring_pattern(
     };
 
     let mut method_parts = vec![format!("(modifiers\n        {route_pat})")];
-    for field in ["type", "parameters"] {
-        if let Some(child) = method.child_by_field_name(field) {
+
+    // **Cuando la anotación del método no lleva literal, el ancla es su nombre.**
+    //
+    // `@GetMapping` a secas es la mitad de los endpoints de una api real: la ruta la
+    // aporta entera el `@RequestMapping` de la clase, y el método no agrega ningún
+    // literal. Sin esto el único predicado sería el nombre de la anotación, que
+    // matchea cualquier hermano con la misma anotación pelada — un capture que
+    // depende de que hoy haya uno solo, y que se muda al vecino en cuanto aparece
+    // otro. `verify_query_identifies` no lo agarra: pregunta si es única *ahora*.
+    //
+    // **Entra como predicado y no lleva `@target`**, que es el reparto inverso al de
+    // `interface`. Los dos salen del mismo criterio —qué describe el fragmento—: el
+    // contrato de un endpoint no incluye cómo se llama el método que lo sirve, así
+    // que renombrarlo tiene que ser una relocalización y no un cambio de contenido.
+    // Las partes salen en el orden de la gramática, que en Java es
+    // `modifiers, type, name, parameters`. El nombre va en el medio, no al final.
+    let anclar_por_nombre = route.child_by_field_name("arguments").is_none();
+    for field in ["type", "name", "parameters"] {
+        let Some(child) = method.child_by_field_name(field) else { continue };
+        if field == "name" {
+            if !anclar_por_nombre { continue }
+            let c = cap();
+            method_parts.push(format!(
+                "name: ({kind}) {c} (#eq? {c} \"{n}\")",
+                kind = child.kind(), n = esc(&source[child.byte_range()])));
+        } else {
             method_parts.push(format!("{field}: ({}) @target", child.kind()));
         }
     }
