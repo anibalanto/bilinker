@@ -450,18 +450,37 @@ enum TipKind {
     /// capturar **como se pidió**, no como si no se hubiera pedido nada.
     Fragment  {
         file:    String,
-        mode:    bilinker::capture::Mode,
+        /// El nombre del generador, si se pidió uno. Viaja con el plan porque al
+        /// corregir la vista en el editor hay que volver a capturar **como se
+        /// pidió**, no como si no se hubiera pedido nada.
+        mode:    Option<String>,
         capture: bilinker::capture::CaptureResult,
+        /// Los generadores que tendrían algo que decir. Se **sugieren**: elegir por
+        /// el usuario le escribiría otra cosa, y un capture es opaco después.
+        suggest: Vec<&'static str>,
     },
 }
 
 impl TipPlan {
     /// La vista de lo que este tip capturaría, si captura algo.
-    fn preview(&self) -> anyhow::Result<Option<(bilinker::preview::Preview, String)>> {
-        let TipKind::Fragment { file, capture, .. } = &self.kind else { return Ok(None) };
+    fn preview(&self, n: usize) -> anyhow::Result<Option<(bilinker::preview::Preview, String)>> {
+        let TipKind::Fragment { file, capture, suggest, .. } = &self.kind else { return Ok(None) };
         let source = std::fs::read_to_string(self.layer_root.join(file))?;
         let label  = format!("{} :: {}", self.layer_fs.display(), file);
-        Ok(Some((bilinker::preview::Preview::of(&label, &source, &capture.ranges), source)))
+        // Se **sugiere** y no se elige: un generador que acierta cuando no querías
+        // ya te escribió otra cosa, y un capture es opaco después.
+        let note = (!suggest.is_empty()).then(|| suggest.iter()
+            .map(|name| {
+                let what = bilinker::capture::generators().into_iter()
+                    .find(|g| g.name() == *name)
+                    .map(|g| g.describe().to_string()).unwrap_or_default();
+                format!("sugerencia: `--as.{n} {name}` — {what}")
+            })
+            .collect::<Vec<_>>().join("\n"));
+        Ok(Some((
+            bilinker::preview::Preview::of(&label, &source, &capture.ranges).with_note(note),
+            source,
+        )))
     }
 
     /// El mismo tip con otras posiciones — lo que devuelve una vista editada.
@@ -470,11 +489,15 @@ impl TipPlan {
             anyhow::bail!("este tip no captura posiciones");
         };
         let sel: Vec<_> = lines.iter().map(|&l| ((l, 1), (l, 1))).collect();
-        let capture = bilinker::capture::capture_as(&self.layer_root, file, &sel, *mode)?;
+        let gen = mode.as_deref().map(bilinker::capture::generator_named).transpose()?;
+        let capture = bilinker::capture::capture_as(
+            &self.layer_root, file, &sel, gen.as_deref())?;
         Ok(TipPlan {
             layer_fs:   self.layer_fs.clone(),
             layer_root: self.layer_root.clone(),
-            kind:       TipKind::Fragment { file: file.clone(), mode: *mode, capture },
+            kind:       TipKind::Fragment {
+                file: file.clone(), mode: mode.clone(), capture, suggest: Vec::new(),
+            },
         })
     }
 
@@ -500,7 +523,9 @@ impl TipPlan {
 /// Las posiciones extra van separadas por coma después de la primera —
 /// `Foo.java:8:1,15:5` — y cada una resuelve a su nodo. De todas sale **una** query
 /// con un `@target` por nodo: el patrón único es lo que las ancla entre sí.
-fn plan_tip(root: &Path, tip_str: &str, mode: bilinker::capture::Mode) -> anyhow::Result<TipPlan> {
+fn plan_tip(
+    root: &Path, tip_str: &str, gen: Option<&dyn bilinker::capture::CaptureGenerator>,
+) -> anyhow::Result<TipPlan> {
     use stratum::PathToken;
 
     // `abstract` es un tip, no un path: la punta que publica el proveedor. Vive en
@@ -533,7 +558,7 @@ fn plan_tip(root: &Path, tip_str: &str, mode: bilinker::capture::Mode) -> anyhow
     let layer_root = root.join(&layer_fs);
 
     let kind = if positions.is_empty() {
-        if mode != bilinker::capture::Mode::Node {
+        if gen.is_some() {
             anyhow::bail!(
                 "`--as` necesita una posición: sin señalar nada, el tip es el archivo \
                  entero y no hay nodo del que tomar una parte."
@@ -542,8 +567,17 @@ fn plan_tip(root: &Path, tip_str: &str, mode: bilinker::capture::Mode) -> anyhow
         TipKind::WholeFile { file: file_str }
     } else {
         let sel: Vec<_> = positions.iter().map(|&p| (p, p)).collect();
-        let capture = bilinker::capture::capture_as(&layer_root, &file_str, &sel, mode)?;
-        TipKind::Fragment { file: file_str, mode, capture }
+        let capture = bilinker::capture::capture_as(&layer_root, &file_str, &sel, gen)?;
+        // Sin `--as`, qué generadores tendrían algo que decir. Se sugieren y nada
+        // más: un generador que acierta cuando no querías ya te escribió otra cosa.
+        let suggest = match gen {
+            Some(_) => Vec::new(),
+            None    => bilinker::capture::suggest_for(&layer_root, &file_str, positions[0])
+                           .unwrap_or_default(),
+        };
+        TipKind::Fragment {
+            file: file_str, mode: gen.map(|g| g.name().to_string()), capture, suggest,
+        }
     };
 
     Ok(TipPlan { layer_fs, layer_root, kind })
@@ -600,7 +634,7 @@ fn confirm_tips(plans: &mut [TipPlan], dry_run: bool, yes: bool) -> anyhow::Resu
 
     let mut vistas = Vec::new();
     for (i, plan) in plans.iter().enumerate() {
-        if let Some((preview, source)) = plan.preview()? {
+        if let Some((preview, source)) = plan.preview(i)? {
             vistas.push((i, preview.label.clone(), preview.render(&source)));
         }
     }
@@ -1511,14 +1545,14 @@ Eliminar? [y/N] ");
         Command::Chain { sub } => match sub {
             ChainCommand::New { tip, mid, kind, name0, name1, from_repo, as0, as1, list_modes, dry_run, yes } => {
                 if list_modes {
-                    for (name, what) in bilinker::capture::Mode::ALL {
-                        println!("  {name:<20} {what}");
+                    for g in bilinker::capture::generators() {
+                        println!("  {:<20} {}", g.name(), g.describe());
                     }
                     return Ok(());
                 }
                 let modes = [
-                    as0.as_deref().map(bilinker::capture::Mode::parse).transpose()?.unwrap_or_default(),
-                    as1.as_deref().map(bilinker::capture::Mode::parse).transpose()?.unwrap_or_default(),
+                    as0.as_deref().map(bilinker::capture::generator_named).transpose()?,
+                    as1.as_deref().map(bilinker::capture::generator_named).transpose()?,
                 ];
                 let root = project_root(&cwd)?;
 
@@ -1535,7 +1569,7 @@ Eliminar? [y/N] ");
                         let (alias, uuid) = spec.split_once(':').ok_or_else(|| {
                             anyhow::anyhow!("--from-repo se escribe `<alias>:<uuid>`")
                         })?;
-                        let plan = plan_tip(&root, &tip[0], modes[0])?;
+                        let plan = plan_tip(&root, &tip[0], modes[0].as_deref())?;
                         let remote = (
                             plan.layer_fs.clone(),
                             bilink_format::LinkEndpoint::Repo(alias.to_string()),
@@ -1546,7 +1580,8 @@ Eliminar? [y/N] ");
                         if tip.len() != 2 {
                             anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                         }
-                        (None, vec![plan_tip(&root, &tip[0], modes[0])?, plan_tip(&root, &tip[1], modes[1])?], None)
+                        (None, vec![plan_tip(&root, &tip[0], modes[0].as_deref())?,
+                                    plan_tip(&root, &tip[1], modes[1].as_deref())?], None)
                     }
                 };
 

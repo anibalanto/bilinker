@@ -30,7 +30,15 @@ pub struct Preview {
     /// Las líneas capturadas, 1-based.
     pub marked: Vec<usize>,
     /// Los tramos contiguos de líneas capturadas, 1-based e inclusivos.
+    ///
+    /// **No son las partes.** Dos partes pegadas —el tipo de retorno y los
+    /// parámetros de una firma— caen en el mismo tramo de líneas, así que los tramos
+    /// dicen dónde mirar y `parts` cuántos fragmentos hay.
     pub spans: Vec<(usize, usize)>,
+    /// Cuántas partes tiene el fragmento: una por `@target`.
+    pub parts: usize,
+    /// Una línea al pie: qué otra forma de capturar esto había. Se **sugiere**.
+    pub note: Option<String>,
 }
 
 impl Preview {
@@ -45,7 +53,19 @@ impl Preview {
         marked.sort_unstable();
         marked.dedup();
 
-        Preview { label: label.to_string(), marked: marked.clone(), spans: spans_of(&marked) }
+        Preview {
+            label:  label.to_string(),
+            marked: marked.clone(),
+            spans:  spans_of(&marked),
+            parts:  ranges.parts().len(),
+            note:   None,
+        }
+    }
+
+    /// La misma vista, con una línea al pie.
+    pub fn with_note(mut self, note: Option<String>) -> Preview {
+        self.note = note;
+        self
     }
 
     /// La vista, lista para imprimir o para abrir en un editor.
@@ -76,8 +96,11 @@ impl Preview {
         }
 
         out.push('\n');
-        out.push_str(&format!("{} · {}\n", partes(self.spans.len()), fmt_spans(&self.spans)));
+        out.push_str(&format!("{} · {}\n", partes(self.parts), fmt_spans(&self.spans)));
         out.push_str("queda afuera: todo lo que no está marcado\n");
+        if let Some(note) = &self.note {
+            out.push_str(&format!("{note}\n"));
+        }
         out
     }
 
