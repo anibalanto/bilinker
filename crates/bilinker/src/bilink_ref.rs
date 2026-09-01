@@ -1035,7 +1035,20 @@ fn walk_for_bilink(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     if candidate.is_dir() {
         out.push(candidate);
     }
-    for entry in std::fs::read_dir(dir)?.flatten() {
+    // **Un directorio que no se puede leer se saltea.** Si bilinker no tiene permiso
+    // sobre él tampoco podría leer los bilinks de adentro, así que no hay nada que
+    // perder al no entrar — y abortar convierte un directorio ajeno al repo en un
+    // bloqueo total. El caso que lo levantó es el `pgdata` de docker, con el uid del
+    // contenedor y modo 0700, que cualquier clon tiene apenas alguien levanta el
+    // stack local. Cualquier otro error de I/O sigue siendo un problema de verdad, y
+    // se propaga con el path adentro: un `Permission denied` pelado sobre un árbol de
+    // 4,7 GB no le dice a nadie dónde mirar.
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("recorriendo {}", dir.display())),
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -1069,7 +1082,13 @@ fn walk_for_bilink(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// Que hasta ahora no se filtraran fue suerte: git trata un repo anidado como
 /// frontera por su cuenta. Depender de eso es depender de que el clon esté sano.
 fn collect_tracked(dir: &Path, base: &Path, root: &Path, out: &mut BTreeSet<String>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)?.flatten() {
+    // Acá **no** se saltea: esto recorre adentro de un `.bilink/`, que es de bilinker.
+    // Un directorio propio que no se puede leer es un problema de verdad y callarlo
+    // dejaría bilinks afuera del commit de la ref sin que nadie se entere. Lo único
+    // que se agrega es el path, que el error de `std` no trae.
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("leyendo {}", dir.display()))?;
+    for entry in entries.flatten() {
         let path = entry.path();
         let rel_to_base = path.strip_prefix(base).unwrap_or(&path);
         if rel_to_base
@@ -1268,5 +1287,29 @@ mod tests {
 
         assert!(repo.absorb(&branch).unwrap().is_some());
         assert!(repo.absorb(&branch).unwrap().is_none(), "el tip ya estaba absorbido");
+    }
+
+    /// **Un directorio ilegible no puede frenar el recorrido.** El caso real es el
+    /// `pgdata` que deja docker, con otro uid y modo 0700, en un clon donde alguien
+    /// levantó el stack local: sin esto, `track` no corre y no se puede crear un
+    /// solo bilink en ese repo.
+    #[test]
+    fn an_unreadable_directory_does_not_stop_the_walk() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("capa/.bilink")).unwrap();
+        let cerrado = root.join("datos");
+        std::fs::create_dir(&cerrado).unwrap();
+        std::fs::set_permissions(&cerrado, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut out = Vec::new();
+        let r = walk_for_bilink(root, &mut out);
+
+        // Devolver los permisos antes de cualquier assert, o el tempdir no se borra.
+        std::fs::set_permissions(&cerrado, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(r.is_ok(), "el directorio cerrado no aborta: {r:?}");
+        assert_eq!(out, vec![root.join("capa/.bilink")], "y el .bilink de al lado se encuentra igual");
     }
 }
