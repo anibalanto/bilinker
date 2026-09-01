@@ -1,0 +1,6 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+  1:
+    link: capture 0f4514351568e3b769f5b4e1ea88740e
