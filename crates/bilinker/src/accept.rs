@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use bilink_format::bilink::bilink_files;
-use bilink_format::{Accepted, BiLink, Capture, LinkEndpoint, N1};
+use bilink_format::{Accepted, BiLink, Capture, LinkEndpoint, N};
 
 use crate::cache::Cache;
 use crate::state::EndpointState;
@@ -149,10 +149,10 @@ fn resolve_n1(
     folded: &Option<crate::neighbours::Neighbourhood>,
     what: What,
     content_hash: &str,
-) -> Result<Option<N1>> {
+) -> Result<Option<N>> {
     // Con `--place` el contenido no se toca, y el vecindario es del contenido.
     // Con `--place` el contenido no se toca, y el vecindario es del contenido.
-    let preserve = || previous.and_then(|a| a.n1.clone());
+    let preserve = || previous.and_then(|a| a.n.clone());
     if !what.content {
         return Ok(preserve());
     }
@@ -160,7 +160,7 @@ fn resolve_n1(
     // Se resolvió: se escribe el vecindario entero, y una renuncia anterior se
     // levanta. Los dos folds ya no se pueden mezclar — viven en el mismo objeto.
     if let Some(f) = folded {
-        return Ok(Some(N1::Acquired(f.clone())));
+        return Ok(Some(N::of_level_1(f.clone())));
     }
 
     // **Que el fragmento tenga vecindario se sabe por la gramática, no por el
@@ -173,7 +173,7 @@ fn resolve_n1(
 
     // Sólo un vecindario **adquirido** es cobertura que se pueda perder: una
     // renuncia anterior no tiene nada que preservar.
-    let had = previous.and_then(|a| a.n1.as_ref()).and_then(|n| n.acquired()).is_some();
+    let had = previous.and_then(|a| a.n.as_ref()).map(|n| n.is_acquired()).unwrap_or(false);
 
     // **El conjunto de vecinos lo determina la firma, y la firma está en el
     // fragmento.** Con el capture de contrato el `hash` *es* el de la firma, así que
@@ -185,7 +185,7 @@ fn resolve_n1(
     match (had, what.no_n1, what.force, signature_changed) {
         // No había vecindario que preservar: aceptar así lo deja sin vigilar, y el
         // baseline no lo diría.
-        (false, true, _, _) => Ok(Some(N1::declined())),
+        (false, true, _, _) => Ok(Some(N::declined())),
         (false, false, _, _) => bail!(
             "no hay proveedor de vecindario, y la firma de {} lo tiene.\n       \
              Aceptar así deja los tipos que la firma menciona sin vigilar, y el \
@@ -206,7 +206,7 @@ fn resolve_n1(
              Levantar lspd, o bajarlo a propósito con --no-n1 --force."),
 
         // Bajarlo es una decisión, y se pide entera.
-        (true, true, true, _) => Ok(Some(N1::declined())),
+        (true, true, true, _) => Ok(Some(N::declined())),
         (true, true, false, _) => bail!(
             "--no-n1 acá baja un vecindario que ya estaba aceptado.\n       \
              Levantar lspd para conservarlo, o bajarlo a propósito con --no-n1 --force."),
@@ -260,7 +260,7 @@ fn compute(
                     .transpose()?,
                 _ => None,
             };
-            let n1 = resolve_n1(layer, &cap, &range, previous, &folded, what, &content_hash)?;
+            let neighbourhood = resolve_n1(layer, &cap, &range, previous, &folded, what, &content_hash)?;
 
             let accepted = Accepted {
                 // Lo pone `accept`, no `compute`: depende de qué había antes.
@@ -292,7 +292,7 @@ fn compute(
                 // `resolve_n1`: adquirido, `declined`, o ausente porque el fragmento
                 // no tiene firma resoluble. La regla que las gobierna es que una
                 // falla del proveedor nunca baja la cobertura.
-                n1,
+                n: neighbourhood,
             };
 
             // `commit` es el commit **del contenido**, no el HEAD de quien acepta.
@@ -370,7 +370,7 @@ fn compute(
                     hash_ast: None,
                     // Un ítem de worklist no tiene firma: no hay tipos que resolver.
                     // La ausencia de `n1` dice exactamente eso, y no una renuncia.
-                    n1: None,
+                    n: None,
                 },
                 crate::git::try_head_commit_for_file(&root, &rel),
             ))
@@ -500,7 +500,7 @@ mod n1_tests {
             link: None,
             hash: hash.into(),
             hash_ast: None,
-            n1: n1.map(|h| N1::Acquired(Neighbourhood { hash: h.into(), hash_ast: None })),
+            n: n1.map(|h| N::of_level_1(Neighbourhood { hash: h.into(), hash_ast: None })),
         }
     }
 
@@ -509,8 +509,8 @@ mod n1_tests {
     }
 
     /// El hash del vecindario adquirido, si lo hay.
-    fn adquirido(o: &Option<N1>) -> Option<&str> {
-        o.as_ref().and_then(|n| n.acquired()).map(|n| n.hash.as_str())
+    fn adquirido(o: &Option<N>) -> Option<&str> {
+        o.as_ref().and_then(|n| n.level(1)).map(|n| n.hash.as_str())
     }
 
     /// Fila 1 — no había, se resolvió: se calcula y se escribe.
@@ -519,7 +519,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let o = resolve_n1(d.path(), &cap, &r, None, &folded(), What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("nuevo"));
-        assert_eq!(o.as_ref().and_then(|n| n.acquired()).is_some(), true);
+        assert_eq!(o.as_ref().map(|n| n.is_acquired()).unwrap_or(false), true);
     }
 
     /// Fila 2 — no había y no se pudo mirar: **no se escribe nada**.
@@ -538,7 +538,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let what = What { no_n1: true, ..What::default() };
         let o = resolve_n1(d.path(), &cap, &r, None, &None, what, "h").unwrap();
-        assert_eq!(o, Some(N1::declined()), "la renuncia se escribe, no se omite");
+        assert_eq!(o, Some(N::declined()), "la renuncia se escribe, no se omite");
     }
 
     /// Fila 3 — había y se resolvió: se recalcula, y una renuncia anterior se levanta.
@@ -546,7 +546,7 @@ mod n1_tests {
     fn row_3_resolving_again_lifts_a_previous_decline() {
         let (d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
-        p.n1 = Some(N1::declined());
+        p.n = Some(N::declined());
         let o = resolve_n1(d.path(), &cap, &r, Some(&p), &folded(), What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("nuevo"), "volver a tener proveedor recupera la cobertura");
     }
@@ -591,7 +591,7 @@ mod n1_tests {
         let p = previo("viejo_hash", Some("viejo"));
         let what = What { no_n1: true, force: true, ..What::default() };
         let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, what, "otro").unwrap();
-        assert_eq!(o, Some(N1::declined()));
+        assert_eq!(o, Some(N::declined()));
     }
 
     /// **El aviso es preciso o es ruido.** Sobre algo sin firma resoluble no hay nada

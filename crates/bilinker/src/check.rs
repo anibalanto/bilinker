@@ -187,7 +187,7 @@ fn compare_contract(
 ) -> Result<Option<EndpointState>> {
     // Sólo un vecindario **adquirido** se compara: una renuncia no tiene con qué,
     // y la ausencia significa que el fragmento no tiene firma resoluble.
-    let Some(expected) = accepted.n1.as_ref().and_then(|n| n.acquired()) else { return Ok(None) };
+    let Some(expected) = accepted.n.as_ref().and_then(|n| n.level(1)) else { return Ok(None) };
     let (Some(p), Some(range)) = (nb, range) else {
         return Ok(Some(EndpointState::ContractUnverified));
     };
@@ -642,7 +642,7 @@ mod tests {
             link: None,
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
-            n1: None,
+            n: None,
         };
         let range = Ranges::one(0, after.len());
 
@@ -681,7 +681,7 @@ mod tests {
             link: None,
             hash: String::new(),
             hash_ast: None,
-            n1: hash_n1.map(|hash| bilink_format::N1::Acquired(
+            n: hash_n1.map(|hash| bilink_format::N::of_level_1(
                 bilink_format::Neighbourhood { hash, hash_ast: hash_ast_n1 })),
         }
     }

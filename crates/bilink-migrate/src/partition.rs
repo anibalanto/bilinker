@@ -176,7 +176,7 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
             hash_ast: hash_ast.clone(),
             // El cierre de firma es posterior al formato 1: no hay nada que traer,
             // y fabricarlo pediría resolver tipos, que una migración no hace.
-            n1: None,
+            n: None,
         }),
         None => { p.pending += 1; None }
     };

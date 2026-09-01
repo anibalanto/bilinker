@@ -112,6 +112,17 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // que alguien acepte con el daemon prendido — de ahí que el cambio de forma vaya
     // ahora y no después.
     ("3.6.0", "cb3afb41005b3a860b6f7595af3978fcdd08e83c5e0fd55bf46100d0ac432366"),
+    // 3.7.0 mete los niveles adentro del campo: `n: {1: {hash, hash_ast}}`, y la
+    // renuncia pasa al contenedor — `n: declined` en vez de `n1: declined`.
+    //
+    // **La renuncia es del vecindario entero**, del nivel 1 para arriba, y escrita
+    // adentro del nivel 1 decía otra cosa. Con un solo nivel las dos frases coinciden;
+    // con dos, la de adentro obliga a preguntar qué pasa con el 2.
+    //
+    // Sigue sin haber migración, y por tercera y última vez por el mismo motivo: no
+    // existe un solo archivo con vecindario escrito. La ventana se cierra el día que
+    // alguien acepte con un language server prendido.
+    ("3.7.0", "e1e221f6b62f0b60aadcf7deef97b7134e7795823c99256f10b7f077548df0f1"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
