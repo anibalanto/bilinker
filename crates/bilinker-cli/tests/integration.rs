@@ -1071,8 +1071,8 @@ fn capture_refuses_an_anchor_it_cannot_identify() {
 #[test]
 fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
     let (_tmp, root) = isolated_git_workspace();
-    fs::create_dir_all(root.join(".stratum/worklist")).unwrap();
-    write_and_commit(&root, ".stratum/worklist/3a.user-story.md",
+    fs::create_dir_all(root.join(".stratum/worklist-demo")).unwrap();
+    write_and_commit(&root, ".stratum/worklist-demo/3a.user-story.md",
         "---\ntitle: una story\nstatus: open\n---\n\nCuerpo.\n");
 
     let (stdout, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
@@ -1095,7 +1095,7 @@ fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
 #[test]
 fn an_unknown_issue_id_is_todo() {
     let (_tmp, root) = isolated_git_workspace();
-    fs::create_dir_all(root.join(".stratum/worklist")).unwrap();
+    fs::create_dir_all(root.join(".stratum/worklist-demo")).unwrap();
 
     let (stdout, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
     assert!(ok, "capture failed:\n{stderr}");

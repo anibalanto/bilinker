@@ -2,7 +2,7 @@
 
 **Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-29
 
-**Parte de** [la épica del MVP](../../../../../../.stratum/worklist/1.epic.md). Usa el vocabulario de [ADR-0003](0003-formato-captures-y-aceptacion.md) —`accepted`, el `commit` derivado, `cache/state`— y es precondición de [ADR-0005](0005-frontera-entre-proyectos.md), porque lo que el consumidor trae del proveedor es exactamente esta ref.
+**Parte de** [la épica del MVP](../../../../../../.stratum/worklist-accreta/1.epic.md). Usa el vocabulario de [ADR-0003](0003-formato-captures-y-aceptacion.md) —`accepted`, el `commit` derivado, `cache/state`— y es precondición de [ADR-0005](0005-frontera-entre-proyectos.md), porque lo que el consumidor trae del proveedor es exactamente esta ref.
 
 ---
 
