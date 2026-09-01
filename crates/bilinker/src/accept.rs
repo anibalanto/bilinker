@@ -25,6 +25,11 @@ pub struct What {
     ///
     /// Está acá y no en un parámetro aparte porque **el vecindario es una tercera
     /// dimensión** y se comporta como las otras dos: se aprueba, o no se toca.
+    ///
+    /// **Renuncia del nivel 1 para arriba, no al nivel 1.** El día que exista un
+    /// nivel 2 —los campos de los tipos que el 1 resuelve— queda adentro de esta
+    /// misma renuncia, porque está definido a través del 1. No va a haber un
+    /// `no_n2`: el nombre marca dónde empieza lo que pide un language server.
     pub no_n1:   bool,
     /// Sólo junto a `no_n1`, y sólo donde éste **baja** una cobertura que ya estaba.
     ///
