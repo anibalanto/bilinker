@@ -128,6 +128,26 @@ pub struct Accepted {
     /// Sólo donde hay gramática tree-sitter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_ast: Option<String>,
+    /// El **vecindario de nivel 1**: los tipos que la firma menciona, plegados.
+    ///
+    /// Es un valor que bilinker guarda y compara **sin poder calcularlo por su
+    /// cuenta** — resolver un tipo hasta su declaración es trabajo de language
+    /// server. Se compara, no se resuelve: el mismo patrón que un `accepted.link`
+    /// de endpoint layer, que lleva una copia opaca de un id ajeno.
+    ///
+    /// Ausente donde el fragmento no tiene firma resoluble: prosa, un DTO, un
+    /// lenguaje sin anotaciones de tipo. Ver `concepts/accept.md` § "El cierre de
+    /// firma".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_n1: Option<String>,
+    /// Ídem sobre las s-expressions de los vecinos, y **todo-o-nada**.
+    ///
+    /// Presente sólo si **todos** los vecinos tienen gramática. Si a alguno le
+    /// falta, un cambio real en ése movería `hash_n1` y no éste, y eso se leería
+    /// como "sólo formateo" cuando no lo fue — un falso RESTYLED es peor que
+    /// ningún estado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_ast_n1: Option<String>,
 }
 
 impl Accepted {
@@ -140,6 +160,8 @@ impl Accepted {
         self.link == other.link
             && self.hash == other.hash
             && self.hash_ast == other.hash_ast
+            && self.hash_n1 == other.hash_n1
+            && self.hash_ast_n1 == other.hash_ast_n1
     }
 }
 
@@ -235,6 +257,8 @@ mod tests {
             link: Some(ep("capture abc123")),
             hash: "c00e0760".into(),
             hash_ast: Some("1b9e44a2".into()),
+            hash_n1: None,
+            hash_ast_n1: None,
         });
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();

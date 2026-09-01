@@ -51,6 +51,27 @@ pub enum EndpointState {
     Altered,
     /// El capture referenciado no resuelve. El detalle lo da el capture.
     Unresolved,
+    /// El vecindario de la firma se reformateó y su AST no cambió.
+    ///
+    /// Los tres `Contract*` son de **un eje aparte**: no hablan del fragmento sino
+    /// de [los tipos que su firma menciona](../../../concepts/accept.md). Llevan
+    /// prefijo por eso — `Altered` y `ContractAltered` no son grados de lo mismo,
+    /// son dos preguntas.
+    ///
+    /// Y sólo aparecen cuando el eje del contenido dice `Ok`: un endpoint tiene un
+    /// estado y no dos, y si el fragmento mismo cambió eso se reporta y alguien va a
+    /// mirar igual. Lo que este eje aporta es el caso donde **el fragmento no
+    /// cambió** y aun así el contrato se movió.
+    ContractRestyled,
+    /// Un vecino cambió: el contrato se movió. Es el caso que motivó todo esto.
+    ContractAltered,
+    /// Hay vecindario aceptado y **nadie pudo resolver el de hoy**.
+    ///
+    /// No es que el valor difiera: es que no hay con qué compararlo. Por eso es de la
+    /// familia de `LayerUnreachable` y `RemoteUnreachable` —*no pude ver el otro
+    /// lado*— y **no sale con 1**: correr `check` sin daemon es un modo de operación
+    /// normal, no un repo en mal estado.
+    ContractUnverified,
     /// Sólo endpoint `path`: la capa apuntada no existe todavía.
     Todo,
     /// Sólo endpoint `path`: el vecino fue re-aceptado.
@@ -105,7 +126,13 @@ impl EndpointState {
     /// fragmento que nadie miró es trabajo pendiente.
     pub fn is_clean(&self) -> bool {
         matches!(self, Self::Ok | Self::Expanded | Self::Restyled | Self::Open
-                     | Self::Todo | Self::LayerUnreachable | Self::RemoteUnreachable)
+                     | Self::Todo | Self::LayerUnreachable | Self::RemoteUnreachable
+                     | Self::ContractUnverified)
+    }
+
+    /// El estado es del eje del **vecindario** y no del fragmento.
+    pub fn is_contract(&self) -> bool {
+        matches!(self, Self::ContractRestyled | Self::ContractAltered | Self::ContractUnverified)
     }
 
     /// La punta abierta, que `accept .` nunca toca.
@@ -148,6 +175,9 @@ state_str!(EndpointState,
     Restyled   => "RESTYLED",
     Altered    => "ALTERED",
     Unresolved => "UNRESOLVED",
+    ContractRestyled   => "CONTRACT_RESTYLED",
+    ContractAltered    => "CONTRACT_ALTERED",
+    ContractUnverified => "CONTRACT_UNVERIFIED",
     Todo       => "TODO",
     ChainDirty => "CHAIN_DIRTY",
     Broken     => "BROKEN",
@@ -177,13 +207,24 @@ mod tests {
         for s in [Pending, Ok, Relocated, Expanded, Restyled,
                   Altered, Unresolved, Todo, ChainDirty, Broken,
                   LayerUnreachable, LayerUnconfigured, RemoteUnreachable,
-                  Rejected, Open] {
+                  Rejected, Open,
+                  ContractRestyled, ContractAltered, ContractUnverified] {
             assert_eq!(s.to_string().parse::<EndpointState>().unwrap(), s);
         }
         use CaptureState as C;
         for s in [C::Resolved, C::Moved, C::Reanchored, C::Unanchored, C::Deleted, C::Broken] {
             assert_eq!(s.to_string().parse::<CaptureState>().unwrap(), s);
         }
+    }
+
+    /// `CONTRACT_UNVERIFIED` no hace fallar: no es que el valor difiera, es que no
+    /// hay con qué compararlo. Correr `check` sin daemon es normal.
+    #[test]
+    fn not_being_able_to_look_is_not_a_failure() {
+        assert!(EndpointState::ContractUnverified.is_clean());
+        assert!(!EndpointState::ContractUnverified.is_ok());
+        assert!(!EndpointState::ContractAltered.is_clean(), "el contrato movido sí falla");
+        assert!(!EndpointState::ContractRestyled.is_clean());
     }
 
     /// `RELOCATED` hace fallar a `check`: repuntar no es aprobar.

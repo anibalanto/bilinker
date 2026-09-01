@@ -33,6 +33,18 @@ impl CheckResult {
 
 /// Verifica una capa y deja el resultado en la cache.
 pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
+    check_with(root, path, None)
+}
+
+/// Como [`check`], con quien resuelva el vecindario de las firmas.
+///
+/// **No lo levanta.** Se pregunta si hay, y si no hay, los endpoints con vecindario
+/// aceptado quedan `CONTRACT_UNVERIFIED` y el resto se evalúa igual: `check` es
+/// masivo, y arrancar un proceso como efecto colateral de un comando de sólo lectura
+/// no es suyo — por lo mismo que no clona.
+pub fn check_with(
+    root: &Path, path: &Path, nb: crate::neighbours::Provider<'_>,
+) -> Result<Vec<CheckResult>> {
     let layer = if path.join(".bilink").is_dir() { path.to_path_buf() } else { root.to_path_buf() };
     // **La cache se invalida sola al cambiar de rama.** Sin esto una capa devuelve
     // estados de la rama anterior en silencio: `git checkout` no toca `.bilink/`, y
@@ -53,7 +65,7 @@ pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
 
         let mut states = [EndpointState::Pending; 2];
         for n in [0u8, 1u8] {
-            states[n as usize] = check_endpoint(&layer, &bl, uuid, n, &mut resolved, &mut cache)?;
+            states[n as usize] = check_endpoint(&layer, &bl, uuid, n, &mut resolved, &mut cache, nb)?;
             cache.set_endpoint_state(uuid, n, states[n as usize]);
         }
         out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1] });
@@ -74,6 +86,7 @@ fn check_endpoint(
     n: u8,
     resolved: &mut HashMap<String, (CaptureState, Option<Ranges>)>,
     cache: &mut Cache,
+    nb: crate::neighbours::Provider<'_>,
 ) -> Result<EndpointState> {
     let e = bl.endpoint.get(n);
     match &e.link {
@@ -142,9 +155,57 @@ fn check_endpoint(
             if let Some(Some(c)) = &derived {
                 if cached_commit.is_none() { cache.set_commit(uuid, n, c); }
             }
+
+            // ── el eje del vecindario ─────────────────────────────────────────
+            //
+            // **Sólo si el del contenido dice OK.** Un endpoint tiene un estado y no
+            // dos: si el fragmento mismo cambió, eso se reporta y alguien va a mirar
+            // igual. Lo que este eje aporta es el caso donde el fragmento no cambió
+            // y aun así el contrato se movió.
+            if state == EndpointState::Ok {
+                if let Some(s) = compare_contract(layer, &cap, accepted, range.as_ref(), nb)? {
+                    return Ok(s);
+                }
+            }
             Ok(state)
         }
     }
+}
+
+// ─── el eje del vecindario ────────────────────────────────────────────────────
+
+/// Qué dicen hoy los tipos que la firma menciona, contra lo que se aprobó.
+///
+/// `Ok(None)` es *"este endpoint no tiene vecindario aceptado"*: la inmensa mayoría,
+/// y ahí no hay nada que preguntar ni a nadie a quien preguntarle.
+fn compare_contract(
+    layer:    &Path,
+    cap:      &Capture,
+    accepted: &bilink_format::Accepted,
+    range:    Option<&Ranges>,
+    nb:       crate::neighbours::Provider<'_>,
+) -> Result<Option<EndpointState>> {
+    let Some(expected) = &accepted.hash_n1 else { return Ok(None) };
+    let (Some(p), Some(range)) = (nb, range) else {
+        return Ok(Some(EndpointState::ContractUnverified));
+    };
+    // **`None` del proveedor es "no pude mirar", no "no hay vecinos".** Sin esa
+    // distinción un daemon apagado se leería como un contrato que no menciona ningún
+    // tipo, y eso es lo mismo que decir OK sobre algo que nadie verificó.
+    let Some(locs) = p.of(layer, &cap.file, range)? else {
+        return Ok(Some(EndpointState::ContractUnverified));
+    };
+
+    let folded = crate::neighbours::fold(layer, &locs)?;
+    if folded.hash == *expected {
+        return Ok(None);
+    }
+    // Sólo formato en el vecindario: el texto difiere y las s-expressions no. Como
+    // con `hash_ast`, la pregunta sólo se hace donde los dos lados lo tienen.
+    if let (Some(a), Some(b)) = (&folded.hash_ast, &accepted.hash_ast_n1) {
+        if a == b { return Ok(Some(EndpointState::ContractRestyled)); }
+    }
+    Ok(Some(EndpointState::ContractAltered))
 }
 
 // ─── dimensión 1: ¿dónde está? ────────────────────────────────────────────────
@@ -579,6 +640,8 @@ mod tests {
             link: None,
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
+            hash_n1: None,
+            hash_ast_n1: None,
         };
         let range = Ranges::one(0, after.len());
 
@@ -587,5 +650,100 @@ mod tests {
         let state = compare_content(d.path(), &cap, &accepted, Some(&range), &mut src).unwrap();
         assert_eq!(state, EndpointState::Altered,
                    "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
+    }
+
+    // ─── el eje del vecindario ────────────────────────────────────────────────
+
+    use crate::neighbours::{Location, Neighbours};
+
+    struct Fake(Option<Vec<Location>>);
+    impl Neighbours for Fake {
+        fn of(&self, _l: &std::path::Path, _f: &str, _r: &Ranges)
+            -> Result<Option<Vec<Location>>> { Ok(self.0.clone()) }
+    }
+
+    fn dto_layer(body: &str) -> (tempfile::TempDir, Capture, Ranges, Vec<Location>) {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("Svc.rs"),
+            format!("{body}\n\npub fn get() -> Dto {{ todo!() }}\n")).unwrap();
+        let cap = Capture { file: "Svc.rs".into(), query: None };
+        let range = Ranges::one(0, body.len());
+        let locs = vec![Location {
+            file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: body.len(),
+        }];
+        (d, cap, range, locs)
+    }
+
+    fn accepted_with(hash_n1: Option<String>, hash_ast_n1: Option<String>) -> Accepted {
+        Accepted {
+            agree: Default::default(),
+            link: None,
+            hash: String::new(),
+            hash_ast: None,
+            hash_n1,
+            hash_ast_n1,
+        }
+    }
+
+    /// Sin vecindario aceptado no hay nada que preguntar — y es el caso de casi todos
+    /// los endpoints, así que tampoco se le pregunta al proveedor.
+    #[test]
+    fn an_endpoint_without_a_neighbourhood_is_not_asked() {
+        let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
+        let acc = accepted_with(None, None);
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(), None);
+    }
+
+    /// Con vecindario aceptado y sin quien lo resuelva: **no verificado**. Ni OK ni
+    /// drift — no hay con qué comparar.
+    #[test]
+    fn without_a_provider_the_contract_is_unverified() {
+        let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
+        let acc = accepted_with(Some("loquesea".into()), None);
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), None).unwrap(),
+                   Some(EndpointState::ContractUnverified));
+
+        // Y un proveedor que contesta "no pude mirar" da lo mismo que no tenerlo.
+        let mudo = Fake(None);
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&mudo)).unwrap(),
+                   Some(EndpointState::ContractUnverified));
+    }
+
+    /// El vecindario intacto no dice nada: el estado lo sigue poniendo el eje del
+    /// contenido.
+    #[test]
+    fn an_unchanged_neighbourhood_says_nothing() {
+        let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
+        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap();
+        let acc = accepted_with(Some(hoy.hash.clone()), hoy.hash_ast.clone());
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(), None);
+    }
+
+    /// **El caso que motivó todo:** el fragmento intacto y el DTO con un campo más.
+    #[test]
+    fn a_field_added_to_the_dto_moves_the_contract() {
+        let antes = dto_layer("pub struct Dto { pub x: u8 }");
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+
+        let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8, pub y: u8 }");
+        let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(),
+                   Some(EndpointState::ContractAltered));
+    }
+
+    /// Reformatearlo mueve el texto y no el AST: es del vecindario y es sólo formato.
+    #[test]
+    fn a_reformatted_neighbourhood_is_restyled_and_not_altered() {
+        let antes = dto_layer("pub struct Dto { pub x: u8 }");
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+
+        let (d, cap, range, locs) = dto_layer("pub struct Dto {\n    pub x: u8\n}");
+        let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(),
+                   Some(EndpointState::ContractRestyled));
     }
 }
