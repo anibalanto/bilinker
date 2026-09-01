@@ -223,6 +223,29 @@ pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Re
     Ok(out)
 }
 
+/// El texto de un nombre, listo para entrar en un predicado `(#eq? @nK "...")`.
+///
+/// Un predicado es un string **adentro** de una query, así que dos caracteres no se
+/// pueden escribir tal cual: un `\` cambia lo que sigue —`\n` es un salto de línea y
+/// no dos caracteres, así que un heading llamado `` El separador es `\n` `` produce
+/// una query que no matchea nada— y un `"` cierra el string y hace **inválida** la
+/// query entera.
+///
+/// **Está acá y no en cada generador de predicados** porque hay seis, y hasta que
+/// esto existió tenían seis políticas distintas: uno no escapaba nada, dos
+/// descartaban el ancla si llevaba comillas, y tres escapaban la comilla y no la
+/// barra. El mismo nombre producía dos queries según por qué camino se hubiera
+/// generado — y [`rewrite_name_predicate`], que reescribe el mismo campo, escapaba
+/// de una tercera forma.
+pub fn escape_query_string(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// La inversa de [`escape_query_string`]: el nombre tal como está en el archivo.
+pub fn unescape_query_string(text: &str) -> String {
+    text.replace("\\\"", "\"").replace("\\\\", "\\")
+}
+
 /// Quita los predicados `(#eq? @nK "...")` de una query.
 ///
 /// Deja la estructura y las capturas intactas, así que la query relajada matchea
@@ -365,6 +388,34 @@ mod tests {
         assert!(r.contains("@target"));
     }
 
+    /// Una barra adentro de un predicado cambia lo que sigue: `\\n` es un salto de
+    /// línea, así que sin escapar el predicado busca un nombre que no existe. Es el
+    /// caso que lo destapó — un heading de este mismo proyecto.
+    #[test]
+    fn a_backslash_in_the_name_survives_the_predicate() {
+        let esc = escape_query_string("El separador es `\\n`");
+        assert_eq!(esc, "El separador es `\\\\n`");
+        assert_eq!(unescape_query_string(&esc), "El separador es `\\n`");
+    }
+
+    /// Una comilla es peor: no da una query que no matchea, da una inválida.
+    #[test]
+    fn a_quote_in_the_name_does_not_end_the_string() {
+        let esc = escape_query_string("dice \"hola\"");
+        assert_eq!(esc, "dice \\\"hola\\\"");
+        assert_eq!(unescape_query_string(&esc), "dice \"hola\"");
+    }
+
+    /// Escribir y reescribir el mismo campo tienen que usar el mismo escape: si no,
+    /// el mismo nombre produce dos queries según por qué camino se generó.
+    #[test]
+    fn rewriting_escapes_the_same_way_as_writing() {
+        let q = r#"(function_item name: (identifier) @n0 (#eq? @n0 "foo")) @target"#;
+        let r = rewrite_name_predicate(q, r"a\b").unwrap();
+        assert!(r.contains(r#"(#eq? @n0 "a\\b")"#), "{r}");
+        assert_eq!(anchor_name(&r).as_deref(), Some(r"a\b"));
+    }
+
     #[test]
     fn relax_leaves_query_without_predicates_intact() {
         let q = "(source_file) @target";
@@ -391,7 +442,7 @@ pub fn anchor_name(query_str: &str) -> Option<String> {
     let rest = &query_str[at..];
     let open = rest.find('"')?;
     let close = rest[open + 1..].find('"')? + open + 1;
-    Some(rest[open + 1..close].replace("\\\"", "\"").replace("\\\\", "\\"))
+    Some(unescape_query_string(&rest[open + 1..close]))
 }
 
 /// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
@@ -406,7 +457,7 @@ pub fn rewrite_name_predicate(query_str: &str, new_name: &str) -> Option<String>
     let rest = &query_str[at..];
     let open = rest.find('"')?;
     let close = rest[open + 1..].find('"')? + open + 1;
-    let escaped = new_name.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = escape_query_string(new_name);
     Some(format!("{}{}{}",
         &query_str[..at + open + 1], escaped, &query_str[at + close..]))
 }

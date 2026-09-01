@@ -175,6 +175,40 @@ fn run_in(root: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+/// Un ancla cuyo nombre lleva `\` se captura igual.
+///
+/// El caso real: la sección `#### El separador es \n` de `concepts/capture.md`. Sin
+/// escapar, `\n` adentro del predicado es un salto de línea y la query no matchea
+/// nada — falla al crear, no al leer, así que ningún capture existente lo lleva.
+#[test]
+fn an_anchor_whose_name_has_a_backslash_is_captured() {
+    let (_tmp, root) = isolated_git_workspace();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\n## El separador es `\\n`\n\nTexto.\n").unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "sep"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+
+    let (uuid, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "3:1", "3:1"]);
+    assert!(ok, "capture falló sobre un ancla con `\\`:\n{stderr}");
+
+    let cap = fs::read_to_string(root.join(format!(".bilink/capture/{}.yaml", uuid.trim()))).unwrap();
+    assert!(cap.contains(r"\\n"), "la barra va escapada en el predicado:\n{cap}");
+}
+
+/// Y uno con comillas: sin escapar no da una query que no matchea, da una inválida.
+#[test]
+fn an_anchor_whose_name_has_a_quote_is_captured() {
+    let (_tmp, root) = isolated_git_workspace();
+    fs::write(root.join("docs/spec.md"), "# Spec\n\n## Lo que dice \"hola\"\n\nTexto.\n").unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "q"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+
+    let (uuid, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "3:1", "3:1"]);
+    assert!(ok, "capture falló sobre un ancla con comillas:\n{stderr}");
+    assert!(!uuid.trim().is_empty(), "{stderr}");
+}
+
 /// Un workspace con tres métodos, para señalar dos y dejar uno afuera.
 fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
     let (tmp, root) = isolated_git_workspace();
