@@ -38,6 +38,22 @@ pub fn ast_discriminates_content(lang: &str) -> bool {
     !matches!(lang, "markdown" | "text")
 }
 
+/// Cómo llama esta gramática al campo que lleva **el cuerpo** de una declaración.
+///
+/// Es todo lo que `--as interface` necesita saber: la firma es el nodo menos ese
+/// campo. No es conocimiento de framework —es de la gramática, y la gramática ya es
+/// una dependencia— y es una tabla de la misma clase que [`stable_anchor_kinds`].
+///
+/// **Existe para que un lenguaje que no está falle en vez de adivinar.** Que hoy
+/// todas las entradas digan `body` no la vuelve superflua: lo que la tabla decide no
+/// es cómo se llama el campo sino de qué lenguajes bilinker puede afirmarlo.
+pub fn body_field(lang: &str) -> Option<&'static str> {
+    match lang {
+        "java" | "rust" | "typescript" | "tsx" => Some("body"),
+        _ => None,
+    }
+}
+
 /// Node kinds that are considered stable anchors for a given language.
 /// A stable anchor is a named declaration that identifies itself (class, method, etc.).
 pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {

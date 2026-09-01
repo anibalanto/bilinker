@@ -371,6 +371,15 @@ enum ChainCommand {
         /// El `name` del endpoint 1
         #[arg(long = "name.1", value_name = "ETIQUETA")]
         name1: Option<String>,
+        /// Qué parte del nodo señalado captura el tip 0
+        #[arg(long = "as.0", value_name = "MODO")]
+        as0: Option<String>,
+        /// Qué parte del nodo señalado captura el tip 1
+        #[arg(long = "as.1", value_name = "MODO")]
+        as1: Option<String>,
+        /// Lista los modos que hay y no hace nada más
+        #[arg(long = "as")]
+        list_modes: bool,
         /// Muestra qué capturaría y no escribe nada
         #[arg(long = "dry-run")]
         dry_run: bool,
@@ -436,13 +445,20 @@ enum TipKind {
     /// El archivo entero, sin query.
     WholeFile { file: String },
     /// N posiciones señaladas, ya resueltas a una query con N `@target`.
-    Fragment  { file: String, capture: bilinker::capture::CaptureResult },
+    ///
+    /// El modo viaja con el plan: al corregir la vista en el editor hay que volver a
+    /// capturar **como se pidió**, no como si no se hubiera pedido nada.
+    Fragment  {
+        file:    String,
+        mode:    bilinker::capture::Mode,
+        capture: bilinker::capture::CaptureResult,
+    },
 }
 
 impl TipPlan {
     /// La vista de lo que este tip capturaría, si captura algo.
     fn preview(&self) -> anyhow::Result<Option<(bilinker::preview::Preview, String)>> {
-        let TipKind::Fragment { file, capture } = &self.kind else { return Ok(None) };
+        let TipKind::Fragment { file, capture, .. } = &self.kind else { return Ok(None) };
         let source = std::fs::read_to_string(self.layer_root.join(file))?;
         let label  = format!("{} :: {}", self.layer_fs.display(), file);
         Ok(Some((bilinker::preview::Preview::of(&label, &source, &capture.ranges), source)))
@@ -450,15 +466,15 @@ impl TipPlan {
 
     /// El mismo tip con otras posiciones — lo que devuelve una vista editada.
     fn repoint(&self, lines: &[usize]) -> anyhow::Result<TipPlan> {
-        let TipKind::Fragment { file, .. } = &self.kind else {
+        let TipKind::Fragment { file, mode, .. } = &self.kind else {
             anyhow::bail!("este tip no captura posiciones");
         };
         let sel: Vec<_> = lines.iter().map(|&l| ((l, 1), (l, 1))).collect();
-        let capture = bilinker::capture::capture_many(&self.layer_root, file, &sel)?;
+        let capture = bilinker::capture::capture_as(&self.layer_root, file, &sel, *mode)?;
         Ok(TipPlan {
             layer_fs:   self.layer_fs.clone(),
             layer_root: self.layer_root.clone(),
-            kind:       TipKind::Fragment { file: file.clone(), capture },
+            kind:       TipKind::Fragment { file: file.clone(), mode: *mode, capture },
         })
     }
 
@@ -484,7 +500,7 @@ impl TipPlan {
 /// Las posiciones extra van separadas por coma después de la primera —
 /// `Foo.java:8:1,15:5` — y cada una resuelve a su nodo. De todas sale **una** query
 /// con un `@target` por nodo: el patrón único es lo que las ancla entre sí.
-fn plan_tip(root: &Path, tip_str: &str) -> anyhow::Result<TipPlan> {
+fn plan_tip(root: &Path, tip_str: &str, mode: bilinker::capture::Mode) -> anyhow::Result<TipPlan> {
     use stratum::PathToken;
 
     // `abstract` es un tip, no un path: la punta que publica el proveedor. Vive en
@@ -517,11 +533,17 @@ fn plan_tip(root: &Path, tip_str: &str) -> anyhow::Result<TipPlan> {
     let layer_root = root.join(&layer_fs);
 
     let kind = if positions.is_empty() {
+        if mode != bilinker::capture::Mode::Node {
+            anyhow::bail!(
+                "`--as` necesita una posición: sin señalar nada, el tip es el archivo \
+                 entero y no hay nodo del que tomar una parte."
+            );
+        }
         TipKind::WholeFile { file: file_str }
     } else {
         let sel: Vec<_> = positions.iter().map(|&p| (p, p)).collect();
-        let capture = bilinker::capture::capture_many(&layer_root, &file_str, &sel)?;
-        TipKind::Fragment { file: file_str, capture }
+        let capture = bilinker::capture::capture_as(&layer_root, &file_str, &sel, mode)?;
+        TipKind::Fragment { file: file_str, mode, capture }
     };
 
     Ok(TipPlan { layer_fs, layer_root, kind })
@@ -1487,7 +1509,17 @@ Eliminar? [y/N] ");
         }
 
         Command::Chain { sub } => match sub {
-            ChainCommand::New { tip, mid, kind, name0, name1, from_repo, dry_run, yes } => {
+            ChainCommand::New { tip, mid, kind, name0, name1, from_repo, as0, as1, list_modes, dry_run, yes } => {
+                if list_modes {
+                    for (name, what) in bilinker::capture::Mode::ALL {
+                        println!("  {name:<20} {what}");
+                    }
+                    return Ok(());
+                }
+                let modes = [
+                    as0.as_deref().map(bilinker::capture::Mode::parse).transpose()?.unwrap_or_default(),
+                    as1.as_deref().map(bilinker::capture::Mode::parse).transpose()?.unwrap_or_default(),
+                ];
                 let root = project_root(&cwd)?;
 
                 // Con `--from-repo`, el tip del proveedor lo aporta el flag: quien
@@ -1503,7 +1535,7 @@ Eliminar? [y/N] ");
                         let (alias, uuid) = spec.split_once(':').ok_or_else(|| {
                             anyhow::anyhow!("--from-repo se escribe `<alias>:<uuid>`")
                         })?;
-                        let plan = plan_tip(&root, &tip[0])?;
+                        let plan = plan_tip(&root, &tip[0], modes[0])?;
                         let remote = (
                             plan.layer_fs.clone(),
                             bilink_format::LinkEndpoint::Repo(alias.to_string()),
@@ -1514,7 +1546,7 @@ Eliminar? [y/N] ");
                         if tip.len() != 2 {
                             anyhow::bail!("chain new requires exactly 2 --tip REF arguments");
                         }
-                        (None, vec![plan_tip(&root, &tip[0])?, plan_tip(&root, &tip[1])?], None)
+                        (None, vec![plan_tip(&root, &tip[0], modes[0])?, plan_tip(&root, &tip[1], modes[1])?], None)
                     }
                 };
 
