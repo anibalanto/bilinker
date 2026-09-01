@@ -45,7 +45,9 @@ pub struct AcceptResult {
 }
 
 /// Acepta un endpoint.
-pub fn accept(layer: &Path, uuid: &str, n: u8, what: What) -> Result<AcceptResult> {
+pub fn accept(
+    layer: &Path, uuid: &str, n: u8, what: What, nb: crate::neighbours::Provider<'_>,
+) -> Result<AcceptResult> {
     let path = find_bilink_path(layer, uuid)?;
     let uuid = path.file_stem().and_then(|s| s.to_str())
         .context("el nombre del bilink no es un uuid")?.to_string();
@@ -53,7 +55,7 @@ pub fn accept(layer: &Path, uuid: &str, n: u8, what: What) -> Result<AcceptResul
     let mut bl = BiLink::load(&path)?;
     let mut cache = Cache::load(layer);
 
-    let (mut accepted, commit) = compute(layer, &bl, &uuid, n, what, &cache)?;
+    let (mut accepted, commit) = compute(layer, &bl, &uuid, n, what, &cache, nb)?;
     if let Some(c) = &commit {
         cache.set_commit(&uuid, n, c);
     }
@@ -125,6 +127,7 @@ fn compute(
     n: u8,
     what: What,
     cache: &Cache,
+    nb: crate::neighbours::Provider<'_>,
 ) -> Result<(Accepted, Option<String>)> {
     let e = bl.endpoint.get(n);
     let previous = e.accepted.as_ref();
@@ -156,6 +159,14 @@ fn compute(
             let content_hash = hash::sha256(fragment.as_bytes());
             let ast_hash = ast_hash_of(layer, &cap, &source)?;
 
+            // El vecindario, si hay quien lo resuelva y el fragmento tiene uno.
+            let folded = match (what.content, nb) {
+                (true, Some(p)) => p.of(layer, &cap.file, &range)?
+                    .map(|locs| crate::neighbours::fold(layer, &locs))
+                    .transpose()?,
+                _ => None,
+            };
+
             let accepted = Accepted {
                 // Lo pone `accept`, no `compute`: depende de qué había antes.
                 agree: BTreeSet::new(),
@@ -181,6 +192,21 @@ fn compute(
                     previous.and_then(|a| a.hash_ast.clone())
                 } else {
                     None
+                },
+                // **El vecindario es opt-in por lo que hay, no por una flag.** Si
+                // hay proveedor y el fragmento tiene firma resoluble, se resuelve y
+                // se escribe; si no hay proveedor, se conserva lo que ya estaba —
+                // aceptar sin daemon no borra una decisión que alguien tomó con él.
+                // Con vecindario nuevo se escriben los dos juntos; sin proveedor se
+                // conservan los dos juntos. Mezclarlos dejaría un `hash_ast_n1` que
+                // describe otro conjunto que su `hash_n1`.
+                hash_n1: match &folded {
+                    Some(f) => Some(f.hash.clone()),
+                    None    => previous.and_then(|a| a.hash_n1.clone()),
+                },
+                hash_ast_n1: match &folded {
+                    Some(f) => f.hash_ast.clone(),
+                    None    => previous.and_then(|a| a.hash_ast_n1.clone()),
                 },
             };
 
@@ -257,6 +283,9 @@ fn compute(
                     link: None,
                     hash: hash::sha256(text.as_bytes()),
                     hash_ast: None,
+                    // Un ítem de worklist no tiene firma: no hay tipos que resolver.
+                    hash_n1: None,
+                    hash_ast_n1: None,
                 },
                 crate::git::try_head_commit_for_file(&root, &rel),
             ))

@@ -1,4 +1,6 @@
 
+mod lspd_neighbours;
+
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -1032,7 +1034,7 @@ Eliminar? [y/N] ");
         Command::Check { path } => {
             let root = project_root(&cwd)?;
             let check_path = if path.is_absolute() { path } else { cwd.join(path) };
-            let results = bilinker::check::check(&root, &check_path)?;
+            let results = bilinker::check::check_with(&root, &check_path, Some(&lspd_neighbours::Lspd))?;
 
             // Se imprime todo lo que no está OK; solo falla lo que no tiene auto-fix.
             let mut exit_code = 0;
@@ -1321,7 +1323,7 @@ Eliminar? [y/N] ");
             // `accept .` de veinte endpoints deja veinte decisiones auditables una
             // por una en vez de una que las disimula a todas.
             let accept_one = |uuid: &str, n: u8| -> anyhow::Result<()> {
-                let r = bilinker::accept::accept(&cwd, uuid, n, what)?;
+                let r = bilinker::accept::accept(&cwd, uuid, n, what, Some(&lspd_neighbours::Lspd))?;
                 print_accept_result(&r);
                 if !r.wrote {
                     return Ok(());

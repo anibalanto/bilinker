@@ -80,6 +80,15 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // de que acá el esquema no puede describirlo: lo que discrimina está adentro de
     // un string, y ningún tipo lo hace visible. La versión es lo único que queda.
     ("3.3.0", "58e2f5f9259afc1fee7d15911067ac246fabb439c7a89bdf302ba3312cca82ae"),
+    // 3.4.0 agrega `accepted.hash_n1` y `accepted.hash_ast_n1`: el vecindario de la
+    // firma —los tipos que menciona, un salto— plegado en dos hashes.
+    //
+    // **Aditivo, y sube igual**, por el motivo de 3.1.0: ningún archivo existente los
+    // lleva y su ausencia significa "este endpoint no tiene vecindario aceptado",
+    // así que no hay migración. Lo que un parser de 3.3.0 no puede hacer es
+    // *conservarlos*: `Accepted` tiene `deny_unknown_fields`, así que le falla y le
+    // falla explícito — la versión es lo que le permite decir por qué.
+    ("3.4.0", "d9f899c1df0be5b3b18691ed67ced79d9b82f31ecacbf8728df0c0c6c28083db"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
