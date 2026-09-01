@@ -1,0 +1,5 @@
+file: crates/bilinker/src/generators.rs
+query: |-
+  (impl_item
+    trait: (type_identifier) @n0 (#eq? @n0 "CaptureGenerator")
+    type: (type_identifier) @n1 (#eq? @n1 "SpringController")) @target

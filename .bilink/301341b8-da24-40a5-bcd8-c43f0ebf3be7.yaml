@@ -1,0 +1,11 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+    accepted:
+      agree:
+      - Anibal
+      link: capture a268377f6c00158cffbaef931d64184b
+      hash: 7796d3477e0a72737ea238a875333ca98765ed525eb715d6ccbea90293562f69
+  1:
+    link: capture 17def75583ac5c161ab1dc90c73127b2
