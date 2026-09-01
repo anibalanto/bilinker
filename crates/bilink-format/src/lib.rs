@@ -18,7 +18,7 @@ pub mod version;
 pub use bilink::{Accepted, BiLink, Endpoint, Endpoints};
 pub use capture::Capture;
 pub use ignore::write_ignore;
-pub use link::{ByteRange, LinkEndpoint, ENDPOINT_PREFIXES};
+pub use link::{ByteRange, LinkEndpoint, Ranges, ENDPOINT_PREFIXES, FRAGMENT_SEPARATOR};
 pub use schema::{schema, schema_json};
 pub use version::{ensure_version, read_version, write_version, VERSION_FILE};
 

@@ -152,7 +152,7 @@ fn compute(
             }
 
             let source = std::fs::read_to_string(layer.join(&cap.file))?;
-            let fragment = &source[range.start..range.end.min(source.len())];
+            let fragment = range.text(&source);
             let content_hash = hash::sha256(fragment.as_bytes());
             let ast_hash = ast_hash_of(layer, &cap, &source)?;
 
@@ -312,10 +312,15 @@ fn working_tree_dirty(layer: &Path, file: &str) -> bool {
 ///
 /// `git log -L` recorre la historia de un rango de líneas: su primer commit es
 /// aquel en que las líneas quedaron como están. Es nativo y offline.
-fn content_commit(layer: &Path, cap: &Capture, range: &bilink_format::ByteRange) -> Option<String> {
+///
+/// Con varias partes se pregunta por **el tramo que las abarca a todas**, que es un
+/// superconjunto del fragmento. Da un commit igual o más nuevo que el del fragmento
+/// solo, y sirve igual: lo que se necesita es un commit desde el cual el fragmento
+/// no cambió, y si el tramo entero no cambió, el fragmento tampoco.
+fn content_commit(layer: &Path, cap: &Capture, range: &bilink_format::Ranges) -> Option<String> {
     let source = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
     let line_of = |byte: usize| source[..byte.min(source.len())].lines().count().max(1);
-    let (a, b) = (line_of(range.start), line_of(range.end));
+    let (a, b) = (line_of(range.start()), line_of(range.end()));
 
     let out = std::process::Command::new("git")
         .args(["-C", &layer.to_string_lossy(), "log", "-L",
@@ -332,8 +337,8 @@ fn ast_hash_of(layer: &Path, cap: &Capture, source: &str) -> Result<Option<Strin
     let lang = grammar::language_for_file(&cap.file);
     if !grammar::ast_discriminates_content(lang) { return Ok(None); }
     let Ok(language) = grammar::for_language(lang) else { return Ok(None) };
-    Ok(query::find_target_with_sexp(language, source, q)?
-        .map(|(_, _, sexp)| hash::sha256(sexp.as_bytes())))
+    Ok(query::find_fragment(language, source, q)?
+        .map(|f| hash::sha256(f.sexp.as_bytes())))
 }
 
 /// El bilink cuyo uuid empieza con el prefijo dado.

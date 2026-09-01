@@ -176,6 +176,83 @@ impl fmt::Display for ByteRange {
     }
 }
 
+/// El separador entre los fragmentos de un capture con más de un `@target`.
+///
+/// Los rangos no son contiguos, así que hay que decidir qué va entre uno y el
+/// siguiente — y esa decisión **entra en el `hash`**. Pegarlos sin nada produce un
+/// texto que no existe en ningún archivo; meter el texto intermedio deja entrar el
+/// cuerpo del método por la ventana cuando dos capturas lo tienen en el medio.
+///
+/// **Y no se vuelve a tocar.** Cambiarlo movería de una vez el hash de todos los
+/// captures multi-fragmento, y todos pasarían a ALTERED sin que nadie tocara el
+/// código. Ver `concepts/capture.md` § "El separador es `\n`".
+pub const FRAGMENT_SEPARATOR: &str = "\n";
+
+/// Los rangos de un fragmento: uno por captura `@target`, en orden de archivo.
+///
+/// El fragmento es su concatenación unida por [`FRAGMENT_SEPARATOR`], y es eso lo
+/// que se hashea. Con un solo rango la concatenación es el rango, así que un
+/// capture de un solo `@target` hashea exactamente lo que hasheaba antes de que
+/// hubiera varios.
+///
+/// Nunca está vacío: un fragmento sin rangos no es un fragmento, es que la query no
+/// resolvió — y eso se dice con `None`, no con una lista de cero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ranges(Vec<ByteRange>);
+
+impl Ranges {
+    /// El caso de siempre: un solo nodo.
+    pub fn one(start: usize, end: usize) -> Self {
+        Self(vec![ByteRange { start, end }])
+    }
+
+    /// Los rangos ya ordenados por posición en el archivo. Devuelve `None` si la
+    /// lista viene vacía, que es lo que hace imposible representar un fragmento sin
+    /// partes.
+    pub fn new(mut parts: Vec<ByteRange>) -> Option<Self> {
+        if parts.is_empty() { return None; }
+        parts.sort_by_key(|r| (r.start, r.end));
+        Some(Self(parts))
+    }
+
+    pub fn parts(&self) -> &[ByteRange] { &self.0 }
+
+    /// Dónde empieza la primera parte.
+    pub fn start(&self) -> usize { self.0.first().expect("nunca vacío").start }
+
+    /// Dónde termina la última. **No es el final del fragmento** cuando hay varias
+    /// partes: entre medio hay texto que el fragmento no cubre.
+    pub fn end(&self) -> usize { self.0.last().expect("nunca vacío").end }
+
+    /// El fragmento: cada parte, unidas por [`FRAGMENT_SEPARATOR`].
+    pub fn text(&self, source: &str) -> String {
+        self.0.iter()
+            .map(|r| &source[r.start.min(source.len())..r.end.min(source.len())])
+            .collect::<Vec<_>>()
+            .join(FRAGMENT_SEPARATOR)
+    }
+}
+
+impl FromStr for Ranges {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let parts = s.split(',')
+            .map(|p| p.trim().parse::<ByteRange>())
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(parts).context("un fragmento tiene al menos un rango")
+    }
+}
+
+impl fmt::Display for Ranges {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, r) in self.0.iter().enumerate() {
+            if i > 0 { f.write_str(",")?; }
+            write!(f, "{r}")?;
+        }
+        Ok(())
+    }
+}
+
 // ─── serialización de los tipos que en disco son un string ────────────────────
 //
 // `link` y `offset` son strings en el archivo —`capture 67ba…`, `3226~5109`— y no
@@ -212,6 +289,60 @@ string_repr!(ByteRange, "ByteRange", json_schema!({
     "pattern": r"^\d+~\d+$",
     "description": "Rango de bytes `start~end`, relativo al nodo matcheado.",
 }));
+
+string_repr!(Ranges, "Ranges", json_schema!({
+    "type": "string",
+    "pattern": r"^\d+~\d+(,\d+~\d+)*$",
+    "description": "Los rangos del fragmento, `start~end` separados por coma, en orden de archivo.",
+}));
+
+#[cfg(test)]
+mod ranges_tests {
+    use super::*;
+
+    /// El orden es el del archivo, no el de la query: cómo se escribió el patrón
+    /// es un detalle del patrón, y el fragmento —que es lo que se hashea— no puede
+    /// depender de él.
+    #[test]
+    fn parts_come_out_in_file_order() {
+        let r = Ranges::new(vec![
+            ByteRange { start: 30, end: 40 },
+            ByteRange { start: 10, end: 20 },
+        ]).unwrap();
+        assert_eq!(r.to_string(), "10~20,30~40");
+    }
+
+    /// Un fragmento sin partes no se puede representar: eso no es un fragmento
+    /// vacío, es que la query no resolvió, y eso se dice con `None`.
+    #[test]
+    fn a_fragment_without_parts_does_not_exist() {
+        assert!(Ranges::new(vec![]).is_none());
+        assert!("".parse::<Ranges>().is_err());
+    }
+
+    /// El texto es la concatenación unida por el separador, y con una sola parte
+    /// es la parte: por eso un capture de un `@target` hashea lo mismo que antes.
+    #[test]
+    fn the_text_is_the_parts_joined_by_the_separator() {
+        let src = "0123456789abcdefghij";
+        let r = Ranges::new(vec![
+            ByteRange { start: 0,  end: 3 },
+            ByteRange { start: 10, end: 13 },
+        ]).unwrap();
+        assert_eq!(r.text(src), format!("012{FRAGMENT_SEPARATOR}abc"));
+        assert_eq!(Ranges::one(0, 3).text(src), "012");
+    }
+
+    #[test]
+    fn round_trips_through_its_string_form() {
+        let r: Ranges = "10~20,30~40".parse().unwrap();
+        assert_eq!(r.parts().len(), 2);
+        assert_eq!(r.start(), 10);
+        assert_eq!(r.end(), 40);
+        assert_eq!(r.to_string(), "10~20,30~40");
+        assert_eq!("3226~5109".parse::<Ranges>().unwrap(), Ranges::one(3226, 5109));
+    }
+}
 
 #[cfg(test)]
 mod tests {

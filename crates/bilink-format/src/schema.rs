@@ -50,9 +50,9 @@ pub fn schema_json() -> String {
 /// nada. La línea es la publicación, no el número.
 pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     ("2.0.0", "39396775ea75eec5ac760b51a450a4315b2d1a8275860daedf7e4468e5acc21f"),
-    // 3.0.0 saca el `offset` del capture: un fragmento es un nodo entero. Sacar
-    // un campo no es aditivo, así que sube el major — y con él se va `DISPLACED`,
-    // el único estado que hablaba de un sub-rango.
+    // 3.0.0 saca el `offset` del capture: un fragmento deja de ser un rango adentro
+    // de un nodo. Sacar un campo no es aditivo, así que sube el major — y con él se
+    // va `DISPLACED`, el único estado que hablaba de un sub-rango.
     ("3.0.0", "faf08a34795e9915d0e9dc7b0c881936e8446f1c027849bb8f9e6ae5702db9e0"),
     // 3.1.0 agrega los endpoints `repo <alias>` y `abstract` — la frontera entre
     // proyectos. **Es aditivo y sube la versión igual**, que es lo contraintuitivo
@@ -69,6 +69,17 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // falla en silencio, le falla y basta. La versión es lo que le permite decir
     // **por qué**.
     ("3.2.0", "32ccee2d79db3f2657ed4137d2088bbf7b2508eba95f7ec1ec013f54b309e2d8"),
+    // 3.3.0: la `query` de un capture puede llevar **varios** `@target`, y el
+    // fragmento pasa a ser su concatenación unida por `\n`. Los tipos no cambian
+    // —`query` sigue siendo un string— y el archivo tampoco, así que no hay
+    // migración: un capture de un solo `@target` hashea exactamente lo que hasheaba.
+    //
+    // **Sube igual, y por el motivo de siempre**: un parser de 3.2.0 lee una query
+    // de tres `@target`, se queda con el primero, y hashea otro fragmento — en
+    // silencio y sin fallar. Es el mismo modo de falla que 3.1.0, con el agravante
+    // de que acá el esquema no puede describirlo: lo que discrimina está adentro de
+    // un string, y ningún tipo lo hace visible. La versión es lo único que queda.
+    ("3.3.0", "58e2f5f9259afc1fee7d15911067ac246fabb439c7a89bdf302ba3312cca82ae"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
