@@ -1,0 +1,7 @@
+file: crates/bilinker/src/preview.rs
+query: |-
+  (impl_item
+    type: (type_identifier) @n0 (#eq? @n0 "Preview")
+    body: (declaration_list
+    (function_item
+    name: (identifier) @n1 (#eq? @n1 "marks_in")) @target))
