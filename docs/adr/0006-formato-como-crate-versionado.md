@@ -2,7 +2,7 @@
 
 **Estado:** Propuesto **Fecha:** 2026-08-29
 
-**Parte de** [la épica del MVP](../../../../../../.stratum/worklist/1.epic.md). Depende de [ADR-0003](0003-formato-captures-y-aceptacion.md), que decide **qué** es el formato; éste decide **dónde vive** y **cómo se versiona**.
+**Parte de** [la épica del MVP](../../../../../../.stratum/worklist-accreta/1.epic.md). Depende de [ADR-0003](0003-formato-captures-y-aceptacion.md), que decide **qué** es el formato; éste decide **dónde vive** y **cómo se versiona**.
 
 ---
 

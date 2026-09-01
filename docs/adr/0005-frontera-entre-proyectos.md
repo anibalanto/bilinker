@@ -2,7 +2,7 @@
 
 **Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-29
 
-**Parte de** [la épica del MVP](../../../../../../.stratum/worklist/1.epic.md), que lleva el caso `retinar` / `hsi` / `filasvirtuales` y la motivación de entrega. Depende de [ADR-0003](0003-formato-captures-y-aceptacion.md) —copia el `accepted` del vecino— y de [ADR-0004](0004-bilinks-en-ref-paralela.md) —lo que el consumidor trae del proveedor es esa ref—. Es el último de los tres por dependencia, no por bloqueo: **su desarrollo es enteramente propio y se verifica entre dos repos locales.** Lo que depende de gente fuera del proyecto es la adopción — que un proveedor real publique una abstracción— y eso vive en la épica, no acá.
+**Parte de** [la épica del MVP](../../../../../../.stratum/worklist-accreta/1.epic.md), que lleva el caso `retinar` / `hsi` / `filasvirtuales` y la motivación de entrega. Depende de [ADR-0003](0003-formato-captures-y-aceptacion.md) —copia el `accepted` del vecino— y de [ADR-0004](0004-bilinks-en-ref-paralela.md) —lo que el consumidor trae del proveedor es esa ref—. Es el último de los tres por dependencia, no por bloqueo: **su desarrollo es enteramente propio y se verifica entre dos repos locales.** Lo que depende de gente fuera del proyecto es la adopción — que un proveedor real publique una abstracción— y eso vive en la épica, no acá.
 
 ---
 

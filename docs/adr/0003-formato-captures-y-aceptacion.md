@@ -2,7 +2,7 @@
 
 **Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-30
 
-**Parte de** [la épica del MVP](../../../../../../.stratum/worklist/1.epic.md), que lleva la motivación de entrega. Los otros dos ADRs de la misma tanda: [ADR-0004](0004-bilinks-en-ref-paralela.md), dónde viven los bilinks, y [ADR-0005](0005-frontera-entre-proyectos.md), la frontera entre proyectos. Éste va primero: los otros dos usan su vocabulario.
+**Parte de** [la épica del MVP](../../../../../../.stratum/worklist-accreta/1.epic.md), que lleva la motivación de entrega. Los otros dos ADRs de la misma tanda: [ADR-0004](0004-bilinks-en-ref-paralela.md), dónde viven los bilinks, y [ADR-0005](0005-frontera-entre-proyectos.md), la frontera entre proyectos. Éste va primero: los otros dos usan su vocabulario.
 
 ---
 
