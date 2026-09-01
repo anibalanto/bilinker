@@ -16,10 +16,7 @@ bilink-migrate = { path = "../bilink-migrate" }
 stratum     = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 # **El único lugar de bilinker que nombra al daemon.** La librería define el puerto
 # `Neighbours` y no sabe quién lo implementa; el binario elige.
-#
-# Va por path y no por git porque el repo de lspd todavía no está publicado; el día
-# que lo esté pasa a `{ git = "https://github.com/anibalanto/lspd.git", branch = "main" }`.
-lspd-client = { path = "../../../../../lspd/.stratum/impl/crates/lspd-client" }
+lspd-client = { git = "https://github.com/anibalanto/lspd.git", branch = "main" }
 clap        = { version = "4", features = ["derive"] }
 anyhow      = "1"
 chrono      = "0.4"
