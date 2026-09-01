@@ -5,6 +5,7 @@ name    = "bilink-format"
 version = "3.7.0"
 edition = "2021"
 
+license.workspace = true
 [dependencies]
 anyhow      = "1"
 serde       = { version = "1", features = ["derive"] }

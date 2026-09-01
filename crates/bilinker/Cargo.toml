@@ -3,6 +3,7 @@ name = "bilinker"
 version = "0.1.0"
 edition = "2021"
 
+license.workspace = true
 [dependencies]
 # El formato vigente y sólo él. Los históricos los linkea `bilink-migrate`, que es
 # quien los necesita: cargar todos los parsers en el camino de lectura es lo que
