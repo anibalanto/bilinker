@@ -73,12 +73,11 @@ impl CaptureGenerator for Interface {
 
     /// Una firma se nombra por su método, que es lo que la distingue.
     ///
-    /// **Y sale de la query, no del fragmento.** `--as interface` pone el nombre en
-    /// los dos roles —capturado *y* anclado—, así que está en los dos lados; leerlo
-    /// del ancla es lo que hace que el mismo código sirva cuando un generador lo deja
-    /// sólo ahí.
-    fn alias(&self, _source: &str, _ranges: &Ranges, query: &str) -> Option<String> {
-        nombre_anclado(query)
+    /// **Y sale del fragmento**: `--as interface` captura el nombre —lo pone en los
+    /// dos roles, capturado *y* anclado—, así que está adentro de lo referenciado y
+    /// no hay que ir a buscarlo a la query.
+    fn alias(&self, source: &str, ranges: &Ranges, _query: &str) -> Option<String> {
+        nombre_entre_partes(source, ranges)
     }
 }
 
@@ -181,7 +180,7 @@ impl CaptureGenerator for SpringController {
         // que distingue es el nombre del método, y está en la query porque `32` lo
         // puso ahí como ancla justo donde el literal falta: donde falta el literal
         // sobra el ancla, y viceversa.
-        match (literal_de(partes[verbo_i]), nombre_anclado(query)) {
+        match (literal_de(partes[verbo_i]), nombre_entre_partes(source, ranges)) {
             (None, Some(m)) => Some(format!("{verbo} {ruta}  ·  {m}")),
             _               => Some(format!("{verbo} {ruta}")),
         }
@@ -213,23 +212,24 @@ fn literal_de(texto: &str) -> Option<String> {
     (!lit.is_empty()).then(|| lit.to_string())
 }
 
-/// El nombre que la query ancla con `name: (identifier) @nN (#eq? @nN "…")`.
+/// El nombre del método: lo que hay en el archivo **entre** el tipo de retorno y los
+/// parámetros.
 ///
-/// **El último, no el primero.** `name: (identifier)` aparece también en las
-/// anotaciones —`@RequestMapping`, `@GetMapping` son identificadores con nombre—, y
-/// el patrón las escribe antes porque van más arriba en el árbol. El nombre del
-/// método es siempre el último que el patrón ancla.
-fn nombre_anclado(query: &str) -> Option<String> {
-    let mut ultimo = None;
-    let mut resto = query;
-    while let Some((_, r)) = resto.split_once("name: (identifier)") {
-        resto = r;
-        let Some((_, r2)) = resto.split_once("#eq?") else { break };
-        let Some((_, r3)) = r2.split_once('"') else { break };
-        let Some((nombre, _)) = r3.split_once('"') else { break };
-        if !nombre.is_empty() { ultimo = Some(nombre.to_string()); }
-    }
-    ultimo
+/// **No se lee de la query, y ése fue el error.** Parecía razonable —el nombre está
+/// anclado ahí— pero `name: (identifier)` aparece también en las anotaciones y en la
+/// clase, que van más arriba del árbol y por lo tanto antes en el patrón. Ni el
+/// primero ni el último aciertan: sobre 98 endpoints reales salieron `GetMapping`,
+/// `PutMapping` y hasta el nombre de una clase.
+///
+/// Entre los dos últimos `@target` de un capture de contrato **no hay nada más que el
+/// nombre**: el tipo termina, viene el nombre, arrancan los parámetros. Eso no es una
+/// heurística sobre texto, es la forma que el generador escribió.
+fn nombre_entre_partes(source: &str, ranges: &Ranges) -> Option<String> {
+    let partes = ranges.parts();
+    let [.., tipo, params] = partes else { return None };
+    let entre = source.get(tipo.end..params.start)?.trim();
+    (!entre.is_empty() && entre.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| entre.to_string())
 }
 
 /// La anotación de ruta de un método, si la tiene.

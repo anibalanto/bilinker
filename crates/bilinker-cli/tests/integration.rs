@@ -5249,3 +5249,36 @@ fn renaming_the_route_renames_the_alias() {
             "el alias se compone del fragmento de hoy:\n{out}");
     assert!(!out.contains("/public-api/user/"), "y no queda el viejo:\n{out}");
 }
+
+/// **El nombre del método sale del fragmento, no de la query.**
+///
+/// Leerlo de la query parecía razonable —está anclado ahí— y falla: `name:
+/// (identifier)` aparece también en las anotaciones y en la clase, que van más arriba
+/// del árbol y por lo tanto antes en el patrón. Sobre los 98 endpoints de `hsi` eso
+/// producía `GetMapping`, `PutMapping` y el nombre de una clase.
+///
+/// Entre los dos últimos `@target` no hay nada más que el nombre.
+#[test]
+fn the_method_name_comes_from_between_the_captured_parts() {
+    let (_tmp, root) = workspace_with_a_controller();
+    // Sin literal en la anotación del método: es el caso donde el nombre desempata.
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("@GetMapping(\"/permissions/from-token\")", "@GetMapping")).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "markerless"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("·  getPermissions"),
+            "el nombre del método desempata a los hermanos:\n{out}");
+    assert!(!out.contains("GetMapping"), "y no es el de la anotación:\n{out}");
+}
