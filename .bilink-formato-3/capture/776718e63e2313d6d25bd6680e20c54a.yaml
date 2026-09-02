@@ -1,0 +1,4 @@
+file: crates/bilink-format/src/schema.rs
+query: |-
+  (const_item
+    name: (identifier) @n0 (#eq? @n0 "SCHEMA_HASHES")) @target

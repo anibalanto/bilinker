@@ -1,0 +1,5 @@
+file: crates/bilinker-cli/src/lspd_neighbours.rs
+query: |-
+  (impl_item
+    trait: (type_identifier) @n0 (#eq? @n0 "Neighbours")
+    type: (type_identifier) @n1 (#eq? @n1 "Lspd")) @target

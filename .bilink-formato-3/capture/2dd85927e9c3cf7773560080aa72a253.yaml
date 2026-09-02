@@ -1,0 +1,4 @@
+file: crates/bilink-migrate/src/partition.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "a_repo_that_never_ran_001_still_reaches_format_2")) @target

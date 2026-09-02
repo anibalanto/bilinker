@@ -1,0 +1,4 @@
+file: crates/bilink-migrate/src/partition.rs
+query: |-
+  (struct_item
+    name: (type_identifier) @n0 (#eq? @n0 "Plan")) @target

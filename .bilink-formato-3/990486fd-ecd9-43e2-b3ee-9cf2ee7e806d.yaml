@@ -1,0 +1,14 @@
+endpoint:
+  0:
+    link: path <
+    accepted:
+      agree:
+      - Anibal
+      link: capture 5ea149551877f2032a72547c4d4f1931
+      hash: 48f1282937984bba8aeb060e9aa4fd7cef3ec7e4ed764a754ca13db0ac15f79c
+  1:
+    link: capture d241332739984657ae2a43d5ba1ec30d
+    accepted:
+      link: capture d241332739984657ae2a43d5ba1ec30d
+      hash: fb66b4e58df9bf13e8b9688987544353e228025f45c250954b215616e4bfe805
+      hash_ast: 352b72f7c7055646353b600539590168f1c063d62e05f069f8b90b4705b0c2ee

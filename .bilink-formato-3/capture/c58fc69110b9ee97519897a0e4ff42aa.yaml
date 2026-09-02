@@ -1,0 +1,2 @@
+file: crates/bilinker-cli/tests/integration.rs
+query: '(function_item name: (identifier) @n0 (#eq? @n0 "chain_new_two_layers_creates_two_files")) @target'

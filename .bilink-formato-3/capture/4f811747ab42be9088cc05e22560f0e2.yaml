@@ -1,0 +1,4 @@
+file: crates/bilink-format/src/schema.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "schema_json")) @target
