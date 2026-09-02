@@ -142,15 +142,13 @@ fn signer(layer: &Path) -> Result<String> {
 /// combinaciones. Las dos que fallan son las únicas que `--no-n1` destraba, y la
 /// única que *baja* algo pide además `--force`.
 fn resolve_n1(
-    layer: &Path,
     cap: &Capture,
-    range: &bilink_format::Ranges,
+    alcance: &crate::neighbours::Reach,
     previous: Option<&Accepted>,
     folded: &Option<crate::neighbours::Neighbourhood>,
     what: What,
     content_hash: &str,
 ) -> Result<Option<N>> {
-    // Con `--place` el contenido no se toca, y el vecindario es del contenido.
     // Con `--place` el contenido no se toca, y el vecindario es del contenido.
     let preserve = || previous.and_then(|a| a.n.clone());
     if !what.content {
@@ -163,12 +161,28 @@ fn resolve_n1(
         return Ok(Some(N::of_level_1(f.clone())));
     }
 
-    // **Que el fragmento tenga vecindario se sabe por la gramática, no por el
-    // proveedor.** Sin este corte el aviso saldría sobre prosa y sobre un DTO, donde
-    // la ausencia de `n1` ya era la correcta — y un aviso que sale siempre no
-    // lo lee nadie.
-    if !crate::neighbours::has_resolvable_signature(layer, &cap.file, range) {
-        return Ok(preserve());
+    // **Qué se puede saber del vecindario se contesta con la gramática, no con el
+    // proveedor**, y son tres cosas y no dos.
+    use crate::neighbours::Reach;
+    match alcance {
+        // No hay vecindario: prosa, un DTO, un lenguaje sin tipos. La ausencia ya era
+        // la correcta, y avisar acá sería ruido — un aviso que sale siempre no lo lee
+        // nadie.
+        Reach::None => return Ok(preserve()),
+
+        // **Hay y no se alcanza**, que es lo que antes se escribía como si no
+        // hubiera. Escribir ausencia acá le daría a la ausencia un segundo
+        // significado que ningún lector puede separar del primero.
+        Reach::Unreachable { what: que } => {
+            if what.no_n1 { return Ok(Some(N::declined())); }
+            bail!(
+                "el fragmento de {} {que}, y su vecindario no se puede alcanzar: el \
+                 nivel 1 sale de una firma, y ahí no hay una que sea la suya.\n       \
+                 Capturar el contrato con --as, o renunciar al vecindario con --no-n1.",
+                cap.file);
+        }
+
+        Reach::At(_) => {}
     }
 
     // **Una renuncia escrita es una decisión, y se lee de vuelta.**
@@ -291,14 +305,17 @@ fn compute(
             let content_hash = hash::sha256(fragment.as_bytes());
             let ast_hash = ast_hash_of(layer, &cap, &source)?;
 
-            // El vecindario, si hay quien lo resuelva y el fragmento tiene uno.
-            let folded = match (what.content, nb) {
-                (true, Some(p)) => p.of(layer, &cap.file, &range)?
+            // El vecindario, si hay quien lo resuelva y el fragmento tiene uno **al
+            // que se llegue**. Las posiciones las pone la gramática: preguntar donde
+            // arranca el fragmento devuelve `pub`, que no declara nada.
+            let alcance = crate::neighbours::reach(layer, &cap.file, &range);
+            let folded = match (what.content, nb, &alcance) {
+                (true, Some(p), crate::neighbours::Reach::At(at)) => p.of(layer, &cap.file, at)?
                     .map(|locs| crate::neighbours::fold(layer, &locs))
                     .transpose()?,
                 _ => None,
             };
-            let neighbourhood = resolve_n1(layer, &cap, &range, previous, &folded, what, &content_hash)?;
+            let neighbourhood = resolve_n1(&cap, &alcance, previous, &folded, what, &content_hash)?;
 
             let accepted = Accepted {
                 // Lo pone `accept`, no `compute`: depende de qué había antes.
@@ -524,12 +541,15 @@ mod n1_tests {
     /// Un DTO: su declaración no menciona tipos como los menciona una firma.
     const SIN_FIRMA: &str = "class Dto {\n\tprivate String x;\n}\n";
 
-    fn layer(body: &str) -> (tempfile::TempDir, Capture, Ranges) {
+    fn layer(body: &str) -> (tempfile::TempDir, Capture, crate::neighbours::Reach) {
         let d = tempdir().unwrap();
         std::fs::write(d.path().join("Svc.java"), body).unwrap();
         // El rango del método, que es donde cae un `@target` de un capture de firma.
         let start = body.find("public").or_else(|| body.find("private")).unwrap();
-        (d, Capture { file: "Svc.java".into(), query: None }, Ranges::one(start, start + 10))
+        let cap = Capture { file: "Svc.java".into(), query: None };
+        let r = Ranges::one(start, start + 10);
+        let alcance = crate::neighbours::reach(d.path(), &cap.file, &r);
+        (d, cap, alcance)
     }
 
     fn previo(hash: &str, n1: Option<&str>) -> Accepted {
@@ -555,7 +575,7 @@ mod n1_tests {
     #[test]
     fn row_1_resolved_without_a_previous_one_is_written() {
         let (d, cap, r) = layer(CON_FIRMA);
-        let o = resolve_n1(d.path(), &cap, &r, None, &folded(), What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, None, &folded(), What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("nuevo"));
         assert_eq!(o.as_ref().map(|n| n.is_acquired()).unwrap_or(false), true);
     }
@@ -566,7 +586,7 @@ mod n1_tests {
     #[test]
     fn row_2_nothing_to_lose_and_no_provider_refuses() {
         let (d, cap, r) = layer(CON_FIRMA);
-        let e = resolve_n1(d.path(), &cap, &r, None, &None, What::default(), "h").unwrap_err();
+        let e = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap_err();
         assert!(e.to_string().contains("--no-n1"), "el error tiene que dar la salida: {e}");
     }
 
@@ -575,7 +595,7 @@ mod n1_tests {
     fn row_2_declines_explicitly_and_leaves_it_written() {
         let (d, cap, r) = layer(CON_FIRMA);
         let what = What { no_n1: true, ..What::default() };
-        let o = resolve_n1(d.path(), &cap, &r, None, &None, what, "h").unwrap();
+        let o = resolve_n1(&cap, &r, None, &None, what, "h").unwrap();
         assert_eq!(o, Some(N::declined()), "la renuncia se escribe, no se omite");
     }
 
@@ -585,7 +605,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
         p.n = Some(N::declined());
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &folded(), What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &folded(), What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("nuevo"), "volver a tener proveedor recupera la cobertura");
     }
 
@@ -599,7 +619,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
         p.n = Some(N::declined());
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
         assert_eq!(o, Some(N::declined()), "la decisión ya estaba tomada y escrita");
     }
 
@@ -613,7 +633,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("otro-hash", None);
         p.n = Some(N::declined());
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
         assert_eq!(o, Some(N::declined()), "la firma no es lo que una renuncia afirma");
     }
 
@@ -624,7 +644,7 @@ mod n1_tests {
         let mut p = previo("h", None);
         p.n = Some(N::declined());
         let what = What { no_n1: true, ..What::default() };
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, what, "h").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, what, "h").unwrap();
         assert_eq!(o, Some(N::declined()));
     }
 
@@ -637,7 +657,7 @@ mod n1_tests {
     fn row_4_a_provider_outage_never_erases_what_was_there() {
         let (d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("viejo"), "una caída no puede bajar la cobertura");
     }
 
@@ -647,7 +667,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
         let what = What { no_n1: true, ..What::default() };
-        let e = resolve_n1(d.path(), &cap, &r, Some(&p), &None, what, "h").unwrap_err();
+        let e = resolve_n1(&cap, &r, Some(&p), &None, what, "h").unwrap_err();
         assert!(e.to_string().contains("--force"), "{e}");
     }
 
@@ -657,7 +677,7 @@ mod n1_tests {
     fn row_5_a_changed_signature_cannot_keep_a_stale_neighbourhood() {
         let (d, cap, r) = layer(CON_FIRMA);
         let p = previo("viejo_hash", Some("viejo"));
-        let e = resolve_n1(d.path(), &cap, &r, Some(&p), &None, What::default(), "otro").unwrap_err();
+        let e = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "otro").unwrap_err();
         assert!(e.to_string().contains("--no-n1 --force"), "{e}");
     }
 
@@ -667,7 +687,7 @@ mod n1_tests {
         let (d, cap, r) = layer(CON_FIRMA);
         let p = previo("viejo_hash", Some("viejo"));
         let what = What { no_n1: true, force: true, ..What::default() };
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, what, "otro").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, what, "otro").unwrap();
         assert_eq!(o, Some(N::declined()));
     }
 
@@ -677,7 +697,7 @@ mod n1_tests {
     #[test]
     fn without_a_resolvable_signature_there_is_nothing_to_warn_about() {
         let (d, cap, r) = layer(SIN_FIRMA);
-        let o = resolve_n1(d.path(), &cap, &r, None, &None, What::default(), "h").unwrap();
+        let o = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap();
         assert_eq!(o, None, "no tener firma no es haber renunciado");
     }
 
@@ -686,7 +706,7 @@ mod n1_tests {
     fn place_only_never_touches_the_neighbourhood() {
         let (d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
-        let o = resolve_n1(d.path(), &cap, &r, Some(&p), &None, What::place_only(), "otro").unwrap();
+        let o = resolve_n1(&cap, &r, Some(&p), &None, What::place_only(), "otro").unwrap();
         assert_eq!(adquirido(&o), Some("viejo"));
     }
 }

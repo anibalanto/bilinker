@@ -9,7 +9,6 @@
 use std::path::Path;
 
 use anyhow::Result;
-use bilink_format::Ranges;
 use bilinker::neighbours::{Location, Neighbours};
 
 pub struct Lspd;
@@ -30,27 +29,30 @@ impl Neighbours for Lspd {
     /// La distinción no se puede hacer de este lado —una firma de puros primitivos
     /// tiene vecindario vacío, y es legítimo—, así que la da el daemon con
     /// [`NOT_READY`](lspd_client::NOT_READY) y acá sólo se traduce.
-    fn of(&self, layer: &Path, file: &str, ranges: &Ranges) -> Result<Option<Vec<Location>>> {
+    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
         if !lspd_client::responds() { return Ok(None); }
 
         let abs = layer.join(file);
         let source = std::fs::read_to_string(&abs)?;
 
         let mut out: Vec<Location> = Vec::new();
-        for r in ranges.parts() {
+        // **Las posiciones vienen dadas, no se deducen del rango.** Quién sabe dónde
+        // hay un tipo es la gramática, y la gramática es de bilinker; acá sólo se
+        // traduce a lo que el daemon entiende.
+        for &byte in at {
             // El daemon habla en línea/columna 0-based, como LSP. La conversión es de
             // este lado: traducirla allá sería ponerle al daemon una convención que
             // no es suya.
-            let (line, col) = line_col_of(&source, r.start);
+            let (line, col) = line_col_of(&source, byte);
             let val = match lspd_client::rpc("definitions", serde_json::json!({
                 "file": abs.to_string_lossy(), "line": line, "col": col,
             })) {
                 Ok(v) => v,
-                // **Un rango sin resolver invalida el vecindario entero**, no sólo el
-                // suyo: el fold es sobre el conjunto, y un conjunto al que le falta
-                // un miembro hashea distinto que el completo. Devolver lo que se
-                // alcanzó a juntar sería exactamente el vacío que este camino existe
-                // para no escribir.
+                // **Una posición sin resolver invalida el vecindario entero**, no
+                // sólo la suya: el fold es sobre el conjunto, y un conjunto al que le
+                // falta un miembro hashea distinto que el completo. Devolver lo que
+                // se alcanzó a juntar sería exactamente el vacío que este camino
+                // existe para no escribir.
                 Err(e) if not_ready(&e) => return Ok(None),
                 Err(e) => return Err(e),
             };

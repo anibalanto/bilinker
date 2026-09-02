@@ -191,10 +191,16 @@ fn compare_contract(
     let (Some(p), Some(range)) = (nb, range) else {
         return Ok(Some(EndpointState::ContractUnverified));
     };
+    // **Dónde preguntar lo dice la gramática, no el proveedor.** Si el vecindario no
+    // se alcanza desde este fragmento no hay con qué comparar, y eso es "no pude" —
+    // el mismo casillero que un daemon caído.
+    let crate::neighbours::Reach::At(at) = crate::neighbours::reach(layer, &cap.file, range) else {
+        return Ok(Some(EndpointState::ContractUnverified));
+    };
     // **`None` del proveedor es "no pude mirar", no "no hay vecinos".** Sin esa
     // distinción un daemon apagado se leería como un contrato que no menciona ningún
     // tipo, y eso es lo mismo que decir OK sobre algo que nadie verificó.
-    let Some(locs) = p.of(layer, &cap.file, range)? else {
+    let Some(locs) = p.of(layer, &cap.file, &at)? else {
         return Ok(Some(EndpointState::ContractUnverified));
     };
 
@@ -659,16 +665,24 @@ mod tests {
 
     struct Fake(Option<Vec<Location>>);
     impl Neighbours for Fake {
-        fn of(&self, _l: &std::path::Path, _f: &str, _r: &Ranges)
+        fn of(&self, _l: &std::path::Path, _f: &str, _at: &[usize])
             -> Result<Option<Vec<Location>>> { Ok(self.0.clone()) }
     }
 
+    /// El fragmento es **la firma**, y el DTO es su vecino.
+    ///
+    /// Estaba al revés: capturaba el DTO y le atribuía un vecindario. No se notaba
+    /// porque el puerto recibía el rango y preguntaba donde arrancaba, así que daba
+    /// igual sobre qué cayera. Con las posiciones puestas por la gramática el fixture
+    /// tiene que decir la verdad — un DTO no tiene firma, y por eso no tiene
+    /// vecindario que comparar.
     fn dto_layer(body: &str) -> (tempfile::TempDir, Capture, Ranges, Vec<Location>) {
         let d = tempdir().unwrap();
-        std::fs::write(d.path().join("Svc.rs"),
-            format!("{body}\n\npub fn get() -> Dto {{ todo!() }}\n")).unwrap();
+        let source = format!("{body}\n\npub fn get() -> Dto {{ todo!() }}\n");
+        std::fs::write(d.path().join("Svc.rs"), &source).unwrap();
         let cap = Capture { file: "Svc.rs".into(), query: None };
-        let range = Ranges::one(0, body.len());
+        let firma = source.find("pub fn get").unwrap();
+        let range = Ranges::one(firma, source.len() - 1);
         let locs = vec![Location {
             file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: body.len(),
         }];
