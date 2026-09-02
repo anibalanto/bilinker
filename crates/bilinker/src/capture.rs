@@ -63,17 +63,46 @@ pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
             if let Some(id) = e.link.capture_id() {
                 alive.insert(id.to_string());
             }
-            // **Sólo la primera entrada, y sin mirar `n.1.link`.** Contar los
-            // captures de todas las entradas y los del vecindario es la task `3w`, y
-            // hasta que esté un `prune` sobre una capa con vecindarios escritos se
-            // lleva vecinos que alguien referencia.
-            if let Some(id) = e.accepted.first().and_then(|a| a.link.as_ref()).and_then(|l| l.capture_id()) {
-                alive.insert(id.to_string());
+            // **El vecindario declarado también referencia.** Sin esta línea el
+            // primer `prune` sobre una capa con cierre de firma se lleva los vecinos,
+            // y lo que queda es un `accepted` apuntando a captures que no existen: un
+            // `UNRESOLVED` masivo producido por una limpieza.
+            for id in declared_neighbours(e) {
+                alive.insert(id);
+            }
+            // **Todas las entradas, no la primera.** Con `accepted` como lista una
+            // decisión desplazada sigue referenciando sus captures hasta que alguien
+            // resuelva la divergencia — borrarlos dejaría la entrada apuntando al
+            // vacío y con eso se perdería el lado del desacuerdo que no ganó.
+            for a in &e.accepted {
+                if let Some(id) = a.link.as_ref().and_then(|l| l.capture_id()) {
+                    alive.insert(id.to_string());
+                }
+                for id in accepted_neighbours(a) {
+                    alive.insert(id);
+                }
             }
         }
     }
 
     Ok(Capture::all_in(layer)?.into_iter().filter(|(id, _)| !alive.contains(id)).collect())
+}
+
+/// Los captures que el vecindario **declarado** de un endpoint nombra.
+fn declared_neighbours(e: &bilink_format::Endpoint) -> Vec<String> {
+    e.n.iter()
+        .flat_map(|n| n.0.values())
+        .flat_map(|lvl| lvl.link.ids().iter().cloned())
+        .collect()
+}
+
+/// Los captures que el vecindario **aceptado** de una entrada nombra.
+///
+/// Una renuncia no nombra ninguno, y por eso el `match` no tiene rama para ella: es
+/// el mismo motivo por el que `n` es un campo con tres estados y no dos.
+fn accepted_neighbours(a: &bilink_format::Accepted) -> Vec<String> {
+    let Some(bilink_format::N::Levels(levels)) = a.n.as_ref() else { return Vec::new() };
+    levels.values().flat_map(|nb| nb.link.ids().iter().cloned()).collect()
 }
 
 pub(crate) fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
@@ -996,5 +1025,84 @@ mod tests {
         let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
         assert_eq!(huerfanos, vec![suelto],
             "sólo el capture que nadie nombra; el aprobado sigue vivo");
+    }
+}
+
+#[cfg(test)]
+mod prune_neighbourhood_tests {
+    use super::*;
+    use bilink_format::{Accepted, BiLink, CaptureSet, DeclaredN, LinkEndpoint, N, Neighbourhood};
+    use tempfile::tempdir;
+
+    fn cap(layer: &Path, file: &str) -> String {
+        let c = Capture { file: file.into(), query: None };
+        let id = c.id();
+        c.write_in(layer).unwrap();
+        id
+    }
+
+    /// **Un capture nombrado sólo por el vecindario no es huérfano.**
+    ///
+    /// Sin esto el primer `prune` sobre una capa con cierre de firma se lleva los
+    /// vecinos, y el `accepted` queda apuntando a captures que no existen.
+    #[test]
+    fn a_capture_named_only_by_the_neighbourhood_survives() {
+        let d = tempdir().unwrap();
+        let layer = d.path();
+        let frag = cap(layer, "Svc.rs");
+        let vecino = cap(layer, "Dto.rs");
+        let suelto = cap(layer, "Nadie.rs");
+
+        let mut bl = BiLink::new(format!("capture {frag}").parse().unwrap(), LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).n = Some(DeclaredN::of_level_1(CaptureSet::new(vec![vecino.clone()])));
+        bl.write(&BiLink::path_in(layer, "11111111-1111-4111-8111-111111111111")).unwrap();
+
+        let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert!(huerfanos.contains(&suelto), "el que nadie nombra sí es huérfano: {huerfanos:?}");
+        assert!(!huerfanos.contains(&vecino), "el vecino declarado no: {huerfanos:?}");
+        assert!(!huerfanos.contains(&frag), "ni el fragmento: {huerfanos:?}");
+    }
+
+    /// **Y tampoco el de una decisión desplazada.**
+    ///
+    /// Con `accepted` como lista, la entrada que no ganó sigue referenciando sus
+    /// captures hasta que alguien resuelva. Borrarlos perdería el lado del desacuerdo
+    /// que no ganó, que es justo lo que la lista existe para no perder.
+    #[test]
+    fn the_captures_of_a_displaced_decision_survive() {
+        let d = tempdir().unwrap();
+        let layer = d.path();
+        let frag = cap(layer, "Svc.rs");
+        let gano = cap(layer, "Dto.rs");
+        let perdio = cap(layer, "DtoViejo.rs");
+
+        let entrada = |v: &str, h: &str| Accepted {
+            agree: Default::default(),
+            link: Some(format!("capture {frag}").parse().unwrap()),
+            hash: h.into(),
+            hash_ast: None,
+            n: Some(N::of_level_1(Neighbourhood {
+                link: CaptureSet::new(vec![v.to_string()]),
+                hash: h.into(),
+                hash_ast: None,
+            })),
+        };
+
+        let mut bl = BiLink::new(format!("capture {frag}").parse().unwrap(), LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).accepted = vec![entrada(&gano, "h1"), entrada(&perdio, "h2")];
+        bl.write(&BiLink::path_in(layer, "22222222-2222-4222-8222-222222222222")).unwrap();
+
+        let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert!(huerfanos.is_empty(), "las dos entradas referencian: {huerfanos:?}");
+    }
+
+    /// Una renuncia no nombra ningún capture, y no tiene por qué.
+    #[test]
+    fn a_decline_names_nothing() {
+        let a = Accepted {
+            agree: Default::default(), link: None,
+            hash: "h".into(), hash_ast: None, n: Some(N::declined()),
+        };
+        assert!(accepted_neighbours(&a).is_empty());
     }
 }
