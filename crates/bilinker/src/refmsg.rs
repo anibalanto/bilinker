@@ -67,6 +67,12 @@ pub enum RefCommand {
     /// desde qué capa se lo nombra, así que los `hash` no cambian y ningún endpoint
     /// pasa a ALTERED.
     Relayer { layer: String },
+    /// Tipo 2 — **devolver decisiones que una migración descartó.**
+    ///
+    /// No lleva endpoint, y no por ahorro: la restitución trae un conjunto de vuelta
+    /// de una sola vez, igual que [`Adopt`](Self::Adopt). Cuántos y cuáles no se
+    /// pudieron va en la prosa, que es lo que se lee.
+    RestoreN1,
 }
 
 impl RefCommand {
@@ -87,6 +93,7 @@ impl RefCommand {
             Self::Adopt { branch } => format!("adopt {branch}"),
             Self::Pull { remote } => format!("pull {remote}"),
             Self::Relayer { layer } => format!("relayer {layer}"),
+            Self::RestoreN1 => "restore-n1".to_string(),
         }
     }
 }
@@ -182,6 +189,7 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Una capa se nombra por su path relativo a la raíz, con las mismas
         // restricciones de un nombre de rama: es el otro argumento no hexadecimal.
         ("relayer", [l]) => RefCommand::Relayer { layer: branch(l)? },
+        ("restore-n1", []) => RefCommand::RestoreN1,
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
