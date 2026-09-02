@@ -84,7 +84,11 @@ pub fn accept(
     // una decisión que no tomó. Y arranca vacío también cuando `compute` trajo el
     // `accepted` de un vecino —un endpoint `path` o `repo`— porque **`agree` no se
     // copia**: los que aprobaron allá aprobaron ese fragmento, no esta copia.
-    let previous = bl.endpoint.get(n).accepted.as_ref();
+    // **La primera entrada, provisoriamente.** Escribir en la lista —colapsar las
+    // que aprobaban otros valores, unirse al `agree` de la que coincide— es la task
+    // `3u`. Acá sólo se mantiene el comportamiento de una sola decisión, que es lo
+    // que había, para que el cambio de tipo no arrastre semántica.
+    let previous = bl.endpoint.get(n).accepted.first();
     let iguales = previous.map(|p| p.same_values(&accepted)).unwrap_or(false);
     accepted.agree = match previous {
         Some(p) if iguales => p.agree.clone(),
@@ -96,7 +100,7 @@ pub fn accept(
     let e = bl.endpoint.get_mut(n);
     let hash = accepted.hash.clone();
     let agree = accepted.agree.clone();
-    e.accepted = Some(accepted);
+    e.accepted = vec![accepted];
     bl.write(&path)?;
 
     // El estado cacheado describe la comparación anterior y ya no vale.
@@ -276,7 +280,8 @@ fn compute(
     nb: crate::neighbours::Provider<'_>,
 ) -> Result<(Accepted, Option<String>)> {
     let e = bl.endpoint.get(n);
-    let previous = e.accepted.as_ref();
+    // La primera entrada. La lista es de `3u`; acá se mantiene lo que había.
+    let previous = e.accepted.first();
 
     match &e.link {
         LinkEndpoint::Capture(id) => {
@@ -458,7 +463,7 @@ pub fn pending(layer: &Path) -> Vec<(String, u8)> {
 
             let needs = match cache.endpoint_state(uuid, n) {
                 Some(s) => !s.is_ok(),
-                None    => bl.endpoint.get(n).accepted.is_none(),
+                None    => bl.endpoint.get(n).accepted.is_empty(),
             };
             if needs { out.push((uuid.to_string(), n)); }
         }
@@ -558,12 +563,12 @@ mod n1_tests {
             link: None,
             hash: hash.into(),
             hash_ast: None,
-            n: n1.map(|h| N::of_level_1(Neighbourhood { hash: h.into(), hash_ast: None })),
+            n: n1.map(|h| N::of_level_1(Neighbourhood { link: Default::default(), hash: h.into(), hash_ast: None })),
         }
     }
 
     fn folded() -> Option<Neighbourhood> {
-        Some(Neighbourhood { hash: "nuevo".into(), hash_ast: Some("nuevo_ast".into()) })
+        Some(Neighbourhood { link: Default::default(), hash: "nuevo".into(), hash_ast: Some("nuevo_ast".into()) })
     }
 
     /// El hash del vecindario adquirido, si lo hay.

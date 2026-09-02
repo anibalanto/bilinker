@@ -264,11 +264,18 @@ fn verify_agree(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<Str
         let viejo = base.and_then(|b| repo.bilink_at(b, &path).ok());
 
         for n in [0u8, 1u8] {
+            // **La unión de todas las entradas**, no la primera.
+            //
+            // Lo que se verifica es que los nombres que un commit **agregó** a algún
+            // `agree` sean exactamente su autor. Con `accepted` como lista, un commit
+            // puede agregar un nombre abriendo una entrada nueva —eso es lo que hace
+            // una divergencia— y mirar sólo la primera dejaría ese endoso sin
+            // verificar. Es justo el agujero que esta verificación existe para cerrar.
             let antes: BTreeSet<String> = viejo
                 .as_ref()
-                .and_then(|bl| bl.endpoint.get(n).accepted.as_ref().map(agree_of))
+                .map(|bl| agree_union(&bl.endpoint.get(n).accepted))
                 .unwrap_or_default();
-            let ahora = nuevo.endpoint.get(n).accepted.as_ref().map(agree_of).unwrap_or_default();
+            let ahora = agree_union(&nuevo.endpoint.get(n).accepted);
 
             for nombre in ahora.difference(&antes) {
                 if *nombre != autor {
@@ -282,6 +289,11 @@ fn verify_agree(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<Str
         }
     }
     Ok(faults)
+}
+
+/// Todos los que aprobaron algo de este endpoint, en cualquiera de sus entradas.
+fn agree_union(accepted: &[bilink_format::Accepted]) -> BTreeSet<String> {
+    accepted.iter().flat_map(agree_of).collect()
 }
 
 fn agree_of(a: &Accepted) -> BTreeSet<String> { a.agree.clone() }

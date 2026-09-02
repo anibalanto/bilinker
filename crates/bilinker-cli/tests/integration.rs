@@ -3250,8 +3250,8 @@ fn two_clones_accepting_different_endpoints_converge_and_keep_both_commits() {
 
     // Y los dos valores están en el archivo.
     let bl = bilink_format::BiLink::load(&luis.join(format!(".bilink/{uuid}.yaml"))).unwrap();
-    assert!(bl.endpoint.get(0).accepted.is_some(), "lo que aceptó Ana entró");
-    assert!(bl.endpoint.get(1).accepted.is_some(), "y lo de Luis quedó");
+    assert!(!bl.endpoint.get(0).accepted.is_empty(), "lo que aceptó Ana entró");
+    assert!(!bl.endpoint.get(1).accepted.is_empty(), "y lo de Luis quedó");
 }
 
 /// **Dos clones que aceptan lo mismo convergen sin pedir nada, y el `agree`
@@ -3444,8 +3444,8 @@ fn verify_ref_rejects_adding_someone_else_to_agree() {
     // Pablo escribe `- ana` a mano, sobre el bilink del árbol.
     let path = root.join(format!(".bilink/{uuid}.yaml"));
     let texto = fs::read_to_string(&path).unwrap()
-        .replace("    accepted:\n      agree:\n      - t\n",
-                 "    accepted:\n      agree:\n      - ana\n      - t\n");
+        .replace("    accepted:\n    - agree:\n      - t\n",
+                 "    accepted:\n    - agree:\n      - ana\n      - t\n");
     fs::write(&path, &texto).unwrap();
     assert!(texto.contains("- ana"), "el fixture tiene que haber cambiado algo:\n{texto}");
 
@@ -3679,7 +3679,7 @@ fn as_person(root: &Path, name: &str) {
 /// El `accepted` de un endpoint, tal como está en el archivo.
 fn accepted_of(root: &Path, uuid: &str, n: u8) -> bilink_format::Accepted {
     let bl = bilink_format::BiLink::load(&root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
-    bl.endpoint.get(n).accepted.clone().expect("el endpoint está aceptado")
+    bl.endpoint.get(n).accepted.first().cloned().expect("el endpoint está aceptado")
 }
 
 fn agree_of(root: &Path, uuid: &str, n: u8) -> Vec<String> {
@@ -4875,17 +4875,30 @@ fn the_consumer_refuses_a_provider_format_it_does_not_understand() {
     run_in(&consumer, &["accept", "--no-n1", "."]);
     assert!(check_states(&consumer).trim().is_empty(), "arranca limpio");
 
+    // **Una versión del futuro, calculada.** Decía `4.0.0` y el futuro llegó: el
+    // formato es 4.0.0 desde la task `3r`, así que el test dejó de probar nada. Un
+    // major por encima del actual no envejece.
+    let futura = {
+        let major: u32 = bilink_format::VERSION.split('.').next().unwrap().parse().unwrap();
+        format!("{}.0.0", major + 1)
+    };
     let version = consumer.join(".bilink/hsi/.bilink/version");
-    fs::write(&version, "4.0.0\n").unwrap();
+    fs::write(&version, format!("{futura}\n")).unwrap();
 
     let (out, stderr, _) = run_in(&consumer, &["check", "."]);
-    assert!(stderr.contains("4.0.0") || out.contains("4.0.0"),
+    assert!(stderr.contains(&futura) || out.contains(&futura),
             "se dice qué versión publica y cuál se lee:\n{out}\n{stderr}");
     assert!(!out.contains("OK") && !out.contains("ALTERED"),
             "no se reporta ningún estado sobre archivos que no se entendieron:\n{out}");
 
     // Un minor distinto sí se entiende: lo aditivo no rompe al que lee más nuevo.
-    fs::write(&version, "3.0.0\n").unwrap();
+    // **Derivado por el mismo motivo que el de arriba**: decía `3.0.0`, que era el
+    // major de entonces y hoy es otro.
+    let otro_minor = {
+        let major = bilink_format::VERSION.split('.').next().unwrap();
+        format!("{major}.99.0")
+    };
+    fs::write(&version, format!("{otro_minor}\n")).unwrap();
     let (_, _, ok) = run_in(&consumer, &["check", "."]);
     assert!(ok, "un minor distinto del mismo major se lee igual");
 }

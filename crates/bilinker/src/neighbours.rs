@@ -185,7 +185,11 @@ pub fn fold(layer: &Path, locs: &[Location]) -> Result<Neighbourhood> {
         every_one_has_a_grammar = false;
     }
 
+    // **`link` vacío por ahora.** Acuñar un capture por vecino y escribirlo acá es
+    // la task `3u`: es `accept` quien tiene el proveedor y quien acuña. Hasta
+    // entonces el fold es el de antes, con el campo declarado y sin poblar.
     Ok(Neighbourhood {
+        link: Default::default(),
         hash:     hash::sha256(texts.as_bytes()),
         hash_ast: every_one_has_a_grammar.then(|| hash::sha256(sexps.as_bytes())),
     })

@@ -96,10 +96,25 @@ impl JsonSchema for Endpoints {
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub link: LinkEndpoint,
-    /// **Su ausencia es `PENDING`, literalmente.** La invariante de aceptación no
-    /// se enuncia: es este `Option`, y el bloque no se puede escribir a medias.
+    /// El vecindario **declarado**: a qué captures apunta, por nivel.
+    ///
+    /// Es al `link` del fragmento lo que `accepted.n` es a `accepted.link`. Lo
+    /// mantiene `apply`, que para eso recibe el proveedor: un vecino que se mudó es
+    /// un `MOVED` que git resuelve, pero el conjunto también gana y pierde miembros
+    /// cuando la firma cambia, y qué tipo entró sólo lo sabe un language server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted: Option<Accepted>,
+    pub n: Option<DeclaredN>,
+    /// Las decisiones sobre este endpoint. **Una lista, y más de una es un estado.**
+    ///
+    /// La lista vacía es `PENDING`. Con exactamente una, valen las comparaciones de
+    /// siempre. Con dos o más el estado es `CONSENSUS_DIVERGED` y no se evalúa
+    /// ningún otro eje: no hay un valor contra el cual compararlos.
+    ///
+    /// **No es una estructura para sostener dos verdades**: es una forma de no perder
+    /// ninguna mientras alguien resuelve. Antes la segunda aceptación pisaba a la
+    /// primera en silencio.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted: Vec<Accepted>,
     /// Etiqueta del rol de este extremo. Inerte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -120,6 +135,101 @@ pub struct Endpoint {
     /// que no se pudo usar. El capture resuelve igual y `check` contesta igual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#as: Option<String>,
+}
+
+
+/// Los captures de un vecindario: `capture <id> <id> …`
+///
+/// **Lleva el prefijo y va en una línea**, con la misma forma que un
+/// [`LinkEndpoint`](crate::LinkEndpoint) de captura. Un vecino sólo puede ser un
+/// capture, así que el prefijo no discrimina nada — lo que hace es que quien lee el
+/// archivo no tenga que aprender dos formas para la misma cosa.
+///
+/// **Ordenado por id**, que es la clave del fold. El id es `sha256(file \0 query \0)`:
+/// no lleva contenido, así que un reformateo no lo mueve, y cambia exactamente cuando
+/// un vecino entra, sale, se muda o se renombra.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CaptureSet(Vec<String>);
+
+impl CaptureSet {
+    /// Los ids, ya ordenados.
+    pub fn new(mut ids: Vec<String>) -> Self {
+        ids.sort();
+        ids.dedup();
+        Self(ids)
+    }
+    pub fn ids(&self) -> &[String] { &self.0 }
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub fn len(&self) -> usize { self.0.len() }
+}
+
+impl std::fmt::Display for CaptureSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "capture")?;
+        for id in &self.0 { write!(f, " {id}")?; }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for CaptureSet {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let resto = s.strip_prefix("capture").ok_or_else(|| anyhow::anyhow!(
+            "un vecindario se escribe `capture <id>…`, y esto empieza con {:?}",
+            s.split_whitespace().next().unwrap_or("")))?;
+        // **Un prefijo sin ids es un error, no un conjunto vacío.** Vacío se escribe
+        // omitiendo el campo: `capture` solo no dice nada.
+        let ids: Vec<String> = resto.split_whitespace().map(str::to_string).collect();
+        if ids.is_empty() { anyhow::bail!("`capture` sin ningún id: un vecindario vacío se omite"); }
+        Ok(Self::new(ids))
+    }
+}
+
+impl Serialize for CaptureSet {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureSet {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for CaptureSet {
+    fn schema_name() -> std::borrow::Cow<'static, str> { "CaptureSet".into() }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Los captures de un vecindario: `capture <id> <id> …`",
+            "pattern": "^capture( [0-9a-f]{32})+$",
+        })
+    }
+}
+
+/// El vecindario **declarado**: qué captures lo componen, por nivel.
+///
+/// **No lleva hashes ni `declined`**, y las dos ausencias son la misma razón: un hash
+/// es una decisión y renunciar también. Acá va sólo lo que `apply` mantiene — a qué
+/// apunta el vecindario, igual que `link` para el fragmento.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct DeclaredN(pub BTreeMap<u8, DeclaredLevel>);
+
+impl DeclaredN {
+    pub fn of_level_1(link: CaptureSet) -> Self {
+        Self(BTreeMap::from([(1u8, DeclaredLevel { link })]))
+    }
+    pub fn level(&self, k: u8) -> Option<&DeclaredLevel> { self.0.get(&k) }
+}
+
+/// Un nivel del vecindario declarado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredLevel {
+    pub link: CaptureSet,
 }
 
 /// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
@@ -199,7 +309,26 @@ pub enum DeclinedMark {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Neighbourhood {
-    /// SHA-256 plegado de los vecinos, en orden de identidad.
+    /// Los captures de los vecinos que este fold cubre.
+    ///
+    /// **Sin esto el vecindario era el único lugar del formato donde una ubicación
+    /// externa se hasheaba cruda**, y de esa anomalía salían tres cosas: que el hash
+    /// cubriera el *nombre* del tipo y no su forma, que un vecino que cambia de
+    /// archivo mueva el fold sin que nadie sepa por qué, y que no se pudiera
+    /// preguntar qué tipos son.
+    ///
+    /// **Vacío se omite, y no hay ambigüedad**: que el nivel exista ya dice que el
+    /// vecindario se adquirió, así que la ausencia del campo sólo puede significar
+    /// *"se miró y no hay vecinos"* — el caso legítimo de una firma de puros
+    /// primitivos.
+    ///
+    /// Es una consecuencia de la forma string: `capture <id> <id>` no tiene cómo
+    /// escribir una lista vacía —`capture` solo es degenerado y se rechaza— así que
+    /// el vacío se dice callándose. Con una secuencia YAML se habría podido escribir
+    /// `[]`, que dice lo mismo con una palabra más.
+    #[serde(default, skip_serializing_if = "CaptureSet::is_empty")]
+    pub link: CaptureSet,
+    /// SHA-256 plegado de los vecinos, en orden de id de capture.
     pub hash: String,
     /// Ídem sobre sus s-expressions, y **todo-o-nada**.
     ///
@@ -257,8 +386,8 @@ impl BiLink {
         Self {
             kind: None,
             endpoint: Endpoints {
-                zero: Endpoint { link: link0, accepted: None, name: None, r#as: None },
-                one:  Endpoint { link: link1, accepted: None, name: None, r#as: None },
+                zero: Endpoint { link: link0, n: None, accepted: Vec::new(), name: None, r#as: None },
+                one:  Endpoint { link: link1, n: None, accepted: Vec::new(), name: None, r#as: None },
             },
         }
     }
@@ -285,19 +414,39 @@ impl BiLink {
         serde_yaml_ng::to_string(self).context("serializando el bilink")
     }
 
-    /// El `accepted` del endpoint estructural, si hay uno.
+    /// El `accepted` del endpoint estructural, si hay **uno solo**.
     ///
     /// Es lo que un endpoint `path` copia de su vecino: los dos valores, no el hash
     /// del archivo. Copiar el archivo entero haría que cualquier reordenamiento o
     /// comentario del vecino disparara `CHAIN_DIRTY`.
+    ///
+    /// **Con el vecino divergido devuelve `None`**, y eso es provisorio: qué
+    /// corresponde copiar cuando el proveedor no tiene una sola respuesta está
+    /// abierto en `concepts/bilink.md` § "si cruza la frontera". No copiar es la
+    /// salida conservadora — deja al consumidor sin poder aceptar, que es visible y
+    /// no miente. Para poder decidirlo después, la divergencia se distingue de la
+    /// ausencia con [`structural_diverged`](Self::structural_diverged).
     pub fn structural_accepted(&self) -> Option<&Accepted> {
         for n in [0u8, 1u8] {
             let e = self.endpoint.get(n);
             if e.link.is_structural() {
-                return e.accepted.as_ref();
+                return match e.accepted.as_slice() { [one] => Some(one), _ => None };
             }
         }
         None
+    }
+
+    /// Si el endpoint estructural tiene **más de una** decisión.
+    ///
+    /// Existe para que *"el vecino no aceptó"* y *"el vecino no se puso de acuerdo"*
+    /// no le lleguen iguales al consumidor. Son dos cosas distintas y la segunda no
+    /// se arregla esperando.
+    pub fn structural_diverged(&self) -> bool {
+        for n in [0u8, 1u8] {
+            let e = self.endpoint.get(n);
+            if e.link.is_structural() { return e.accepted.len() > 1 }
+        }
+        false
     }
 }
 
@@ -330,13 +479,13 @@ mod tests {
     fn a_bilink_round_trips() {
         let dir = tempdir().unwrap();
         let mut bl = BiLink::new(ep("capture abc123"), ep("path >impl"));
-        bl.endpoint.zero.accepted = Some(Accepted {
+        bl.endpoint.zero.accepted = vec![Accepted {
             agree: ["ana".to_string(), "pablo".to_string()].into(),
             link: Some(ep("capture abc123")),
             hash: "c00e0760".into(),
             hash_ast: Some("1b9e44a2".into()),
             n: None,
-        });
+        }];
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();
         assert_eq!(BiLink::load(&p).unwrap(), bl);
@@ -377,7 +526,7 @@ mod tests {
     /// `accepted` está completo o ausente. No hay medio bloque.
     #[test]
     fn accepted_is_all_or_nothing() {
-        let no_hash = "endpoint:\n  0: {link: capture a, accepted: {link: capture a}}\n  1: {link: capture b}\n";
+        let no_hash = "endpoint:\n  0: {link: capture a, accepted: [{link: capture a}]}\n  1: {link: capture b}\n";
         let err = serde_yaml_ng::from_str::<BiLink>(no_hash).unwrap_err().to_string();
         assert!(err.contains("hash"), "accepted sin hash se rechaza: {err}");
 
@@ -390,7 +539,7 @@ mod tests {
     #[test]
     fn a_fresh_bilink_has_no_accepted() {
         let bl = BiLink::new(ep("capture a"), ep("path >impl"));
-        assert!(bl.endpoint.zero.accepted.is_none());
+        assert!(bl.endpoint.zero.accepted.is_empty());
         let y = bl.to_yaml().unwrap();
         assert!(!y.contains("accepted"), "sin aceptar, el bloque no se escribe:\n{y}");
     }
@@ -438,8 +587,7 @@ mod n_shape_tests {
     /// Adquirido: un mapa con los dos folds.
     #[test]
     fn an_acquired_neighbourhood_is_keyed_by_level() {
-        let n = Some(N::of_level_1(Neighbourhood {
-            hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()),
+        let n = Some(N::of_level_1(Neighbourhood { link: Default::default(), hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()),
         }));
         let (y, back) = round_trip(n.clone());
         assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n    hash_ast: 88e834c4\n");
@@ -450,7 +598,7 @@ mod n_shape_tests {
     /// el campo entero.
     #[test]
     fn the_ast_fold_is_optional_inside_a_level() {
-        let n = Some(N::of_level_1(Neighbourhood { hash: "96c765b9".into(), hash_ast: None }));
+        let n = Some(N::of_level_1(Neighbourhood { link: Default::default(), hash: "96c765b9".into(), hash_ast: None }));
         let (y, back) = round_trip(n.clone());
         assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n");
         assert_eq!(back, n);
@@ -462,8 +610,8 @@ mod n_shape_tests {
     #[test]
     fn a_second_level_is_one_more_key() {
         let n = Some(N::Levels(BTreeMap::from([
-            (1u8, Neighbourhood { hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()) }),
-            (2u8, Neighbourhood { hash: "4b1e0d77".into(), hash_ast: None }),
+            (1u8, Neighbourhood { link: Default::default(), hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()) }),
+            (2u8, Neighbourhood { link: Default::default(), hash: "4b1e0d77".into(), hash_ast: None }),
         ])));
         let (y, back) = round_trip(n.clone());
         assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n    hash_ast: 88e834c4\n  2:\n    hash: 4b1e0d77\n");

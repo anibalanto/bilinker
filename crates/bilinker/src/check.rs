@@ -114,9 +114,9 @@ fn check_endpoint(
 ) -> Result<EndpointState> {
     let e = bl.endpoint.get(n);
     match &e.link {
-        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.as_ref()),
-        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.as_ref()),
-        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.as_ref()),
+        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.first()),
+        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.first()),
+        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.first()),
         // Constante: no hay contra qué comparar. Nunca pide acción.
         LinkEndpoint::Abstract  => Ok(EndpointState::Open),
         LinkEndpoint::Capture(cap_id) => {
@@ -135,7 +135,7 @@ fn check_endpoint(
             let (state, range) = match resolved.get(cap_id) {
                 Some(v) => v.clone(),
                 None => {
-                    let v = resolve_capture(layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
+                    let v = resolve_capture(layer, &cap, e.accepted.first(), cache.commit(uuid, n))?;
                     resolved.insert(cap_id.clone(), v.clone());
                     v
                 }
@@ -144,7 +144,10 @@ fn check_endpoint(
                 return Ok(EndpointState::Unresolved);
             }
 
-            let Some(accepted) = &e.accepted else { return Ok(EndpointState::Pending) };
+            // **La lista vacía es `PENDING`.** Con más de una el estado es
+            // `CONSENSUS_DIVERGED`, y eso es la task `3t`: acá se mira la primera,
+            // que es el comportamiento que había.
+            let Some(accepted) = e.accepted.first() else { return Ok(EndpointState::Pending) };
 
             // ── dimensión de ubicación ────────────────────────────────────────
             //
@@ -720,7 +723,7 @@ mod tests {
             hash: String::new(),
             hash_ast: None,
             n: hash_n1.map(|hash| bilink_format::N::of_level_1(
-                bilink_format::Neighbourhood { hash, hash_ast: hash_ast_n1 })),
+                bilink_format::Neighbourhood { link: Default::default(), hash, hash_ast: hash_ast_n1 })),
         }
     }
 

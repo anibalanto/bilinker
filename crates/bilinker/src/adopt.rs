@@ -152,9 +152,9 @@ pub(crate) fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -
         let uuid = uuid_of(path);
 
         for n in [0u8, 1u8] {
-            let t = theirs_one.endpoint.get(n).accepted.as_ref();
-            let m = mine_one.endpoint.get(n).accepted.as_ref();
-            let b = base_one.map(|x| x.endpoint.get(n).accepted.as_ref()).unwrap_or(None);
+            let t = theirs_one.endpoint.get(n).accepted.first();
+            let m = mine_one.endpoint.get(n).accepted.first();
+            let b = base_one.and_then(|x| x.endpoint.get(n).accepted.first());
 
             if let Some(mut c) = agree_to_bring(m, t) {
                 c.path = path.clone();
@@ -246,14 +246,19 @@ pub(crate) fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Re
             // `agree` dice quiénes aprobaron *estos* valores: si adopto los del
             // vecino, los míos describían otros y no vienen. Si los dos aprobamos lo
             // mismo, la única resolución correcta es que estemos los dos.
-            let theirs_acc = theirs_one.endpoint.get(n).accepted.clone();
-            let mine_acc = bl.endpoint.get(n).accepted.clone();
+            // **Sobre la primera entrada, provisoriamente.** Unir la divergencia en
+            // vez de bloquearse —dos entradas y `CONSENSUS_DIVERGED`— es lo que la
+            // task `3q` decide y no está implementado todavía: acá se mantiene el
+            // comportamiento de una sola decisión.
+            let theirs_acc = theirs_one.endpoint.get(n).accepted.first().cloned();
+            let mine_acc = bl.endpoint.get(n).accepted.first().cloned();
             bl.endpoint.get_mut(n).accepted = match (mine_acc, theirs_acc) {
                 (Some(mut m), Some(t)) if m.same_values(&t) => {
                     m.agree.extend(t.agree);
-                    Some(m)
+                    vec![m]
                 }
-                (_, t) => t,
+                (_, Some(t)) => vec![t],
+                (m, None)    => m.into_iter().collect(),
             };
         }
         bl.write(&full)?;

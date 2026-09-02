@@ -187,7 +187,17 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
     // `as` no se puede traer y tampoco deducir: el formato 1 no lo escribía, y qué
     // generador produjo una query no se lee de la query. Su ausencia dice
     // exactamente eso —no se sabe con qué se capturó—, que es lo cierto.
-    Ok(v2::Endpoint { link, accepted, name: name.clone(), r#as: None })
+    // **`accepted` es una lista desde 4.0.0**, y del formato 1 sale a lo sumo una
+    // decisión: se envuelve, y no se pierde nada. Qué hacer con un `n` que no tiene
+    // captures es otra pregunta, y es de la task `3s` — acá no llega ninguno, porque
+    // el formato 1 no tenía vecindario.
+    Ok(v2::Endpoint {
+        link,
+        n: None,
+        accepted: accepted.into_iter().collect(),
+        name: name.clone(),
+        r#as: None,
+    })
 }
 
 /// El capture que el endpoint estructural del bilink vecino aprueba.
@@ -353,7 +363,7 @@ pub fn verify(layer: &Path) -> Result<Vec<String>> {
         };
         for n in [0u8, 1u8] {
             let old_hash = if n == 0 { &old.hash0 } else { &old.hash1 };
-            let new_hash = new.endpoint.get(n).accepted.as_ref().map(|a| &a.hash);
+            let new_hash = new.endpoint.get(n).accepted.first().map(|a| &a.hash);
             if old_hash.as_ref() != new_hash {
                 problems.push(format!("{}.{n}: el hash aceptado no sobrevivió", old.uuid));
             }
@@ -453,7 +463,7 @@ mod tests {
         assert!(cap.query.as_deref().unwrap().contains("Firma"));
 
         // Y la aceptación sobrevivió: es lo que un corte no puede perder.
-        assert_eq!(bl.endpoint.get(0).accepted.as_ref().unwrap().hash, "c00e0760");
+        assert_eq!(bl.endpoint.get(0).accepted.first().unwrap().hash, "c00e0760");
     }
 
     /// **La propiedad que importa.** Correrla dos veces da bytes idénticos.
@@ -584,7 +594,7 @@ mod tests {
         assert_eq!(bl.endpoint.one.link.to_string(), "path subsystems/bilinker>impl",
             "el endpoint layer gana su prefijo y conserva el path");
 
-        let acc = bl.endpoint.zero.accepted.as_ref().unwrap();
+        let acc = bl.endpoint.zero.accepted.first().unwrap();
         assert_eq!(acc.hash, "c00e0760");
         assert_eq!(acc.hash_ast.as_deref(), Some("1b9e44a2"));
         assert_eq!(acc.link.as_ref().unwrap(), &bl.endpoint.zero.link,
@@ -592,7 +602,7 @@ mod tests {
 
         // Sin hash en el formato 1 → sin bloque en el 2. Su ausencia es PENDING.
         let bl2 = v2::BiLink::load(&out.join("bbbb2222-0000-4000-8000-000000000002.yaml")).unwrap();
-        assert!(bl2.endpoint.zero.accepted.is_none());
+        assert!(bl2.endpoint.zero.accepted.is_empty());
         assert_eq!(bl2.endpoint.one.link.to_string(), "issue 3a");
     }
 
@@ -603,7 +613,7 @@ mod tests {
         let p = plan(d.path()).unwrap();
         let bl = &p.bilinks["bbbb2222-0000-4000-8000-000000000002"];
         assert_eq!(bl.endpoint.one.link.to_string(), "issue 3a");
-        assert!(bl.endpoint.one.accepted.is_none());
+        assert!(bl.endpoint.one.accepted.is_empty());
     }
 
     /// La versión de formato viaja con los archivos que describe.
@@ -682,16 +692,16 @@ mod chain_tests {
         let impl_struct  = &impl_.bilinks[uuid].endpoint.one;  // capture cb
 
         assert_eq!(
-            root_path_ep.accepted.as_ref().unwrap().link,
-            impl_struct.accepted.as_ref().unwrap().link,
+            root_path_ep.accepted.first().unwrap().link,
+            impl_struct.accepted.first().unwrap().link,
             "el endpoint path tiene que copiar la ubicación aprobada de su vecino");
 
         // Y al revés.
         let impl_path_ep = &impl_.bilinks[uuid].endpoint.zero; // path <
         let root_struct  = &root.bilinks[uuid].endpoint.zero;  // capture ca
         assert_eq!(
-            impl_path_ep.accepted.as_ref().unwrap().link,
-            root_struct.accepted.as_ref().unwrap().link);
+            impl_path_ep.accepted.first().unwrap().link,
+            root_struct.accepted.first().unwrap().link);
     }
 
     /// El capture del vecino no entra en el plan de esta capa: vive en la suya.

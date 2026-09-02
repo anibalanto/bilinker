@@ -57,7 +57,10 @@ pub fn relayer(dest: &Path, layer: &str, dry_run: bool) -> Result<RelayerResult>
         for n in [0u8, 1u8] {
             let e = bl.endpoint.get_mut(n);
             e.link = moved_link(&e.link, &renames, layer)?;
-            if let Some(a) = e.accepted.as_mut() {
+            // **Todas las entradas**, no la primera: un `relayer` mueve la capa
+            // entera, y una decisión desplazada apunta a un capture que se movió
+            // igual que las demás.
+            for a in e.accepted.iter_mut() {
                 if let Some(l) = a.link.take() {
                     // **Un `accepted.link` de un endpoint `path` es una copia opaca
                     // del id del vecino, y ese capture no se movió**: sólo se
@@ -76,11 +79,12 @@ pub fn relayer(dest: &Path, layer: &str, dry_run: bool) -> Result<RelayerResult>
         let mut bl = BiLink::load(&path)?;
         let mut tocado = false;
         for n in [0u8, 1u8] {
-            let Some(a) = bl.endpoint.get_mut(n).accepted.as_mut() else { continue };
-            let Some(LinkEndpoint::Capture(id)) = a.link.as_ref() else { continue };
-            if let Some(nuevo) = renames.get(id.as_str()) {
-                a.link = Some(format!("capture {nuevo}").parse()?);
-                tocado = true;
+            for a in bl.endpoint.get_mut(n).accepted.iter_mut() {
+                let Some(LinkEndpoint::Capture(id)) = a.link.as_ref() else { continue };
+                if let Some(nuevo) = renames.get(id.as_str()) {
+                    a.link = Some(format!("capture {nuevo}").parse()?);
+                    tocado = true;
+                }
             }
         }
         if tocado {

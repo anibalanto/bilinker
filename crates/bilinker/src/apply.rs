@@ -68,7 +68,7 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
             // contra algo que ya no está. De la cache sólo sale `commit`, que es
             // un dato de git y no una conclusión sobre el árbol actual.
             let (state, _) = crate::check::resolve_capture(
-                layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
+                layer, &cap, e.accepted.first(), cache.commit(uuid, n))?;
 
             let calculado = match state {
                 CaptureState::Moved      => compute_moved(layer, &cap).map(|c| (c, "MOVED")),
@@ -188,7 +188,7 @@ fn compute_reanchored(
 
     let source   = std::fs::read_to_string(&path)?;
     let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
-    let accepted = bl.endpoint.get(n).accepted.as_ref();
+    let accepted = bl.endpoint.get(n).accepted.first();
 
     // Los **dos** hacen falta: el hash dice qué texto buscar y el commit dice de
     // dónde sacarlo. Con uno solo, `accepted_text` no devuelve nada y no hay contra

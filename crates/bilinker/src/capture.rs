@@ -63,7 +63,11 @@ pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
             if let Some(id) = e.link.capture_id() {
                 alive.insert(id.to_string());
             }
-            if let Some(id) = e.accepted.as_ref().and_then(|a| a.link.as_ref()).and_then(|l| l.capture_id()) {
+            // **Sólo la primera entrada, y sin mirar `n.1.link`.** Contar los
+            // captures de todas las entradas y los del vecindario es la task `3w`, y
+            // hasta que esté un `prune` sobre una capa con vecindarios escritos se
+            // lleva vecinos que alguien referencia.
+            if let Some(id) = e.accepted.first().and_then(|a| a.link.as_ref()).and_then(|l| l.capture_id()) {
                 alive.insert(id.to_string());
             }
         }
@@ -980,13 +984,13 @@ mod tests {
         let mut bl = bilink_format::BiLink::new(
             format!("capture {vigente}").parse().unwrap(),
             "issue 3a".parse().unwrap());
-        bl.endpoint.zero.accepted = Some(bilink_format::Accepted {
+        bl.endpoint.zero.accepted = vec![bilink_format::Accepted {
             agree: Default::default(),
             link: Some(format!("capture {aprobado}").parse().unwrap()),
             hash: "deadbeef".into(),
             hash_ast: None,
             n: None,
-        });
+        }];
         bl.write(&bilink_format::BiLink::path_in(layer, "uuid1")).unwrap();
 
         let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
