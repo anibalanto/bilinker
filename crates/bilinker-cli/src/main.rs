@@ -1156,7 +1156,10 @@ Eliminar? [y/N] ");
 
         Command::Apply { dry_run, yes, filter } => {
             let root   = project_root(&cwd)?;
-            let mut fixes = bilinker::apply::scan_fixeable(&cwd)?;
+            // **`apply` recibe el puerto.** Sin proveedor arregla lo del fragmento con
+            // git y no toca el vecindario: descubrir qué tipos menciona la firma hoy
+            // es lo único que un language server puede contestar.
+            let mut fixes = bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))?;
 
             if let Some(ref state) = filter {
                 let state_up = state.to_uppercase();
@@ -1211,7 +1214,13 @@ Eliminar? [y/N] ");
             let mut errors  = 0usize;
 
             for f in &fixes {
-                let capture = f.to.id();
+                // El id que el mensaje de la ref nombra. Para un fix de vecindario
+                // no hay **uno**: son N, y el que identifica el acto es el fragmento
+                // cuyo vecindario se repuntó.
+                let capture = match &f.what {
+                    bilinker::apply::Fix::Fragment { to, .. } => to.id(),
+                    bilinker::apply::Fix::Neighbourhood { to, .. } => to.to_string(),
+                };
                 match bilinker::apply::apply_fix(&cwd, f) {
                     Ok(paths) => {
                         applied.extend(paths.clone());

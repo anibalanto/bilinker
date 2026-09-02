@@ -26,20 +26,38 @@ pub struct PendingFix {
     pub bilink_path: PathBuf,
     pub uuid: String,
     pub n: u8,
-    pub from: Capture,
-    pub to: Capture,
+    pub what: Fix,
     /// Qué lo motivó. Sólo informativo: el fix es el mismo — una ubicación nueva.
     pub reason: &'static str,
+}
+
+/// Qué se repunta.
+///
+/// **Dos formas, porque son dos cosas distintas.** El `link` de un fragmento es un
+/// capture y se reemplaza por otro; el `n.1.link` de un vecindario es un **conjunto**,
+/// y lo que cambia no es sólo dónde está cada miembro — también quiénes son.
+pub enum Fix {
+    /// El fragmento se movió: un capture por otro.
+    Fragment { from: Capture, to: Capture },
+    /// El conjunto de vecinos que la firma menciona cambió.
+    ///
+    /// **Los captures van adentro porque hay que escribirlos.** Un miembro nuevo es
+    /// un capture que todavía no existe en la capa, y repuntar `n.1.link` a un id sin
+    /// archivo dejaría el vecindario apuntando al vacío.
+    Neighbourhood { to: bilink_format::CaptureSet, captures: Vec<Capture> },
 }
 
 impl PendingFix {
     pub fn short(&self) -> &str { &self.uuid[..8.min(self.uuid.len())] }
 
     pub fn description(&self) -> String {
-        if self.from.file != self.to.file {
-            format!("{} → {}", self.from.file, self.to.file)
-        } else {
-            format!("query → {}", self.to.query.as_deref().unwrap_or("(archivo entero)"))
+        match &self.what {
+            Fix::Fragment { from, to } if from.file != to.file =>
+                format!("{} → {}", from.file, to.file),
+            Fix::Fragment { to, .. } =>
+                format!("query → {}", to.query.as_deref().unwrap_or("(archivo entero)")),
+            Fix::Neighbourhood { to, .. } =>
+                format!("n1 → {} vecino(s): {to}", to.len()),
         }
     }
 }
@@ -48,7 +66,10 @@ impl PendingFix {
 ///
 /// **Nunca deriva el fix de la cache**: re-resuelve contra git y el AST actuales, y
 /// descarta el fix si el estado re-derivado no coincide con el cacheado.
-pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
+pub fn scan_fixeable(
+    layer: &Path,
+    nb: crate::neighbours::Provider<'_>,
+) -> Result<Vec<PendingFix>> {
     let cache = Cache::load(layer);
     let mut fixes = Vec::new();
 
@@ -95,19 +116,88 @@ pub fn scan_fixeable(layer: &Path) -> Result<Vec<PendingFix>> {
             fixes.push(PendingFix {
                 bilink_path: path.clone(),
                 uuid: uuid.to_string(),
-                n, from: cap, to, reason,
+                n, what: Fix::Fragment { from: cap, to }, reason,
             });
+        }
+
+        // ── el vecindario ────────────────────────────────────────────────────
+        //
+        // **Va aparte del bucle de arriba** porque no sale de un estado del capture:
+        // el conjunto de vecinos puede haber cambiado con el fragmento intacto.
+        for n in [0u8, 1u8] {
+            if let Some(fix) = neighbourhood_fix(layer, &bl, uuid, n, nb)? {
+                fixes.push(PendingFix {
+                    bilink_path: path.clone(),
+                    uuid: uuid.to_string(),
+                    n, what: fix, reason: "N1",
+                });
+            }
         }
     }
     Ok(fixes)
 }
 
+/// El conjunto de vecinos que la firma menciona hoy, si difiere del declarado.
+///
+/// **Sin proveedor no hay fix**, y no es una falla: es la degradación que el eje del
+/// vecindario tiene en todos lados. `apply` arregla lo del fragmento con git y dice
+/// que no pudo tocar esto.
+///
+/// Y **descubrir el conjunto es lo único que necesita el proveedor**. Que un vecino se
+/// haya mudado de archivo lo resuelve git como cualquier `MOVED`; lo que git no puede
+/// saber es que la firma ahora menciona un tipo más.
+fn neighbourhood_fix(
+    layer: &Path,
+    bl: &BiLink,
+    uuid: &str,
+    n: u8,
+    nb: crate::neighbours::Provider<'_>,
+) -> Result<Option<Fix>> {
+    let Some(p) = nb else { return Ok(None) };
+    let e = bl.endpoint.get(n);
+    let Some(cap_id) = e.link.capture_id() else { return Ok(None) };
+    let Ok(cap) = Capture::load_in(layer, cap_id) else { return Ok(None) };
+
+    let cache = Cache::load(layer);
+    let Some(range) = cache.capture_ranges(cap_id)
+        .or_else(|| crate::check::resolve_capture(layer, &cap, e.accepted.first(),
+                                                  cache.commit(uuid, n)).ok()?.1)
+        else { return Ok(None) };
+
+    // Que el fragmento **tenga** vecindario alcanzable se sabe con la gramática, sin
+    // proveedor. Sin eso no hay conjunto que declarar y no hay nada que arreglar.
+    let crate::neighbours::Reach::At(at) = crate::neighbours::reach(layer, &cap.file, &range)
+        else { return Ok(None) };
+    let Some(locs) = p.of(layer, &cap.file, &at)? else { return Ok(None) };
+    let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(None) };
+
+    let declarado = e.n.as_ref().and_then(|d| d.level(1)).map(|l| l.link.ids()).unwrap_or(&[]);
+    if declarado == f.n.link.ids() { return Ok(None); }
+    Ok(Some(Fix::Neighbourhood { to: f.n.link, captures: f.captures }))
+}
+
 /// Acuña el capture nuevo y repunta el `link`. **No toca `accepted`.**
 pub fn apply_fix(layer: &Path, pf: &PendingFix) -> Result<Vec<PathBuf>> {
-    let (id, cap_path, _existed) = pf.to.write_in(layer)?;
-
+    let mut tocados = Vec::new();
     let mut bl = BiLink::load(&pf.bilink_path)?;
-    bl.endpoint.get_mut(pf.n).link = format!("capture {id}").parse()?;
+
+    match &pf.what {
+        Fix::Fragment { to, .. } => {
+            let (id, cap_path, _existed) = to.write_in(layer)?;
+            bl.endpoint.get_mut(pf.n).link = format!("capture {id}").parse()?;
+            tocados.push(cap_path);
+        }
+        Fix::Neighbourhood { to, captures } => {
+            // Los captures primero: un `n.1.link` que nombra un archivo que no está
+            // es un vecindario apuntando al vacío.
+            for c in captures {
+                let (_, p, _) = c.write_in(layer)?;
+                tocados.push(p);
+            }
+            bl.endpoint.get_mut(pf.n).n =
+                Some(bilink_format::DeclaredN::of_level_1(to.clone()));
+        }
+    }
     bl.write(&pf.bilink_path)?;
 
     // Repuntar no aprueba: el endpoint queda pidiendo una decisión humana.
@@ -115,7 +205,8 @@ pub fn apply_fix(layer: &Path, pf: &PendingFix) -> Result<Vec<PathBuf>> {
     cache.set_endpoint_state(&pf.uuid, pf.n, EndpointState::Relocated);
     cache.save(layer)?;
 
-    Ok(vec![cap_path, pf.bilink_path.clone()])
+    tocados.push(pf.bilink_path.clone());
+    Ok(tocados)
 }
 
 // ─── cálculo de la ubicación nueva ────────────────────────────────────────────
@@ -208,3 +299,103 @@ fn compute_reanchored(
     Ok(Some(Capture { query: Some(new_query), ..cap.clone() }))
 }
 
+
+#[cfg(test)]
+mod neighbourhood_fix_tests {
+    use super::*;
+    use crate::neighbours::{Location, Neighbours};
+    use bilink_format::{CaptureSet, DeclaredN, LinkEndpoint, Ranges};
+    use std::cell::Cell;
+    use tempfile::tempdir;
+
+    struct Fake { locs: Option<Vec<Location>>, asked: Cell<usize> }
+    impl Neighbours for Fake {
+        fn of(&self, _l: &Path, _f: &str, _at: &[usize]) -> Result<Option<Vec<Location>>> {
+            self.asked.set(self.asked.get() + 1);
+            Ok(self.locs.clone())
+        }
+    }
+
+    /// Un método con firma, y un DTO al lado.
+    fn layer() -> (tempfile::TempDir, String, String) {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("Svc.rs"),
+            "pub struct Dto { pub x: u8 }\n\npub fn get(d: Dto) -> Dto { todo!() }\n").unwrap();
+        for args in [vec!["init","-q"], vec!["config","user.email","t@t"],
+                     vec!["config","user.name","t"], vec!["add","-A"], vec!["commit","-qm","i"]] {
+            std::process::Command::new("git").current_dir(d.path()).args(&args).output().unwrap();
+        }
+        let (c, _, _) = crate::capture::compute(
+            d.path(), "Svc.rs", &[((3,1),(3,1))], None).unwrap();
+        let id = c.id();
+        c.write_in(d.path()).unwrap();
+
+        let uuid = "44444444-4444-4444-8444-444444444444".to_string();
+        let mut bl = BiLink::new(format!("capture {id}").parse().unwrap(), LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).r#as = Some("interface".into());
+        bl.write(&BiLink::path_in(d.path(), &uuid)).unwrap();
+        // El `check` puebla el `range` que el scan necesita.
+        let _ = crate::check::check_with(d.path(), d.path(), None);
+        (d, uuid, id)
+    }
+
+    /// **Sin proveedor no hay fix de vecindario, y no es una falla.**
+    ///
+    /// Es la degradación que el eje tiene en todos lados: `apply` arregla lo del
+    /// fragmento con git y no toca esto.
+    #[test]
+    fn without_a_provider_the_neighbourhood_is_left_alone() {
+        let (d, ..) = layer();
+        let fixes = scan_fixeable(d.path(), None).unwrap();
+        assert!(fixes.is_empty(), "sin proveedor, nada que proponer");
+    }
+
+    /// **Con proveedor, propone el conjunto que la firma menciona hoy.**
+    #[test]
+    fn with_a_provider_it_proposes_the_declared_set() {
+        let (d, ..) = layer();
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
+            .expect("propone el vecindario");
+        let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
+        assert_eq!(to.len(), 1, "un vecino: {to}");
+        assert_eq!(captures.len(), 1, "y su capture, para poder escribirlo");
+    }
+
+    /// **Y no aprueba nada**: aplicar deja el endpoint en `RELOCATED`.
+    #[test]
+    fn applying_it_does_not_accept() {
+        let (d, uuid, _) = layer();
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. })).unwrap();
+        apply_fix(d.path(), fix).unwrap();
+
+        let bl = BiLink::load(&BiLink::path_in(d.path(), &uuid)).unwrap();
+        assert!(bl.endpoint.get(0).n.is_some(), "el conjunto quedó declarado");
+        assert!(bl.endpoint.get(0).accepted.is_empty(), "y no aprobó nada");
+        let _ = (DeclaredN::of_level_1(CaptureSet::new(vec![])), Ranges::one(0, 1));
+    }
+
+    /// Y si el conjunto ya coincide, no hay fix: un no-op no se propone.
+    #[test]
+    fn a_matching_set_is_not_a_fix() {
+        let (d, uuid, _) = layer();
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. })).unwrap();
+        apply_fix(d.path(), fix).unwrap();
+        let _ = uuid;
+
+        let otra = scan_fixeable(d.path(), Some(&p)).unwrap();
+        assert!(!otra.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
+                "ya está declarado: no hay nada que repuntar");
+    }
+}
