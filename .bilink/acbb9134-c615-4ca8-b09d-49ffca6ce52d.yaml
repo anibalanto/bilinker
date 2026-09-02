@@ -1,17 +1,18 @@
 kind: governs
 endpoint:
-  '0':
+  0:
     link: path <
     accepted:
     - agree:
       - Anibal
       link: capture 167b7918b7d5fa4d471ceb2ff83f1ea6
       hash: 81c0040cddbb37ae0193c63aa64a5c9691b57cad100ad6ab765ed6bd89509e99
-  '1':
+  1:
     link: capture 6cf03e596eda7a6236677e629ad195ec
     accepted:
     - agree:
       - Anibal
       link: capture 6cf03e596eda7a6236677e629ad195ec
-      hash: d7fb9cd2467f4582baa09710cf54baa8bc30a779f4b852612a846fa8535c0c45
+      hash: ed12d9698066b5ffafdb9e2921406beb1b81f41d76f766587e13b85c53b51cda
+      n: declined
     name: el-comando
