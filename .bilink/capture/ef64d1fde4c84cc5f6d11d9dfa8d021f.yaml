@@ -1,0 +1,4 @@
+file: crates/bilink-format-v1/src/link.rs
+query: |-
+  (enum_item
+    name: (type_identifier) @n0 (#eq? @n0 "LinkEndpoint")) @target
