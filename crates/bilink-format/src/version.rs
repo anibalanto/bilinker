@@ -113,16 +113,20 @@ pub fn major(v: &str) -> &str {
 /// el consumidor crea `.bilink/` sólo para poner el `.{alias}.toml`, antes de que
 /// exista un solo bilink. Esa capa es nueva, no vieja.
 pub fn ensure_layer(layer: &Path) -> Result<()> {
-    if read_version(layer).is_some() || has_content(layer) { return Ok(()); }
+    if read_version(layer).is_some() || has_format_files(layer) { return Ok(()); }
     crate::write_ignore(layer)?;
     write_version(layer, crate::VERSION)
 }
 
-/// Si la capa tiene algún archivo de bilinker escrito en un formato desconocido.
+/// Si la capa tiene algún archivo del formato — bilinks o captures.
+///
+/// **Es lo que hace que la versión importe.** Sin archivos no hay nada que se pueda
+/// leer con el parser equivocado, así que preguntar de qué versión son no tiene
+/// sentido: ni para sellar una capa nueva ni para negarse a leer una vieja.
 ///
 /// Los dot-files no cuentan: el `.{alias}.toml` de la frontera y el `.gitignore` no
 /// son datos del formato, y ninguno se malinterpreta.
-fn has_content(layer: &Path) -> bool {
+pub fn has_format_files(layer: &Path) -> bool {
     let dir = layer.join(".bilink");
     if !crate::bilink::bilink_files(&dir).is_empty() { return true; }
     std::fs::read_dir(dir.join("capture"))

@@ -75,11 +75,13 @@ pub fn check_with(
     // formato viejo puede parsear bien y significar otra cosa, así que deducirlo del
     // parseo no alcanza: la versión es el único dato que discrimina en esa dirección.
     //
-    // Y hay dos ausencias que se parecen y no significan lo mismo. Sin `.bilink/` no
-    // hay capa: no hay bilinks que malinterpretar, `0 bilink(s)` es cierto, y
-    // negarse acá volvería `check` inusable fuera de una capa. Con `.bilink/` y sin
-    // `version` sí hay capa, y es formato 1.
-    if layer.join(".bilink").is_dir() {
+    // Y se pregunta **cuando hay archivos del formato**, que es lo que hace que la
+    // versión importe. Sin `.bilink/`, o con uno que sólo tiene la cache y el
+    // `.gitignore`, no hay nada que se pueda leer con el parser equivocado: `0
+    // bilink(s)` es cierto, y negarse ahí volvería `check` inusable fuera de una capa
+    // y adentro de una recién declarada. Con archivos y sin `version` sí hay algo, y
+    // es formato 1.
+    if bilink_format::has_format_files(&layer) {
         bilink_format::ensure_readable(&layer)?;
     }
     // **La cache se invalida sola al cambiar de rama.** Sin esto una capa devuelve
@@ -789,15 +791,22 @@ mod tests {
         assert_eq!(m.declared.as_deref(), Some("0.0.1"));
     }
 
-    /// **Sin `.bilink/` no hay capa, y `0 bilink(s)` es cierto.**
+    /// **Sin archivos del formato no hay versión que comparar.**
     ///
-    /// Es la ausencia que no hay que confundir con la otra: negarse acá volvería
-    /// `check` inusable fuera de una capa.
+    /// Ni afuera de una capa ni adentro de una que sólo tiene su cache: negarse ahí
+    /// volvería `check` inusable justo donde no hay nada que malinterpretar.
     #[test]
-    fn a_directory_without_a_layer_is_not_a_version_problem() {
+    fn a_layer_with_no_format_files_is_not_a_version_problem() {
         let d = tempdir().unwrap();
         let r = check_with(d.path(), d.path(), None).unwrap();
         assert!(r.results.is_empty() && r.unreadable.is_empty());
+
+        // Y con `.bilink/` declarado, pero todavía vacío — el caso del consumidor
+        // que puso el `.toml` del alias y nada más.
+        std::fs::create_dir_all(d.path().join(".bilink/cache")).unwrap();
+        std::fs::write(d.path().join(".bilink/.hsi.toml"), "remote = \"x\"\n").unwrap();
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        assert!(r.results.is_empty(), "0 bilink(s) es cierto");
     }
 
     /// **Un archivo que no parsea se cuenta, y el resto se evalúa igual.**
