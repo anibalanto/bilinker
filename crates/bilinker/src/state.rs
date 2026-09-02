@@ -110,6 +110,32 @@ pub enum EndpointState {
     /// lattice: un valor constante lo maneja cada uno sin ramas, un hueco obliga a
     /// todos a tratar el caso nulo.
     Open,
+
+    /// Hay **más de una** decisión sobre este endpoint, y ninguna gobierna.
+    ///
+    /// **No describe al fragmento.** Los demás estados dicen dónde está, qué dice y
+    /// qué tipos menciona; éste dice *"sobre esos tres no hay una sola respuesta"*, y
+    /// de qué lado está el desacuerdo es de las personas.
+    ///
+    /// Por eso **no es limpio**: con dos decisiones incompatibles no hay contra qué
+    /// comparar, así que no se evalúa ningún otro eje y `check` falla. Es lo que hace
+    /// que la lista sea transitoria — alguien mira, acepta, y colapsa a una.
+    ///
+    /// La alternativa —una gobierna y las demás son historia— daría un endpoint
+    /// verde con una aprobación vieja adentro. Ver `concepts/bilink.md` § "Más de un
+    /// `accepted` es un estado".
+    ConsensusDiverged,
+
+    /// El vecindario aceptado nombra otros captures que los de hoy.
+    ///
+    /// Es el eje de **ubicación** del vecindario: un vecino entró, salió, se mudó de
+    /// archivo o se renombró. Hasta que el vecindario fueran captures los cuatro
+    /// casos se veían iguales —*"el vecindario cambió"*— porque lo único que había
+    /// era el fold.
+    ///
+    /// **Es del vecindario y no del fragmento**, y por eso lleva el prefijo que ya
+    /// usan `CONTRACT_ALTERED` y `CONTRACT_RESTYLED`.
+    ContractRelocated,
 }
 
 impl EndpointState {
@@ -132,7 +158,8 @@ impl EndpointState {
 
     /// El estado es del eje del **vecindario** y no del fragmento.
     pub fn is_contract(&self) -> bool {
-        matches!(self, Self::ContractRestyled | Self::ContractAltered | Self::ContractUnverified)
+        matches!(self, Self::ContractRestyled | Self::ContractAltered | Self::ContractUnverified
+                     | Self::ContractRelocated)
     }
 
     /// La punta abierta, que `accept .` nunca toca.
@@ -186,6 +213,8 @@ state_str!(EndpointState,
     RemoteUnreachable => "REMOTE_UNREACHABLE",
     Rejected   => "REJECTED",
     Open       => "OPEN",
+    ConsensusDiverged  => "CONSENSUS_DIVERGED",
+    ContractRelocated  => "CONTRACT_RELOCATED",
 );
 
 state_str!(CaptureState,

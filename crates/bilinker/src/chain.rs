@@ -309,7 +309,7 @@ mod tests {
               (PathBuf::from("."), ep("capture bbb"))],
             &[], &Declaration::default()).unwrap();
         let bl = BiLink::load(&r.files[0]).unwrap();
-        assert!(bl.endpoint.zero.accepted.is_none());
-        assert!(bl.endpoint.one.accepted.is_none());
+        assert!(bl.endpoint.zero.accepted.is_empty());
+        assert!(bl.endpoint.one.accepted.is_empty());
     }
 }

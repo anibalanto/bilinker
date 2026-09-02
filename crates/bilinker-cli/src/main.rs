@@ -403,8 +403,84 @@ enum ChainCommand {
     },
     /// Show complete state of a chain
     Status { uuid: String },
-    /// List all chains in the project
-    List,
+    /// Lista las cadenas del proyecto, con filtros que se acumulan
+    List {
+        /// Texto que el alias tiene que contener, sin distinguir mayúsculas
+        patron: Option<String>,
+        /// Con qué generador se capturó algún extremo
+        #[arg(long = "as", value_name = "MODO")]
+        as_: Option<String>,
+        /// Qué clase de extremo tiene: capture, path, issue, abstract, repo
+        #[arg(long, value_name = "TIPO")]
+        link: Option<String>,
+        /// El estado de la cadena
+        #[arg(long, value_name = "ESTADO")]
+        state: Option<String>,
+        /// Que algún extremo referencie un archivo bajo este path
+        #[arg(long, value_name = "PATH")]
+        under: Option<String>,
+    },
+}
+
+/// Los filtros de `chain list`, que **se combinan con Y**.
+///
+/// Que se acumulen es lo que permite bajar de 98 a una sin salir del comando: con uno
+/// solo habría que elegir por cuál de las cuatro preguntas empezar.
+#[derive(Default)]
+struct ChainFilter {
+    patron: Option<String>,
+    as_:    Option<String>,
+    link:   Option<String>,
+    state:  Option<String>,
+    under:  Option<String>,
+}
+
+impl ChainFilter {
+    fn vacio(&self) -> bool {
+        self.patron.is_none() && self.as_.is_none() && self.link.is_none()
+            && self.state.is_none() && self.under.is_none()
+    }
+
+    /// Si esta cadena pasa todos los filtros puestos.
+    ///
+    /// **Los dos ejes de tipo se preguntan por separado** —`--link` es qué clase de
+    /// extremo es, `--as` con qué receta se capturó— porque son independientes: un
+    /// `capture` puede tener cualquier `as` o ninguno, y un `abstract` no tiene
+    /// ninguno porque no captura nada.
+    fn pasa(
+        &self,
+        alias: Option<&str>,
+        estado: &str,
+        nodes: &[(PathBuf, bilink_format::BiLink)],
+    ) -> bool {
+        let extremos = || nodes.iter().flat_map(|(_, bl)| [bl.endpoint.get(0), bl.endpoint.get(1)]);
+
+        if let Some(t) = &self.patron {
+            let Some(a) = alias else { return false };
+            if !a.to_lowercase().contains(&t.to_lowercase()) { return false }
+        }
+        if let Some(m) = &self.as_ {
+            if !extremos().any(|e| e.r#as.as_deref() == Some(m.as_str())) { return false }
+        }
+        if let Some(t) = &self.link {
+            if !extremos().any(|e| e.link.prefix() == t) { return false }
+        }
+        if let Some(e) = &self.state {
+            if !estado.eq_ignore_ascii_case(e) { return false }
+        }
+        if let Some(bajo) = &self.under {
+            let mut alguno = false;
+            for (layer, bl) in nodes {
+                for n in [0u8, 1u8] {
+                    let link = &bl.endpoint.get(n).link;
+                    let Ok(Some(cap)) = bilinker::capture::capture_of(layer, link) else { continue };
+                    if cap.file.starts_with(bajo.as_str()) { alguno = true; }
+                }
+            }
+            if !alguno { return false }
+        }
+        true
+    }
 }
 
 #[derive(Subcommand)]
@@ -974,6 +1050,11 @@ Eliminar? [y/N] ");
                     let before   = before.as_deref().map(parse_pos).transpose()?;
                     let after    = after.as_deref().map(parse_pos).transpose()?;
                     let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
+                    // El alias contesta **qué** se está mirando; el archivo y las
+                    // líneas contestan dónde. Sin alias el encabezado es el de antes.
+                    if let Some(a) = bilinker::cache::Cache::load(&root).alias(name, endpoint) {
+                        eprintln!("# {a}");
+                    }
                     eprintln!("# {}  lines {}", result.file, result.line_span());
                     // La vista es el default: si alguien quiere el texto exacto es
                     // **para compararlo**, y comparar lo hacen `check` y `--diff`.
@@ -1075,7 +1156,10 @@ Eliminar? [y/N] ");
 
         Command::Apply { dry_run, yes, filter } => {
             let root   = project_root(&cwd)?;
-            let mut fixes = bilinker::apply::scan_fixeable(&cwd)?;
+            // **`apply` recibe el puerto.** Sin proveedor arregla lo del fragmento con
+            // git y no toca el vecindario: descubrir qué tipos menciona la firma hoy
+            // es lo único que un language server puede contestar.
+            let mut fixes = bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))?;
 
             if let Some(ref state) = filter {
                 let state_up = state.to_uppercase();
@@ -1130,7 +1214,13 @@ Eliminar? [y/N] ");
             let mut errors  = 0usize;
 
             for f in &fixes {
-                let capture = f.to.id();
+                // El id que el mensaje de la ref nombra. Para un fix de vecindario
+                // no hay **uno**: son N, y el que identifica el acto es el fragmento
+                // cuyo vecindario se repuntó.
+                let capture = match &f.what {
+                    bilinker::apply::Fix::Fragment { to, .. } => to.id(),
+                    bilinker::apply::Fix::Neighbourhood { to, .. } => to.to_string(),
+                };
                 match bilinker::apply::apply_fix(&cwd, f) {
                     Ok(paths) => {
                         applied.extend(paths.clone());
@@ -1653,9 +1743,9 @@ Eliminar? [y/N] ");
                 print_chain_status(&root, &uuid)?;
             }
 
-            ChainCommand::List => {
+            ChainCommand::List { patron, as_, link, state, under } => {
                 let root = project_root(&cwd)?;
-                list_chains(&root)?;
+                list_chains(&root, &ChainFilter { patron, as_, link, state, under })?;
             }
         },
     }
@@ -1950,7 +2040,7 @@ fn layers_with(root: &Path, uuid: &str) -> Vec<(PathBuf, PathBuf)> {
         .collect()
 }
 
-fn list_chains(root: &Path) -> anyhow::Result<()> {
+fn list_chains(root: &Path, filtro: &ChainFilter) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
     let mut chains: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -1965,14 +2055,48 @@ fn list_chains(root: &Path) -> anyhow::Result<()> {
         println!("(no hay cadenas)");
         return Ok(());
     }
+    let total = chains.len();
+    let mut mostradas = 0usize;
     for (uuid, n) in chains {
         let nodes: Vec<(PathBuf, bilink_format::BiLink)> = layers_with(root, &uuid).into_iter()
             .filter_map(|(l, p)| bilink_format::BiLink::load(&p).ok().map(|bl| (l, bl)))
             .collect();
-        println!("{}  [{}]  {n} nodo(s)", &uuid[..8.min(uuid.len())],
-                 chain_overall_state(root, &uuid, &nodes));
+        let alias = alias_de_cadena(&uuid, &nodes);
+        let estado = chain_overall_state(root, &uuid, &nodes);
+        if !filtro.pasa(alias.as_deref(), estado, &nodes) { continue }
+        mostradas += 1;
+        // **El nombre antes que el conteo.** Con 98 cadenas, `1 nodo(s)` repetido no
+        // distingue nada; el alias sí. Sin alias se cae al conteo, que es lo que hay
+        // para todo lo escrito antes de que `as` existiera.
+        let como = alias.unwrap_or_else(|| format!("{n} nodo(s)"));
+        println!("{}  [{estado}]  {como}", &uuid[..8.min(uuid.len())]);
+    }
+    // **Cuántas de cuántas**, y sólo con filtro puesto: es lo que dice si el filtro
+    // acertó o si dejó afuera lo que se buscaba.
+    if !filtro.vacio() {
+        println!();
+        println!("{mostradas} de {total}");
+        if mostradas == 0 {
+            println!("(ningún filtro matcheó — `chain list` sin argumentos las lista todas)");
+        }
     }
     Ok(())
+}
+
+/// Cómo se llama la cadena: el alias del primer extremo que sepa nombrarse.
+///
+/// Los dos tips rara vez se nombran igual —de un lado hay una sección de markdown y
+/// del otro un endpoint— y el que sabe nombrar es el que tiene generador. Con los dos
+/// nombrados gana el primero, que es un desempate arbitrario y no importa: una cadena
+/// tiene un nombre, no dos.
+fn alias_de_cadena(uuid: &str, nodes: &[(PathBuf, bilink_format::BiLink)]) -> Option<String> {
+    for (layer, _) in nodes {
+        let cache = bilinker::cache::Cache::load(layer);
+        for n in [0u8, 1u8] {
+            if let Some(a) = cache.alias(uuid, n) { return Some(a.to_string()) }
+        }
+    }
+    None
 }
 
 /// El peor estado de la cadena.

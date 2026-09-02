@@ -18,6 +18,7 @@
 //! Es lo único que permite que alguien parado en una versión vieja llegue a la
 //! actual corriendo la cadena entera.
 
+pub mod accepted_list;
 pub mod cut;
 pub mod partition;
 
@@ -36,6 +37,11 @@ pub fn all() -> Vec<Migration> {
             id:          "bilinker-002-file-partition",
             description: "reescribe los archivos a YAML y saca lo derivable del formato",
             run:         partition::run,
+        },
+        Migration {
+            id:          "bilinker-003-accepted-list",
+            description: "`accepted` pasa a lista, y un vecindario sin captures pasa a `declined`",
+            run:         accepted_list::run,
         },
     ]
 }

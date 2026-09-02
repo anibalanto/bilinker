@@ -43,6 +43,13 @@ pub struct EndpointCache {
     /// define un derivado es que se pueda reconstruir, no quién lo escribió.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Cómo se llama el fragmento en el vocabulario del generador que lo capturó.
+    ///
+    /// **Va por endpoint aunque se componga del fragmento**: la receta con la que se
+    /// compone es el `as`, y el `as` es de una punta. Dos endpoints sobre el mismo
+    /// capture pueden nombrarlo distinto, o uno nombrarlo y el otro no.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 /// La cache de una capa. Un archivo, no uno por bilink.
@@ -144,6 +151,17 @@ impl Cache {
 
     pub fn set_endpoint_state(&mut self, uuid: &str, n: u8, state: EndpointState) {
         self.endpoints.entry(key(uuid, n)).or_default().state = Some(state.to_string());
+    }
+
+    /// El alias de un endpoint, si su generador supo nombrarlo en el último `check`.
+    pub fn alias(&self, uuid: &str, n: u8) -> Option<&str> {
+        self.endpoints.get(&key(uuid, n))?.alias.as_deref()
+    }
+
+    /// Lo escribe `check`, junto con el estado. `None` lo borra: un generador que ya
+    /// no sabe nombrar —o un `as` que se sacó— no puede dejar el rótulo viejo.
+    pub fn set_alias(&mut self, uuid: &str, n: u8, alias: Option<String>) {
+        self.endpoints.entry(key(uuid, n)).or_default().alias = alias;
     }
 
     pub fn commit(&self, uuid: &str, n: u8) -> Option<&str> {

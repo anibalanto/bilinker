@@ -156,39 +156,96 @@ pub use bilink_format::Neighbourhood;
 ///
 /// Tampoco puede ordenar el rango: lleva offsets, que se corren con cualquier
 /// edición más arriba del archivo.
-pub fn fold(layer: &Path, locs: &[Location]) -> Result<Neighbourhood> {
-    let mut locs: Vec<&Location> = locs.iter().collect();
-    locs.sort_by(|a, b| (&a.file, &a.symbol).cmp(&(&b.file, &b.symbol)));
-    locs.dedup_by(|a, b| a.file == b.file && a.symbol == b.symbol);
+/// El fold, y los captures que lo componen.
+///
+/// **Van juntos porque se calculan juntos y se escriben aparte.** `check` llama a
+/// esto y descarta los captures —no escribe nada versionado—; `accept` los escribe,
+/// porque sin los archivos el `n.1.link` que va a guardar apuntaría a captures que no
+/// existen. Devolverlos en vez de escribirlos acá es lo que deja esa decisión en
+/// quien la puede tomar.
+pub struct Folded {
+    pub n: Neighbourhood,
+    pub captures: Vec<bilink_format::Capture>,
+}
+
+/// `None` es *"el vecindario no se puede representar"*.
+///
+/// Pasa cuando **algún** vecino no se puede capturar: un archivo sin gramática, un
+/// nodo sin ancla estable. Saltearlo diría que hay menos vecinos de los que hay, y
+/// rompería la correspondencia entre `link` y `hash` — el fold cubriría un conjunto
+/// y la lista nombraría otro.
+///
+/// Así que es todo o nada, y "nada" cae en el mismo casillero que un daemon caído:
+/// `CONTRACT_UNVERIFIED`. **No pude**, que es distinto de *no hay*.
+pub fn fold(layer: &Path, locs: &[Location]) -> Result<Option<Folded>> {
+    let mut captures: Vec<(String, String, Option<String>, bilink_format::Capture)> = Vec::new();
+
+    for loc in locs {
+        // **La ubicación sirve para encontrar el nodo, y después se descarta.** Es la
+        // regla de cualquier selección, y acá es la que arregla el defecto de fondo:
+        // `definitions` devuelve el rango del *nombre* del tipo, y `capture` camina de
+        // ahí al ancla estable que lo contiene — su declaración. Hashear el nombre
+        // cubría *"el tipo sigue llamándose igual"*; hashear la declaración cubre su
+        // forma, que es el caso por el que el nivel 1 existe.
+        let source = std::fs::read_to_string(layer.join(&loc.file)).unwrap_or_default();
+        let pos = line_col_1based(&source, loc.start);
+        // Un vecino que no se puede capturar no se inventa: se saltea, y el conjunto
+        // queda sin él. El eje de ubicación lo va a decir, porque el id no está.
+        // **Sin commit y por lo tanto sin git.** Lo único que hace falta de un vecino
+        // es su id y su hash; pedir el commit del archivo ataría el cálculo a que
+        // esté versionado, que no tiene nada que ver.
+        let Ok((c, h, rr)) = crate::capture::compute(layer, &loc.file, &[(pos, pos)], None)
+            else { return Ok(None) };
+
+        let lang = grammar::language_for_file(&loc.file);
+        let ast = grammar::ast_discriminates_content(lang)
+            .then(|| {
+                let rs = rr.parts().first()?;
+                sexp_of(lang, &source, rs.start, rs.end).map(|x| hash::sha256(x.as_bytes()))
+            })
+            .flatten();
+
+        captures.push((c.id(), h, ast, c));
+    }
+
+    // **El orden es por id de capture**, que es la identidad: `sha256(file \0 query \0)`.
+    //
+    // No lleva contenido, así que un reformateo no lo mueve; y cambia exactamente
+    // cuando un vecino entra, sale, se muda de archivo o se renombra — que son
+    // cambios de contrato. La clave vieja era `<path>` más el nombre del símbolo, dos
+    // cosas concatenadas para decir lo que el id dice solo.
+    captures.sort_by(|a, b| a.0.cmp(&b.0));
+    captures.dedup_by(|a, b| a.0 == b.0);
 
     let mut texts = String::new();
     let mut sexps = String::new();
     let mut every_one_has_a_grammar = true;
-
-    for loc in &locs {
-        let source = std::fs::read_to_string(layer.join(&loc.file)).unwrap_or_default();
-        // El mismo recorte que aplica la resolución de un fragmento: un vecino sin
-        // recortar mueve su hash cuando le agregan algo abajo.
-        let (s, e) = query::trim_edges(&source, loc.start, loc.end);
-        let text = source.get(s..e).unwrap_or_default();
-        texts.push_str(&hash::sha256(text.as_bytes()));
+    for (_, h, ast, _) in &captures {
+        texts.push_str(h);
         texts.push('\0');
-
-        let lang = grammar::language_for_file(&loc.file);
-        if grammar::ast_discriminates_content(lang) {
-            if let Some(sexp) = sexp_of(lang, &source, s, e) {
-                sexps.push_str(&hash::sha256(sexp.as_bytes()));
-                sexps.push('\0');
-                continue;
-            }
+        match ast {
+            Some(a) => { sexps.push_str(a); sexps.push('\0'); }
+            None    => every_one_has_a_grammar = false,
         }
-        every_one_has_a_grammar = false;
     }
 
-    Ok(Neighbourhood {
-        hash:     hash::sha256(texts.as_bytes()),
-        hash_ast: every_one_has_a_grammar.then(|| hash::sha256(sexps.as_bytes())),
-    })
+    Ok(Some(Folded {
+        n: Neighbourhood {
+            link: bilink_format::CaptureSet::new(captures.iter().map(|(id, ..)| id.clone()).collect()),
+            hash:     hash::sha256(texts.as_bytes()),
+            hash_ast: every_one_has_a_grammar.then(|| hash::sha256(sexps.as_bytes())),
+        },
+        captures: captures.into_iter().map(|(.., c)| c).collect(),
+    }))
+}
+
+/// Línea y columna **1-based** de un offset, que es lo que `capture` toma.
+fn line_col_1based(source: &str, byte: usize) -> (usize, usize) {
+    let end = byte.min(source.len());
+    let head = &source.as_bytes()[..end];
+    let line = head.iter().filter(|&&b| b == b'\n').count() + 1;
+    let col  = end - head.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0) + 1;
+    (line, col)
 }
 
 /// La huella del nodo más chico que cubre el rango del vecino.
@@ -224,8 +281,8 @@ mod tests {
         let d = layer_with(&[("a.rs", "struct A { x: u8 }\n"), ("b.rs", "struct B { y: u8 }\n")]);
         let a = loc("a.rs", "A", 0, 18);
         let b = loc("b.rs", "B", 0, 18);
-        assert_eq!(fold(d.path(), &[a.clone(), b.clone()]).unwrap(),
-                   fold(d.path(), &[b, a]).unwrap());
+        assert_eq!(fold(d.path(), &[a.clone(), b.clone()]).unwrap().unwrap().n,
+                   fold(d.path(), &[b, a]).unwrap().unwrap().n);
     }
 
     /// Un vecino repetido es un vecino: `Persona f(Persona a, Persona b)` menciona un
@@ -234,8 +291,8 @@ mod tests {
     fn the_same_neighbour_twice_is_one() {
         let d = layer_with(&[("a.rs", "struct A { x: u8 }\n")]);
         let a = loc("a.rs", "A", 0, 18);
-        assert_eq!(fold(d.path(), &[a.clone()]).unwrap(),
-                   fold(d.path(), &[a.clone(), a]).unwrap());
+        assert_eq!(fold(d.path(), &[a.clone()]).unwrap().unwrap().n,
+                   fold(d.path(), &[a.clone(), a]).unwrap().unwrap().n);
     }
 
     /// Que un vecino cambie mueve los dos hashes.
@@ -243,8 +300,8 @@ mod tests {
     fn a_changed_neighbour_moves_both() {
         let d1 = layer_with(&[("a.rs", "struct A { x: u8 }\n")]);
         let d2 = layer_with(&[("a.rs", "struct A { x: u8, y: u8 }\n")]);
-        let f1 = fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap();
-        let f2 = fold(d2.path(), &[loc("a.rs", "A", 0, 25)]).unwrap();
+        let f1 = fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().unwrap().n;
+        let f2 = fold(d2.path(), &[loc("a.rs", "A", 0, 25)]).unwrap().unwrap().n;
         assert_ne!(f1.hash, f2.hash);
         assert_ne!(f1.hash_ast, f2.hash_ast);
     }
@@ -256,23 +313,31 @@ mod tests {
         let d1 = layer_with(&[("a.rs", "struct A { x: u8 }\n")]);
         // Sin coma final: una coma es un token, y agregarla es contenido y no formato.
         let d2 = layer_with(&[("a.rs", "struct A {\n    x: u8\n}\n")]);
-        let f1 = fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap();
-        let f2 = fold(d2.path(), &[loc("a.rs", "A", 0, 22)]).unwrap();
+        let f1 = fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().unwrap().n;
+        let f2 = fold(d2.path(), &[loc("a.rs", "A", 0, 22)]).unwrap().unwrap().n;
         assert_ne!(f1.hash, f2.hash);
         assert_eq!(f1.hash_ast, f2.hash_ast);
     }
 
-    /// Un vecino sin gramática deja `hash_ast` **ausente para todo el fold**, no
-    /// afuera: un cambio real en ése movería el texto y no el AST, y eso se leería
-    /// como "sólo formateo" cuando no lo fue.
+    /// **Un vecino que no se puede capturar vuelve el vecindario irrepresentable.**
+    ///
+    /// Antes se hasheaba por texto y sólo se caía el `hash_ast`. Con los vecinos
+    /// siendo captures eso ya no alcanza: saltearlo diría que hay menos vecinos de los
+    /// que hay, y el fold cubriría un conjunto mientras `link` nombraría otro.
+    ///
+    /// **Lo que se pierde es teórico y lo que se gana es estructural.** Un tipo se
+    /// declara en un archivo del lenguaje del tipo, y ésos tienen gramática; que
+    /// `definitions` apunte a un `.txt` sería raro. Lo que se gana es que `link` y
+    /// `hash` cubran siempre exactamente el mismo conjunto.
     #[test]
-    fn one_neighbour_without_a_grammar_removes_the_ast_hash_entirely() {
+    fn a_neighbour_that_cannot_be_captured_makes_the_neighbourhood_unavailable() {
         let d = layer_with(&[("a.rs", "struct A { x: u8 }\n"), ("nota.txt", "hola\n")]);
-        let con = fold(d.path(), &[loc("a.rs", "A", 0, 18)]).unwrap();
+        let con = fold(d.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().unwrap().n;
         assert!(con.hash_ast.is_some());
+        assert_eq!(con.link.len(), 1, "el vecino capturable está nombrado");
 
         let sin = fold(d.path(), &[loc("a.rs", "A", 0, 18), loc("nota.txt", "nota", 0, 5)]).unwrap();
-        assert!(sin.hash_ast.is_none(), "todo-o-nada");
+        assert!(sin.is_none(), "todo o nada: no se saltea un vecino");
     }
 
     /// El recorte de bordes vale igual acá: agregarle algo abajo al archivo no le
@@ -281,8 +346,8 @@ mod tests {
     fn the_edges_are_trimmed_like_any_fragment() {
         let d1 = layer_with(&[("a.rs", "struct A { x: u8 }")]);
         let d2 = layer_with(&[("a.rs", "struct A { x: u8 }\n\n\n")]);
-        assert_eq!(fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().hash,
-                   fold(d2.path(), &[loc("a.rs", "A", 0, 21)]).unwrap().hash);
+        assert_eq!(fold(d1.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().unwrap().n.hash,
+                   fold(d2.path(), &[loc("a.rs", "A", 0, 21)]).unwrap().unwrap().n.hash);
     }
 }
 
@@ -326,8 +391,8 @@ mod port_tests {
     #[test]
     fn not_being_able_to_look_is_not_an_empty_neighbourhood() {
         let d = repo();
-        let vacio = fold(d.path(), &[]).unwrap();
-        let con   = fold(d.path(), &[dto()]).unwrap();
+        let vacio = fold(d.path(), &[]).unwrap().unwrap().n;
+        let con   = fold(d.path(), &[dto()]).unwrap().unwrap().n;
         assert_ne!(vacio.hash, con.hash);
 
         let mudo = Fake { locs: None, asked: Cell::new(0) };
@@ -343,7 +408,7 @@ mod port_tests {
         let locs = p.of(d.path(), "Svc.rs", &[0]).unwrap().unwrap();
         assert_eq!(p.asked.get(), 1);
         // Y dos veces el mismo vecino es un vecino.
-        assert_eq!(fold(d.path(), &locs).unwrap(), fold(d.path(), &[dto()]).unwrap());
+        assert_eq!(fold(d.path(), &locs).unwrap().unwrap().n, fold(d.path(), &[dto()]).unwrap().unwrap().n);
     }
 }
 

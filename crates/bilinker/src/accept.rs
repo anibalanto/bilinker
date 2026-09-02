@@ -77,26 +77,49 @@ pub fn accept(
         cache.set_commit(&uuid, n, c);
     }
 
-    // **Quiénes aprobaron *estos* valores.**
+    // **Quiénes aprobaron *estos* valores**, y qué pasa con las otras decisiones.
     //
-    // El set anterior sobrevive sólo si los valores no se movieron: quien aprobó el
-    // hash de antes no aprobó el de ahora, y arrastrar su nombre sería atribuirle
-    // una decisión que no tomó. Y arranca vacío también cuando `compute` trajo el
-    // `accepted` de un vecino —un endpoint `path` o `repo`— porque **`agree` no se
-    // copia**: los que aprobaron allá aprobaron ese fragmento, no esta copia.
-    let previous = bl.endpoint.get(n).accepted.as_ref();
-    let iguales = previous.map(|p| p.same_values(&accepted)).unwrap_or(false);
-    accepted.agree = match previous {
-        Some(p) if iguales => p.agree.clone(),
-        _ => BTreeSet::new(),
-    };
-    let sumado = accepted.agree.insert(signer(layer)?);
-    let wrote = sumado || !iguales;
+    // Hay exactamente dos casos, y los dos ya estaban decididos antes de que
+    // `accepted` fuera una lista — lo que la lista cambia es qué pasa con lo que no
+    // se acepta.
+    //
+    // **Coincide con una entrada**: quien acepta se **suma** a su `agree`, y las
+    // demás entradas siguen ahí. Sigue divergido, y es correcto — sumarse a un lado
+    // no resuelve un desacuerdo.
+    //
+    // **No coincide con ninguna**: se abre una entrada nueva con quien acepta solo, y
+    // las que aprobaban **otros** valores se van. Quien aprobó los valores anteriores
+    // no aprobó éstos, y arrastrar su nombre sería atribuirle una decisión que no
+    // tomó; donde queda su aprobación es donde siempre quedó — en el commit que la
+    // escribió.
+    //
+    // La identidad de una entrada es su **tupla entera**: `link`, `hash`, `hash_ast` y
+    // `n`. Dos personas que aprueban el mismo fragmento con vecindarios distintos no
+    // comparten entrada: son dos contratos.
+    let firmante = signer(layer)?;
+    let previas = &bl.endpoint.get(n).accepted;
+    let coincide = previas.iter().position(|p| p.same_values(&accepted));
 
-    let e = bl.endpoint.get_mut(n);
-    let hash = accepted.hash.clone();
-    let agree = accepted.agree.clone();
-    e.accepted = Some(accepted);
+    let (nuevas, wrote) = match coincide {
+        Some(i) => {
+            // Me sumo a la que ya estaba. Las demás no se tocan: si había
+            // divergencia, sigue habiéndola.
+            let mut nuevas = previas.clone();
+            let sumado = nuevas[i].agree.insert(firmante);
+            (nuevas, sumado)
+        }
+        None => {
+            // **Colapsa.** Lo que se aprueba queda solo, y lo que aprobaba otra cosa
+            // se va. La lista es la ventana entre dos aceptaciones, no un archivo
+            // histórico.
+            accepted.agree = BTreeSet::from([firmante]);
+            (vec![accepted], true)
+        }
+    };
+
+    let hash = nuevas[coincide.unwrap_or(0)].hash.clone();
+    let agree = nuevas[coincide.unwrap_or(0)].agree.clone();
+    bl.endpoint.get_mut(n).accepted = nuevas;
     bl.write(&path)?;
 
     // El estado cacheado describe la comparación anterior y ya no vale.
@@ -276,7 +299,8 @@ fn compute(
     nb: crate::neighbours::Provider<'_>,
 ) -> Result<(Accepted, Option<String>)> {
     let e = bl.endpoint.get(n);
-    let previous = e.accepted.as_ref();
+    // La primera entrada. La lista es de `3u`; acá se mantiene lo que había.
+    let previous = e.accepted.first();
 
     match &e.link {
         LinkEndpoint::Capture(id) => {
@@ -309,12 +333,28 @@ fn compute(
             // que se llegue**. Las posiciones las pone la gramática: preguntar donde
             // arranca el fragmento devuelve `pub`, que no declara nada.
             let alcance = crate::neighbours::reach(layer, &cap.file, &range);
-            let folded = match (what.content, nb, &alcance) {
+            let resuelto = match (what.content, nb, &alcance) {
                 (true, Some(p), crate::neighbours::Reach::At(at)) => p.of(layer, &cap.file, at)?
                     .map(|locs| crate::neighbours::fold(layer, &locs))
                     .transpose()?,
                 _ => None,
             };
+
+            // **Los captures de los vecinos se escriben acá.**
+            //
+            // `fold` los calcula y no los escribe, porque `check` lo llama igual y no
+            // escribe nada versionado. Escribirlos es de `accept`: es quien tiene el
+            // proveedor, y sin los archivos el `n.1.link` que se está por guardar
+            // apuntaría a captures que no existen.
+            //
+            // Que `accept` acuñe captures es nuevo —era de `apply` y de `chain new`—
+            // y no rompe el reparto: el conjunto es de **sólo-agregar**, y lo que
+            // sigue siendo exclusivo de `accept` es escribir `accepted`.
+            let resuelto = resuelto.flatten();
+            if let Some(f) = &resuelto {
+                for c in &f.captures { c.write_in(layer)?; }
+            }
+            let folded = resuelto.map(|f| f.n);
             let neighbourhood = resolve_n1(&cap, &alcance, previous, &folded, what, &content_hash)?;
 
             let accepted = Accepted {
@@ -458,7 +498,7 @@ pub fn pending(layer: &Path) -> Vec<(String, u8)> {
 
             let needs = match cache.endpoint_state(uuid, n) {
                 Some(s) => !s.is_ok(),
-                None    => bl.endpoint.get(n).accepted.is_none(),
+                None    => bl.endpoint.get(n).accepted.is_empty(),
             };
             if needs { out.push((uuid.to_string(), n)); }
         }
@@ -558,12 +598,12 @@ mod n1_tests {
             link: None,
             hash: hash.into(),
             hash_ast: None,
-            n: n1.map(|h| N::of_level_1(Neighbourhood { hash: h.into(), hash_ast: None })),
+            n: n1.map(|h| N::of_level_1(Neighbourhood { link: Default::default(), hash: h.into(), hash_ast: None })),
         }
     }
 
     fn folded() -> Option<Neighbourhood> {
-        Some(Neighbourhood { hash: "nuevo".into(), hash_ast: Some("nuevo_ast".into()) })
+        Some(Neighbourhood { link: Default::default(), hash: "nuevo".into(), hash_ast: Some("nuevo_ast".into()) })
     }
 
     /// El hash del vecindario adquirido, si lo hay.

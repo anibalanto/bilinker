@@ -63,13 +63,46 @@ pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
             if let Some(id) = e.link.capture_id() {
                 alive.insert(id.to_string());
             }
-            if let Some(id) = e.accepted.as_ref().and_then(|a| a.link.as_ref()).and_then(|l| l.capture_id()) {
-                alive.insert(id.to_string());
+            // **El vecindario declarado también referencia.** Sin esta línea el
+            // primer `prune` sobre una capa con cierre de firma se lleva los vecinos,
+            // y lo que queda es un `accepted` apuntando a captures que no existen: un
+            // `UNRESOLVED` masivo producido por una limpieza.
+            for id in declared_neighbours(e) {
+                alive.insert(id);
+            }
+            // **Todas las entradas, no la primera.** Con `accepted` como lista una
+            // decisión desplazada sigue referenciando sus captures hasta que alguien
+            // resuelva la divergencia — borrarlos dejaría la entrada apuntando al
+            // vacío y con eso se perdería el lado del desacuerdo que no ganó.
+            for a in &e.accepted {
+                if let Some(id) = a.link.as_ref().and_then(|l| l.capture_id()) {
+                    alive.insert(id.to_string());
+                }
+                for id in accepted_neighbours(a) {
+                    alive.insert(id);
+                }
             }
         }
     }
 
     Ok(Capture::all_in(layer)?.into_iter().filter(|(id, _)| !alive.contains(id)).collect())
+}
+
+/// Los captures que el vecindario **declarado** de un endpoint nombra.
+fn declared_neighbours(e: &bilink_format::Endpoint) -> Vec<String> {
+    e.n.iter()
+        .flat_map(|n| n.0.values())
+        .flat_map(|lvl| lvl.link.ids().iter().cloned())
+        .collect()
+}
+
+/// Los captures que el vecindario **aceptado** de una entrada nombra.
+///
+/// Una renuncia no nombra ninguno, y por eso el `match` no tiene rama para ella: es
+/// el mismo motivo por el que `n` es un campo con tres estados y no dos.
+fn accepted_neighbours(a: &bilink_format::Accepted) -> Vec<String> {
+    let Some(bilink_format::N::Levels(levels)) = a.n.as_ref() else { return Vec::new() };
+    levels.values().flat_map(|nb| nb.link.ids().iter().cloned()).collect()
 }
 
 pub(crate) fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
@@ -268,10 +301,27 @@ pub fn capture_as(
     sel:  &[((usize, usize), (usize, usize))],
     generator: Option<&dyn CaptureGenerator>,
 ) -> Result<CaptureResult> {
+    let commit = git::head_commit_for_file(root, file)?;
+    let (capture, hash, ranges) = compute(root, file, sel, generator)?;
+    Ok(CaptureResult { capture, hash, commit, ranges })
+}
+
+/// El capture y su hash, **sin preguntarle nada a git**.
+///
+/// `capture_as` es esto más el commit del archivo. Van separados porque hay un
+/// llamador que no necesita el commit y **no debería necesitar un repo**: el
+/// [vecindario](crate::neighbours) acuña un capture por vecino sólo para tener su id
+/// y su hash, y pedir git ahí ataría el cálculo del id a que el archivo esté
+/// versionado — que no tiene nada que ver.
+pub fn compute(
+    root: &Path,
+    file: &str,
+    sel:  &[((usize, usize), (usize, usize))],
+    generator: Option<&dyn CaptureGenerator>,
+) -> Result<(Capture, String, bilink_format::Ranges)> {
     if sel.is_empty() {
         bail!("un capture con posiciones necesita al menos una");
     }
-    let commit = git::head_commit_for_file(root, file)?;
     let file_path = root.join(file);
     let source = std::fs::read_to_string(&file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
@@ -353,15 +403,7 @@ pub fn capture_as(
     // del fragmento que `check` va a comparar, no el de los nodos crudos.
     let hash = hash::sha256(ranges.text(&source).as_bytes());
 
-    Ok(CaptureResult {
-        capture: Capture {
-            file:   file.to_string(),
-            query:  Some(query),
-        },
-        hash,
-        commit,
-        ranges,
-    })
+    Ok((Capture { file: file.to_string(), query: Some(query) }, hash, ranges))
 }
 
 /// Lo que un generador necesita saber del archivo, y nada más.
@@ -410,6 +452,22 @@ pub trait CaptureGenerator {
 
     /// La query, y los nodos que espera que capture.
     fn query<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Generated<'t>>;
+
+    /// Cómo se llama este fragmento, en el vocabulario de este generador.
+    ///
+    /// **Se compone del fragmento, no se guarda.** Un alias guardado es un valor
+    /// derivado con vida propia: el día que cambia la ruta sigue diciendo lo viejo, y
+    /// lo diría en silencio porque los campos semánticos son inertes. Un rótulo falso
+    /// sobre una referencia verificada es peor que no tener rótulo.
+    ///
+    /// **Y es de cada generador, no del formato.** Un endpoint se nombra por su verbo
+    /// y su ruta; una firma, por su método. Un generador que no sepa nombrar devuelve
+    /// `None` y el bilink se muestra por UUID, que es lo que se muestra hoy.
+    ///
+    /// La `query` entra porque a veces el nombre vive ahí y no en el fragmento: donde
+    /// la anotación no lleva literal, el nombre del método es el ancla y **no** es
+    /// contenido capturado.
+    fn alias(&self, _source: &str, _ranges: &Ranges, _query: &str) -> Option<String> { None }
 }
 
 /// Los generadores que este binario conoce.
@@ -964,17 +1022,96 @@ mod tests {
         let mut bl = bilink_format::BiLink::new(
             format!("capture {vigente}").parse().unwrap(),
             "issue 3a".parse().unwrap());
-        bl.endpoint.zero.accepted = Some(bilink_format::Accepted {
+        bl.endpoint.zero.accepted = vec![bilink_format::Accepted {
             agree: Default::default(),
             link: Some(format!("capture {aprobado}").parse().unwrap()),
             hash: "deadbeef".into(),
             hash_ast: None,
             n: None,
-        });
+        }];
         bl.write(&bilink_format::BiLink::path_in(layer, "uuid1")).unwrap();
 
         let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
         assert_eq!(huerfanos, vec![suelto],
             "sólo el capture que nadie nombra; el aprobado sigue vivo");
+    }
+}
+
+#[cfg(test)]
+mod prune_neighbourhood_tests {
+    use super::*;
+    use bilink_format::{Accepted, BiLink, CaptureSet, DeclaredN, LinkEndpoint, N, Neighbourhood};
+    use tempfile::tempdir;
+
+    fn cap(layer: &Path, file: &str) -> String {
+        let c = Capture { file: file.into(), query: None };
+        let id = c.id();
+        c.write_in(layer).unwrap();
+        id
+    }
+
+    /// **Un capture nombrado sólo por el vecindario no es huérfano.**
+    ///
+    /// Sin esto el primer `prune` sobre una capa con cierre de firma se lleva los
+    /// vecinos, y el `accepted` queda apuntando a captures que no existen.
+    #[test]
+    fn a_capture_named_only_by_the_neighbourhood_survives() {
+        let d = tempdir().unwrap();
+        let layer = d.path();
+        let frag = cap(layer, "Svc.rs");
+        let vecino = cap(layer, "Dto.rs");
+        let suelto = cap(layer, "Nadie.rs");
+
+        let mut bl = BiLink::new(format!("capture {frag}").parse().unwrap(), LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).n = Some(DeclaredN::of_level_1(CaptureSet::new(vec![vecino.clone()])));
+        bl.write(&BiLink::path_in(layer, "11111111-1111-4111-8111-111111111111")).unwrap();
+
+        let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert!(huerfanos.contains(&suelto), "el que nadie nombra sí es huérfano: {huerfanos:?}");
+        assert!(!huerfanos.contains(&vecino), "el vecino declarado no: {huerfanos:?}");
+        assert!(!huerfanos.contains(&frag), "ni el fragmento: {huerfanos:?}");
+    }
+
+    /// **Y tampoco el de una decisión desplazada.**
+    ///
+    /// Con `accepted` como lista, la entrada que no ganó sigue referenciando sus
+    /// captures hasta que alguien resuelva. Borrarlos perdería el lado del desacuerdo
+    /// que no ganó, que es justo lo que la lista existe para no perder.
+    #[test]
+    fn the_captures_of_a_displaced_decision_survive() {
+        let d = tempdir().unwrap();
+        let layer = d.path();
+        let frag = cap(layer, "Svc.rs");
+        let gano = cap(layer, "Dto.rs");
+        let perdio = cap(layer, "DtoViejo.rs");
+
+        let entrada = |v: &str, h: &str| Accepted {
+            agree: Default::default(),
+            link: Some(format!("capture {frag}").parse().unwrap()),
+            hash: h.into(),
+            hash_ast: None,
+            n: Some(N::of_level_1(Neighbourhood {
+                link: CaptureSet::new(vec![v.to_string()]),
+                hash: h.into(),
+                hash_ast: None,
+            })),
+        };
+
+        let mut bl = BiLink::new(format!("capture {frag}").parse().unwrap(), LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).accepted = vec![entrada(&gano, "h1"), entrada(&perdio, "h2")];
+        bl.write(&BiLink::path_in(layer, "22222222-2222-4222-8222-222222222222")).unwrap();
+
+        let huerfanos: Vec<String> = orphans(layer).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert!(huerfanos.is_empty(), "las dos entradas referencian: {huerfanos:?}");
+    }
+
+    /// Una renuncia no nombra ningún capture, y no tiene por qué.
+    #[test]
+    fn a_decline_names_nothing() {
+        let a = Accepted {
+            agree: Default::default(), link: None,
+            hash: "h".into(), hash_ast: None, n: Some(N::declined()),
+        };
+        assert!(accepted_neighbours(&a).is_empty());
     }
 }

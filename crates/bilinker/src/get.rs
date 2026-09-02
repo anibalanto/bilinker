@@ -91,7 +91,7 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
     if endpoint > 1 { bail!("el endpoint es 0 o 1"); }
 
     let e = bl.endpoint.get(endpoint);
-    let accepted = e.accepted.as_ref()
+    let accepted = e.accepted.first()
         .context("el endpoint no tiene nada aceptado — correr `bilinker accept` primero")?;
 
     // **Cruzar la frontera se despacha antes de derivar nada.** El commit del
@@ -384,7 +384,7 @@ fn traverse_layer_for_diff(
     let cache  = Cache::load(&adjacent_root);
     let commit = cache.commit(uuid, n).map(String::from);
     let range  = adjacent_bl.endpoint.get(n).link.capture_id().and_then(|id| cache.capture_ranges(id));
-    let hash   = adjacent_bl.endpoint.get(n).accepted.as_ref().map(|a| a.hash.clone());
+    let hash   = adjacent_bl.endpoint.get(n).accepted.first().map(|a| a.hash.clone());
 
     Ok((adjacent_root, cap, commit, range, hash))
 }

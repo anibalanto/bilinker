@@ -3250,8 +3250,8 @@ fn two_clones_accepting_different_endpoints_converge_and_keep_both_commits() {
 
     // Y los dos valores están en el archivo.
     let bl = bilink_format::BiLink::load(&luis.join(format!(".bilink/{uuid}.yaml"))).unwrap();
-    assert!(bl.endpoint.get(0).accepted.is_some(), "lo que aceptó Ana entró");
-    assert!(bl.endpoint.get(1).accepted.is_some(), "y lo de Luis quedó");
+    assert!(!bl.endpoint.get(0).accepted.is_empty(), "lo que aceptó Ana entró");
+    assert!(!bl.endpoint.get(1).accepted.is_empty(), "y lo de Luis quedó");
 }
 
 /// **Dos clones que aceptan lo mismo convergen sin pedir nada, y el `agree`
@@ -3444,8 +3444,8 @@ fn verify_ref_rejects_adding_someone_else_to_agree() {
     // Pablo escribe `- ana` a mano, sobre el bilink del árbol.
     let path = root.join(format!(".bilink/{uuid}.yaml"));
     let texto = fs::read_to_string(&path).unwrap()
-        .replace("    accepted:\n      agree:\n      - t\n",
-                 "    accepted:\n      agree:\n      - ana\n      - t\n");
+        .replace("    accepted:\n    - agree:\n      - t\n",
+                 "    accepted:\n    - agree:\n      - ana\n      - t\n");
     fs::write(&path, &texto).unwrap();
     assert!(texto.contains("- ana"), "el fixture tiene que haber cambiado algo:\n{texto}");
 
@@ -3679,7 +3679,7 @@ fn as_person(root: &Path, name: &str) {
 /// El `accepted` de un endpoint, tal como está en el archivo.
 fn accepted_of(root: &Path, uuid: &str, n: u8) -> bilink_format::Accepted {
     let bl = bilink_format::BiLink::load(&root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
-    bl.endpoint.get(n).accepted.clone().expect("el endpoint está aceptado")
+    bl.endpoint.get(n).accepted.first().cloned().expect("el endpoint está aceptado")
 }
 
 fn agree_of(root: &Path, uuid: &str, n: u8) -> Vec<String> {
@@ -4875,17 +4875,30 @@ fn the_consumer_refuses_a_provider_format_it_does_not_understand() {
     run_in(&consumer, &["accept", "--no-n1", "."]);
     assert!(check_states(&consumer).trim().is_empty(), "arranca limpio");
 
+    // **Una versión del futuro, calculada.** Decía `4.0.0` y el futuro llegó: el
+    // formato es 4.0.0 desde la task `3r`, así que el test dejó de probar nada. Un
+    // major por encima del actual no envejece.
+    let futura = {
+        let major: u32 = bilink_format::VERSION.split('.').next().unwrap().parse().unwrap();
+        format!("{}.0.0", major + 1)
+    };
     let version = consumer.join(".bilink/hsi/.bilink/version");
-    fs::write(&version, "4.0.0\n").unwrap();
+    fs::write(&version, format!("{futura}\n")).unwrap();
 
     let (out, stderr, _) = run_in(&consumer, &["check", "."]);
-    assert!(stderr.contains("4.0.0") || out.contains("4.0.0"),
+    assert!(stderr.contains(&futura) || out.contains(&futura),
             "se dice qué versión publica y cuál se lee:\n{out}\n{stderr}");
     assert!(!out.contains("OK") && !out.contains("ALTERED"),
             "no se reporta ningún estado sobre archivos que no se entendieron:\n{out}");
 
     // Un minor distinto sí se entiende: lo aditivo no rompe al que lee más nuevo.
-    fs::write(&version, "3.0.0\n").unwrap();
+    // **Derivado por el mismo motivo que el de arriba**: decía `3.0.0`, que era el
+    // major de entonces y hoy es otro.
+    let otro_minor = {
+        let major = bilink_format::VERSION.split('.').next().unwrap();
+        format!("{major}.99.0")
+    };
+    fs::write(&version, format!("{otro_minor}\n")).unwrap();
     let (_, _, ok) = run_in(&consumer, &["check", "."]);
     assert!(ok, "un minor distinto del mismo major se lee igual");
 }
@@ -5175,4 +5188,219 @@ fn the_catalog_marks_what_is_already_consumed() {
     let (out, _, ok) = run_in(&consumer, &["abstracts", "hsi"]);
     assert!(ok);
     assert!(out.contains("ya lo consumís"), "se marca:\n{out}");
+}
+
+// ─── task `3d`: el alias se deriva del fragmento ──────────────────────────────
+
+/// **El verbo y la ruta salen de lo capturado**, y `chain list` los muestra en vez
+/// del hexadecimal.
+#[test]
+fn chain_list_names_a_spring_endpoint_by_its_verb_and_route() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("GET /public-api/user/permissions/from-token"),
+            "la ruta compuesta es el nombre de la cadena:\n{out}");
+    assert!(!out.contains("nodo(s)"), "con alias no se cae al conteo:\n{out}");
+}
+
+/// Y el encabezado de `get` lo lleva: contesta **qué** se está mirando, mientras el
+/// archivo y las líneas contestan dónde.
+#[test]
+fn the_get_header_carries_the_alias() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+
+    let (_, stderr, _) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root))]);
+    assert!(stderr.contains("GET /public-api/user/permissions/from-token"), "{stderr}");
+}
+
+/// **Un bilink sin `as` no tiene alias, y el listado sigue sirviendo.** Es el estado
+/// de todo lo escrito antes de que el campo existiera.
+#[test]
+fn without_a_generator_the_listing_falls_back_to_the_uuid() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &["chain", "new", "--yes",
+                    "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5"]);
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("nodo(s)"), "sin generador que nombre, el conteo:\n{out}");
+}
+
+/// **El alias sigue a la ruta, porque se compone y no se guarda.** Es la propiedad
+/// entera del ítem: un rótulo guardado seguiría diciendo lo viejo, y en silencio.
+#[test]
+fn renaming_the_route_renames_the_alias() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("GET /public-api/usuario/permissions/from-token"),
+            "el alias se compone del fragmento de hoy:\n{out}");
+    assert!(!out.contains("/public-api/user/"), "y no queda el viejo:\n{out}");
+}
+
+/// **El nombre del método sale del fragmento, no de la query.**
+///
+/// Leerlo de la query parecía razonable —está anclado ahí— y falla: `name:
+/// (identifier)` aparece también en las anotaciones y en la clase, que van más arriba
+/// del árbol y por lo tanto antes en el patrón. Sobre los 98 endpoints de `hsi` eso
+/// producía `GetMapping`, `PutMapping` y el nombre de una clase.
+///
+/// Entre los dos últimos `@target` no hay nada más que el nombre.
+#[test]
+fn the_method_name_comes_from_between_the_captured_parts() {
+    let (_tmp, root) = workspace_with_a_controller();
+    // Sin literal en la anotación del método: es el caso donde el nombre desempata.
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("@GetMapping(\"/permissions/from-token\")", "@GetMapping")).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "markerless"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("·  getPermissions"),
+            "el nombre del método desempata a los hermanos:\n{out}");
+    assert!(!out.contains("GetMapping"), "y no es el de la anotación:\n{out}");
+}
+
+// ─── task `3e`: filtrar el listado ────────────────────────────────────────────
+
+/// Un workspace con dos endpoints, que es el mínimo para que filtrar signifique algo.
+fn workspace_with_two_endpoints() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/public-api/user\")\n",
+        "public class Service {\n",
+        "\n",
+        "    @GetMapping(\"/permissions/from-token\")\n",
+        "    public List<PublicAuthorityDto> getPermissions(String token)\n",
+        "    { return null; }\n",
+        "\n",
+        "    @PostMapping(\"/booking/cancel\")\n",
+        "    public String cancelBooking(String id)\n",
+        "    { return null; }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "dos"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    for pos in ["6:5", "10:5"] {
+        run_in(&root, &["chain", "new", "--yes",
+                        "--tip", "docs/spec.md:1:1",
+                        "--as.1", "spring-controller",
+                        "--tip", &format!("src/Service.java:{pos}")]);
+    }
+    run_in(&root, &["check", "."]);
+    (tmp, root)
+}
+
+/// **El filtro que motivó todo**: encontrar una entre muchas por su nombre.
+#[test]
+fn chain_list_filters_by_alias_text() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking"]);
+    assert!(out.contains("/booking/cancel"), "{out}");
+    assert!(!out.contains("/permissions/"), "y deja afuera la otra:\n{out}");
+    assert!(out.contains("1 de 2"), "dice cuántas de cuántas:\n{out}");
+}
+
+/// Sin distinguir mayúsculas: nadie se acuerda de cómo estaba escrito.
+#[test]
+fn the_text_filter_ignores_case() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "BOOKING"]);
+    assert!(out.contains("/booking/cancel"), "{out}");
+}
+
+/// **Los dos ejes de tipo son independientes.** `--as` es con qué receta se capturó;
+/// `--link` es qué clase de extremo es.
+#[test]
+fn the_two_type_axes_filter_different_things() {
+    let (_t, root) = workspace_with_two_endpoints();
+
+    let (out, _, _) = run_in(&root, &["chain", "list", "--as", "spring-controller"]);
+    assert!(out.contains("2 de 2"), "las dos se capturaron con el plugin:\n{out}");
+
+    let (out, _, _) = run_in(&root, &["chain", "list", "--as", "interface"]);
+    assert!(out.contains("0 de 2"), "ninguna con ese generador:\n{out}");
+
+    // Y el otro eje, sobre las mismas cadenas: los dos extremos son captures.
+    let (out, _, _) = run_in(&root, &["chain", "list", "--link", "capture"]);
+    assert!(out.contains("2 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--link", "abstract"]);
+    assert!(out.contains("0 de 2"), "no hay punta abierta acá:\n{out}");
+}
+
+/// **Se combinan con Y**, que es lo que permite bajar de 98 a una sin salir del
+/// comando.
+#[test]
+fn filters_accumulate() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking", "--as", "spring-controller"]);
+    assert!(out.contains("1 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking", "--as", "interface"]);
+    assert!(out.contains("0 de 2"), "el que no matchea corta:\n{out}");
+}
+
+/// Por estado: *"qué quedó sin aceptar"*.
+#[test]
+fn chain_list_filters_by_state() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "--state", "pendiente"]);
+    assert!(out.contains("2 de 2"), "recién creadas, las dos pendientes:\n{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--state", "ok"]);
+    assert!(out.contains("0 de 2"), "{out}");
+}
+
+/// Por archivo o subárbol: *"qué hay bilinkeado bajo `src/`"*.
+#[test]
+fn chain_list_filters_by_subtree() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "--under", "src/"]);
+    assert!(out.contains("2 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--under", "no/existe/"]);
+    assert!(out.contains("0 de 2"), "{out}");
+}
+
+/// **Sin filtros el listado es el de siempre**, y no dice "0 de N": el conteo sólo
+/// tiene sentido cuando hay algo contra qué compararlo.
+#[test]
+fn without_filters_the_listing_is_unchanged() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(!out.contains(" de 2"), "sin filtro no hay conteo:\n{out}");
 }

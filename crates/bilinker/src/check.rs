@@ -67,6 +67,11 @@ pub fn check_with(
         for n in [0u8, 1u8] {
             states[n as usize] = check_endpoint(&layer, &bl, uuid, n, &mut resolved, &mut cache, nb)?;
             cache.set_endpoint_state(uuid, n, states[n as usize]);
+            // El alias sale del mismo trabajo: resolver el capture es lo que `check`
+            // ya hizo para escribir `range`. `None` **borra** el que hubiera — un
+            // `as` que se sacó no puede dejar el rótulo viejo colgado.
+            let alias = alias_de(&layer, &bl, n, &resolved);
+            cache.set_alias(uuid, n, alias);
         }
         out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1] });
     }
@@ -77,6 +82,25 @@ pub fn check_with(
     cache.save(&layer)?;
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
     Ok(out)
+}
+
+/// Cómo se llama este endpoint, si su generador sabe nombrarlo.
+///
+/// **Sin `as` no hay alias**, y eso no es una falla: es lo que dice todo bilink
+/// escrito antes de que el campo existiera. Un `as` que nombra un generador que no
+/// está instalado tampoco falla — es un dato que no se pudo usar.
+fn alias_de(
+    layer: &Path,
+    bl: &BiLink,
+    n: u8,
+    resolved: &HashMap<String, (CaptureState, Option<Ranges>)>,
+) -> Option<String> {
+    let e = bl.endpoint.get(n);
+    let g = crate::capture::generator_named(e.r#as.as_deref()?).ok()?;
+    let cap = crate::capture::capture_of(layer, &e.link).ok()??;
+    let (_, ranges) = resolved.get(e.link.capture_id()?)?;
+    let source = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
+    g.alias(&source, ranges.as_ref()?, cap.query.as_deref()?)
 }
 
 fn check_endpoint(
@@ -90,9 +114,9 @@ fn check_endpoint(
 ) -> Result<EndpointState> {
     let e = bl.endpoint.get(n);
     match &e.link {
-        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.as_ref()),
-        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.as_ref()),
-        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.as_ref()),
+        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.first()),
+        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.first()),
+        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.first()),
         // Constante: no hay contra qué comparar. Nunca pide acción.
         LinkEndpoint::Abstract  => Ok(EndpointState::Open),
         LinkEndpoint::Capture(cap_id) => {
@@ -111,7 +135,7 @@ fn check_endpoint(
             let (state, range) = match resolved.get(cap_id) {
                 Some(v) => v.clone(),
                 None => {
-                    let v = resolve_capture(layer, &cap, e.accepted.as_ref(), cache.commit(uuid, n))?;
+                    let v = resolve_capture(layer, &cap, e.accepted.first(), cache.commit(uuid, n))?;
                     resolved.insert(cap_id.clone(), v.clone());
                     v
                 }
@@ -120,7 +144,17 @@ fn check_endpoint(
                 return Ok(EndpointState::Unresolved);
             }
 
-            let Some(accepted) = &e.accepted else { return Ok(EndpointState::Pending) };
+            // **La lista decide antes que cualquier eje.**
+            //
+            // Vacía es `PENDING`. Con más de una entrada hay dos decisiones humanas
+            // incompatibles, y **no hay un valor contra el cual comparar**: evaluar
+            // ubicación o contenido exigiría elegir una, que es exactamente lo que
+            // nadie hizo. Así que se reporta el desacuerdo y se corta.
+            let accepted = match e.accepted.as_slice() {
+                []      => return Ok(EndpointState::Pending),
+                [one]   => one,
+                [_, ..] => return Ok(EndpointState::ConsensusDiverged),
+            };
 
             // ── dimensión de ubicación ────────────────────────────────────────
             //
@@ -163,7 +197,7 @@ fn check_endpoint(
             // igual. Lo que este eje aporta es el caso donde el fragmento no cambió
             // y aun así el contrato se movió.
             if state == EndpointState::Ok {
-                if let Some(s) = compare_contract(layer, &cap, accepted, range.as_ref(), nb)? {
+                if let Some(s) = compare_contract(layer, &cap, e.n.as_ref(), accepted, range.as_ref(), nb)? {
                     return Ok(s);
                 }
             }
@@ -181,6 +215,7 @@ fn check_endpoint(
 fn compare_contract(
     layer:    &Path,
     cap:      &Capture,
+    declared: Option<&bilink_format::DeclaredN>,
     accepted: &bilink_format::Accepted,
     range:    Option<&Ranges>,
     nb:       crate::neighbours::Provider<'_>,
@@ -188,6 +223,21 @@ fn compare_contract(
     // Sólo un vecindario **adquirido** se compara: una renuncia no tiene con qué,
     // y la ausencia significa que el fragmento no tiene firma resoluble.
     let Some(expected) = accepted.n.as_ref().and_then(|n| n.level(1)) else { return Ok(None) };
+
+    // ── ubicación del vecindario ──────────────────────────────────────────────
+    //
+    // **Dos listas de ids, y por eso se decide siempre.** No abre ningún archivo y no
+    // le pregunta a nadie — es la misma propiedad que hace que la ubicación del
+    // fragmento se decida incluso donde el contenido degrada, un nivel más abajo.
+    //
+    // Y separa cuatro casos que antes se veían iguales: un vecino que entró, uno que
+    // salió, uno que se mudó de archivo y uno que se renombró. Los cuatro movían el
+    // fold y ninguno decía cuál había sido.
+    let declarados = declared.and_then(|d| d.level(1)).map(|l| l.link.ids()).unwrap_or(&[]);
+    if declarados != expected.link.ids() {
+        return Ok(Some(EndpointState::ContractRelocated));
+    }
+
     let (Some(p), Some(range)) = (nb, range) else {
         return Ok(Some(EndpointState::ContractUnverified));
     };
@@ -204,7 +254,15 @@ fn compare_contract(
         return Ok(Some(EndpointState::ContractUnverified));
     };
 
-    let folded = crate::neighbours::fold(layer, &locs)?;
+    // **Se descartan los captures**: `check` no escribe nada versionado, y acuñar es
+    // de `accept`. Lo que se compara son los hashes, que se calculan igual.
+    //
+    // Y `None` es *"no se puede representar"* —algún vecino sin capture posible—, que
+    // cae en el mismo casillero que un daemon caído: no pude.
+    let Some(folded) = crate::neighbours::fold(layer, &locs)? else {
+        return Ok(Some(EndpointState::ContractUnverified));
+    };
+    let folded = folded.n;
     if folded.hash == expected.hash {
         return Ok(None);
     }
@@ -659,6 +717,66 @@ mod tests {
                    "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
     }
 
+    // ─── la divergencia y la ubicación del vecindario ─────────────────────────
+
+    /// **Dos decisiones incompatibles son un estado, y no se evalúa nada más.**
+    ///
+    /// Evaluar ubicación o contenido exigiría elegir una de las dos, que es
+    /// exactamente lo que nadie hizo.
+    #[test]
+    fn two_decisions_are_reported_as_divergence() {
+        let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
+        let uuid = "33333333-3333-4333-8333-333333333333";
+        let entrada = |h: &str| bilink_format::Accepted {
+            agree: Default::default(),
+            link: Some(format!("capture {}", cap.id()).parse().unwrap()),
+            hash: h.into(), hash_ast: None, n: None,
+        };
+        let mut bl = bilink_format::BiLink::new(
+            format!("capture {}", cap.id()).parse().unwrap(),
+            bilink_format::LinkEndpoint::Abstract);
+        bl.endpoint.get_mut(0).accepted = vec![entrada("h1"), entrada("h2")];
+        cap.write_in(d.path()).unwrap();
+        bl.write(&bilink_format::BiLink::path_in(d.path(), uuid)).unwrap();
+        let _ = range;
+
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.iter().find(|x| x.uuid == uuid).expect("el bilink está");
+        assert_eq!(it.state0, EndpointState::ConsensusDiverged, "{:?}", it.state0);
+        assert!(!it.state0.is_clean(), "divergido no es limpio: check tiene que fallar");
+    }
+
+    /// **El eje de ubicación del vecindario se decide sin proveedor**, porque son dos
+    /// listas de ids. Es la misma propiedad que la ubicación del fragmento, un nivel
+    /// más abajo.
+    #[test]
+    fn the_neighbourhood_location_axis_needs_no_provider() {
+        use bilink_format::{CaptureSet, DeclaredN, N, Neighbourhood};
+        let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
+
+        let acc = bilink_format::Accepted {
+            agree: Default::default(), link: None,
+            hash: String::new(), hash_ast: None,
+            n: Some(N::of_level_1(Neighbourhood {
+                link: CaptureSet::new(vec!["a".repeat(32)]),
+                hash: "loquesea".into(), hash_ast: None,
+            })),
+        };
+        // Lo declarado hoy nombra otro vecino: entró, salió, se mudó o se renombró.
+        let hoy = DeclaredN::of_level_1(CaptureSet::new(vec!["b".repeat(32)]));
+        assert_eq!(
+            compare_contract(d.path(), &cap, Some(&hoy), &acc, Some(&range), None).unwrap(),
+            Some(EndpointState::ContractRelocated),
+            "sin proveedor y aun así decidido");
+
+        // Y coincidiendo, el eje no dice nada y le toca al del contenido — que sin
+        // proveedor sí degrada.
+        let igual = DeclaredN::of_level_1(CaptureSet::new(vec!["a".repeat(32)]));
+        assert_eq!(
+            compare_contract(d.path(), &cap, Some(&igual), &acc, Some(&range), None).unwrap(),
+            Some(EndpointState::ContractUnverified));
+    }
+
     // ─── el eje del vecindario ────────────────────────────────────────────────
 
     use crate::neighbours::{Location, Neighbours};
@@ -696,7 +814,7 @@ mod tests {
             hash: String::new(),
             hash_ast: None,
             n: hash_n1.map(|hash| bilink_format::N::of_level_1(
-                bilink_format::Neighbourhood { hash, hash_ast: hash_ast_n1 })),
+                bilink_format::Neighbourhood { link: Default::default(), hash, hash_ast: hash_ast_n1 })),
         }
     }
 
@@ -707,7 +825,7 @@ mod tests {
         let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
         let acc = accepted_with(None, None);
         let p = Fake(Some(locs));
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(), None);
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(), None);
     }
 
     /// Con vecindario aceptado y sin quien lo resuelva: **no verificado**. Ni OK ni
@@ -716,12 +834,12 @@ mod tests {
     fn without_a_provider_the_contract_is_unverified() {
         let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
         let acc = accepted_with(Some("loquesea".into()), None);
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), None).unwrap(),
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), None).unwrap(),
                    Some(EndpointState::ContractUnverified));
 
         // Y un proveedor que contesta "no pude mirar" da lo mismo que no tenerlo.
         let mudo = Fake(None);
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&mudo)).unwrap(),
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&mudo)).unwrap(),
                    Some(EndpointState::ContractUnverified));
     }
 
@@ -730,22 +848,22 @@ mod tests {
     #[test]
     fn an_unchanged_neighbourhood_says_nothing() {
         let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
-        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap();
+        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap().unwrap().n;
         let acc = accepted_with(Some(hoy.hash.clone()), hoy.hash_ast.clone());
         let p = Fake(Some(locs));
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(), None);
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(), None);
     }
 
     /// **El caso que motivó todo:** el fragmento intacto y el DTO con un campo más.
     #[test]
     fn a_field_added_to_the_dto_moves_the_contract() {
         let antes = dto_layer("pub struct Dto { pub x: u8 }");
-        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap().unwrap().n;
 
         let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8, pub y: u8 }");
         let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);
         let p = Fake(Some(locs));
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(),
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(),
                    Some(EndpointState::ContractAltered));
     }
 
@@ -753,12 +871,12 @@ mod tests {
     #[test]
     fn a_reformatted_neighbourhood_is_restyled_and_not_altered() {
         let antes = dto_layer("pub struct Dto { pub x: u8 }");
-        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap().unwrap().n;
 
         let (d, cap, range, locs) = dto_layer("pub struct Dto {\n    pub x: u8\n}");
         let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);
         let p = Fake(Some(locs));
-        assert_eq!(compare_contract(d.path(), &cap, &acc, Some(&range), Some(&p)).unwrap(),
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(),
                    Some(EndpointState::ContractRestyled));
     }
 }

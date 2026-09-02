@@ -178,7 +178,7 @@ fn diff(
         push_change(&mut out, repo, commit, n, "link",
                     b.map(|e| e.link.to_string()), Some(a.link.to_string()));
 
-        let (ba, aa) = (b.and_then(|e| e.accepted.as_ref()), a.accepted.as_ref());
+        let (ba, aa) = (b.and_then(|e| e.accepted.first()), a.accepted.first());
         push_change(&mut out, repo, commit, n, "accepted.link",
                     ba.and_then(link_of), aa.and_then(link_of));
         push_change(&mut out, repo, commit, n, "hash",

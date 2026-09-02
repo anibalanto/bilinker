@@ -136,6 +136,28 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // puede llevarlo porque su id es su contenido, y el bilink sí porque su id es un
     // UUID. La limitación era mecánica, no un principio.
     ("3.8.0", "f288aa28b5f5846fbb20e6195938b3b2e15ea3487a9acf1a750cc7afb064b3e0"),
+    // 4.0.0 hace dos cosas y las dos cambian de forma un campo que ya existía, así que
+    // **sube el major** — la primera no aditiva desde 3.0.0.
+    //
+    // `accepted` pasa de objeto a **lista**. Dos personas pueden haber aprobado
+    // versiones distintas del mismo fragmento, y hasta acá la segunda borraba a la
+    // primera; ahora conviven y el endpoint queda `CONSENSUS_DIVERGED`, que nunca es
+    // OK. La lista no sostiene dos verdades: es una forma de no perder ninguna
+    // mientras alguien resuelve.
+    //
+    // Y `n` gana `link`: **un capture por vecino**, del lado declarativo y del
+    // aceptado. Hasta acá el vecindario era el único lugar del formato donde una
+    // ubicación externa se hasheaba cruda, y de esa anomalía salían tres cosas — que
+    // el hash cubriera el *nombre* del tipo y no su forma, que un vecino que se muda
+    // mueva el fold sin que nadie sepa por qué, y que no se pudiera preguntar qué
+    // tipos son.
+    //
+    // **Sacar el major no es lo mismo que en 3.0.0.** Allá se quitaba un campo y no
+    // había nada que mover; acá hay archivos escritos —206 en accreta, 165 en el impl,
+    // 98 en `hsi`, 11 en los consumidores— y hay migración. La parte de `accepted` es
+    // mecánica; la de `n` no lo es, porque los `n` ya escritos **no tienen ids que
+    // poner** y calcularlos pide un language server que una migración no levanta.
+    ("4.0.0", "98377d7b17e211e03d864af4a89dcf0bf4fb18588cc76615552b162a28e6102f"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
