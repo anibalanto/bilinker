@@ -44,6 +44,12 @@ enum Command {
         /// Mostrar diff entre el fragmento aceptado y el actual
         #[arg(long)]
         diff: bool,
+        /// El texto del fragmento y nada más: sin números de línea y sin huecos
+        ///
+        /// Es lo que `check` hashea, byte por byte. Sirve para comparar; para leer
+        /// está la vista, que es el default.
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Repunta un endpoint a otro fragmento
@@ -933,7 +939,7 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Get { target, before, after, diff } => {
+        Command::Get { target, before, after, diff, raw } => {
             let uuid_form = {
                 let t = target.trim();
                 if let Some(dot) = t.rfind('.') {
@@ -969,8 +975,10 @@ Eliminar? [y/N] ");
                     let after    = after.as_deref().map(parse_pos).transpose()?;
                     let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
                     eprintln!("# {}  lines {}", result.file, result.line_span());
-                    println!("{}", result.content);
-
+                    // La vista es el default: si alguien quiere el texto exacto es
+                    // **para compararlo**, y comparar lo hacen `check` y `--diff`.
+                    if raw { println!("{}", result.content); }
+                    else   { print!("{}", result.view); }
                 }
             } else if pos_form {
                 let mut parts = target.rsplitn(3, ':');

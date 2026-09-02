@@ -10,7 +10,15 @@ use crate::query;
 use bilink_format::link::StratumPath;
 
 pub struct GetResult {
+    /// El texto del fragmento: las partes unidas por el separador del `hash`.
+    ///
+    /// **Es lo que `--raw` imprime, y ya no es el default.** Lo que se lee en una
+    /// terminal es [`view`]; esto sirve para comparar, y comparar lo hacen `check` y
+    /// `--diff`. Ver `commands/get.md` § "`--raw` es el texto, y no es el default".
     pub content: String,
+    /// El fragmento sobre sus líneas, con números y huecos. Vacío si no hay archivo
+    /// que mostrar.
+    pub view: String,
     pub file: String,
     /// Los tramos de líneas que se muestran, 1-based e inclusivos: uno por parte
     /// del fragmento. Son una lista y no un par porque un fragmento de varios
@@ -462,8 +470,11 @@ fn resolve(
 
     let Some(query_str) = &cap.query else {
         let total = count_lines(&source);
+        let ranges = Ranges::one(0, source.len());
+        let view = crate::preview::fragment_view(&source, &ranges, 0, 0);
         return Ok(GetResult {
             content: source,
+            view,
             file: cap.file.clone(),
             lines: vec![(1, total)],
         });
@@ -497,6 +508,7 @@ fn resolve(
 
     Ok(GetResult {
         content: blocks.join(FRAGMENT_SEPARATOR),
+        view: crate::preview::fragment_view(&source, &fragment.ranges, before_rows, after_rows),
         file: cap.file.clone(),
         lines,
     })
