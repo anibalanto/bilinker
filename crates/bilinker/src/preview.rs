@@ -212,3 +212,185 @@ mod tests {
         assert_eq!(Preview::marks_in(&edited), vec![1, 2]);
     }
 }
+
+// ─── la vista de `get`: el fragmento sobre sus líneas ─────────────────────────
+
+/// Lo que no entró **adentro** de una línea.
+///
+/// Mismo signo para el mismo hecho en las dos escalas: [`SKIP`] para las líneas que
+/// no entran, esto para lo que no entra adentro de una. Un hueco es un hueco.
+pub const HOLE: &str = "...";
+
+/// El fragmento como lo imprime `get`: una línea por línea, con su número.
+///
+/// **No es [`Preview`], y no puede serlo.** Aquella marca líneas porque su vista es
+/// *editable* —`marks_in` la lee de vuelta, y cada línea marcada resuelve a su
+/// nodo—, así que meterle precisión de columna rompería esa simetría. Ésta no se lee
+/// de vuelta, y ahí la precisión no cuesta nada.
+///
+/// Lo que comparten es el cálculo de tramos y saltos, que es lo que se
+/// desincronizaría si hubiera dos renderers.
+///
+/// La sangría se conserva tal cual y **nunca se vuelve un hueco**: es espacio en
+/// blanco, no aporta contenido, y sin ella el código no se lee.
+pub fn fragment_view(source: &str, ranges: &Ranges, before: usize, after: usize) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() { return String::new() }
+
+    // El offset donde arranca cada línea, 1-based.
+    let mut start_of = Vec::with_capacity(lines.len() + 1);
+    let mut at = 0usize;
+    for l in &lines { start_of.push(at); at += l.len() + 1; }
+
+    let partes: Vec<(usize, usize)> = ranges.parts().iter().map(|r| (r.start, r.end)).collect();
+
+    // Qué líneas se muestran: las que toca alguna parte, más el contexto pedido.
+    let mut shown: Vec<usize> = Vec::new();
+    for (s, e) in &partes {
+        let from = line_of(source, *s);
+        let to   = line_of(source, e.saturating_sub(1));
+        let from = from.saturating_sub(before).max(1);
+        let to   = (to + after).min(lines.len());
+        for l in from..=to { shown.push(l); }
+    }
+    shown.sort_unstable();
+    shown.dedup();
+
+    let width = shown.last().copied().unwrap_or(1).to_string().len();
+    let mut out = String::new();
+    let mut prev = 0usize;
+    for l in shown {
+        // **Un salto de líneas es visible o es una mentira.** Sin el `⋮`, dos tramos
+        // lejanos se leen como si fueran contiguos.
+        if prev != 0 && l > prev + 1 {
+            out.push_str(&format!("{:>width$} {SKIP}\n", "", width = width));
+        }
+        let texto = lines[l - 1];
+        let ls = start_of[l - 1];
+        out.push_str(&format!("{l:>width$}:   {}\n", con_huecos(texto, ls, &partes)));
+        prev = l;
+    }
+    out
+}
+
+/// Una línea con `...` donde no la cubre ninguna parte.
+///
+/// **Los `...` son el límite entre partes, y por eso no hace falta marcarlo aparte**:
+/// dónde termina una y arranca la otra se ve porque lo que hay en el medio no está.
+///
+/// Una línea que ninguna parte toca es contexto —la pidió `-B` o `-A`— y sale
+/// entera: rellenarla de huecos diría que se capturó un pedazo, y no se capturó
+/// ninguno.
+fn con_huecos(texto: &str, line_start: usize, partes: &[(usize, usize)]) -> String {
+    let fin = line_start + texto.len();
+    let cubierto: Vec<(usize, usize)> = partes.iter()
+        .filter_map(|(s, e)| {
+            let (s, e) = ((*s).max(line_start), (*e).min(fin));
+            (s < e).then_some((s, e))
+        })
+        .collect();
+    if cubierto.is_empty() { return texto.to_string() }
+
+    // La sangría va siempre y nunca es hueco.
+    let sangria = texto.len() - texto.trim_start().len();
+    let cuerpo  = line_start + sangria;
+
+    let mut piezas: Vec<String> = Vec::new();
+    let mut at = cuerpo;
+    for (s, e) in &cubierto {
+        if *s > at { piezas.push(HOLE.into()); }
+        piezas.push(texto[s - line_start..e - line_start].to_string());
+        at = *e;
+    }
+    if at < fin { piezas.push(HOLE.into()); }
+
+    // Sin huecos, la línea sale igual que en el archivo.
+    if piezas.len() == 1 { return texto.to_string() }
+    format!("{}{}", &texto[..sangria], piezas.join(" "))
+}
+
+#[cfg(test)]
+mod fragment_view_tests {
+    use super::*;
+
+    /// El caso que levantó esto: dos partes en la misma línea.
+    ///
+    /// Concatenadas, esa línea salía **dos veces** y se leía como una duplicación que
+    /// no existe. Son todos los captures de `spring-controller`: el tipo de retorno y
+    /// los parámetros comparten línea siempre que la firma quepa en una.
+    const FIRMA: &str = "class C {\n\tpublic Dto get(String t) {\n\t\treturn null;\n\t}\n}\n";
+
+    /// Las dos partes de la línea 2: `Dto` y `(String t)`.
+    fn dos_partes() -> Ranges {
+        let tipo = FIRMA.find("Dto").unwrap();
+        let par  = FIRMA.find("(String t)").unwrap();
+        rangos(&[(tipo, tipo + 3), (par, par + 10)])
+    }
+
+    fn rangos(pares: &[(usize, usize)]) -> Ranges {
+        Ranges::new(pares.iter()
+            .map(|&(start, end)| bilink_format::ByteRange { start, end })
+            .collect()).unwrap()
+    }
+
+    #[test]
+    fn una_linea_compartida_por_dos_partes_sale_una_vez() {
+        let v = fragment_view(FIRMA, &dos_partes(), 0, 0);
+        assert_eq!(v.lines().filter(|l| l.contains("Dto")).count(), 1, "{v}");
+    }
+
+    /// Y lo que no entró se ve, que es lo que vuelve legible el límite entre partes.
+    #[test]
+    fn lo_que_no_entra_adentro_de_una_linea_sale_como_hueco() {
+        let v = fragment_view(FIRMA, &dos_partes(), 0, 0);
+        let linea = v.lines().next().unwrap();
+        assert!(linea.contains("... Dto ... (String t) ..."),
+                "el `public`, el nombre y el `{{` son huecos: {linea}");
+    }
+
+    /// **La sangría se conserva y nunca es hueco.** Es espacio en blanco, no aporta
+    /// contenido, y sin ella el código no se lee.
+    #[test]
+    fn la_sangria_se_conserva_y_no_se_vuelve_hueco() {
+        let v = fragment_view(FIRMA, &dos_partes(), 0, 0);
+        let linea = v.lines().next().unwrap();
+        let tras_numero = linea.split_once(":   ").unwrap().1;
+        assert!(tras_numero.starts_with('\t'), "la sangría va tal cual: {linea:?}");
+        assert!(!tras_numero.starts_with("..."), "y no se cuenta como hueco: {linea:?}");
+    }
+
+    /// La línea lleva su número, que es lo que `get` no daba y la vista previa sí.
+    #[test]
+    fn cada_linea_lleva_su_numero() {
+        let v = fragment_view(FIRMA, &dos_partes(), 0, 0);
+        assert!(v.starts_with("2:"), "{v}");
+    }
+
+    /// Una parte que cubre la línea entera sale igual que en el archivo.
+    #[test]
+    fn una_parte_que_cubre_la_linea_entera_no_lleva_huecos() {
+        let src = "uno\ndos\ntres\n";
+        let at = src.find("dos").unwrap();
+        let v = fragment_view(src, &Ranges::one(at, at + 3), 0, 0);
+        assert_eq!(v, "2:   dos\n", "{v:?}");
+    }
+
+    /// **Dos tramos lejanos llevan `⋮` en el medio**, o se leen como contiguos.
+    #[test]
+    fn dos_tramos_lejanos_muestran_el_salto() {
+        let a = FIRMA.find("class").unwrap();
+        let b = FIRMA.find("return null;").unwrap();
+        let v = fragment_view(FIRMA, &rangos(&[(a, a + 5), (b, b + 12)]), 0, 0);
+        assert!(v.contains(SKIP), "el salto tiene que verse: {v}");
+    }
+
+    /// Una línea de contexto no la toca ninguna parte, y sale **entera**: llenarla de
+    /// huecos diría que se capturó un pedazo, y no se capturó ninguno.
+    #[test]
+    fn el_contexto_sale_entero_y_sin_huecos() {
+        let src = "uno\ndos\ntres\n";
+        let at = src.find("dos").unwrap();
+        let v = fragment_view(src, &Ranges::one(at, at + 3), 1, 1);
+        assert_eq!(v, "1:   uno\n2:   dos\n3:   tres\n", "{v:?}");
+    }
+}
