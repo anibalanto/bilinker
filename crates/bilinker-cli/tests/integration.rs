@@ -5282,3 +5282,112 @@ fn the_method_name_comes_from_between_the_captured_parts() {
             "el nombre del método desempata a los hermanos:\n{out}");
     assert!(!out.contains("GetMapping"), "y no es el de la anotación:\n{out}");
 }
+
+// ─── task `3e`: filtrar el listado ────────────────────────────────────────────
+
+/// Un workspace con dos endpoints, que es el mínimo para que filtrar signifique algo.
+fn workspace_with_two_endpoints() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Service.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/public-api/user\")\n",
+        "public class Service {\n",
+        "\n",
+        "    @GetMapping(\"/permissions/from-token\")\n",
+        "    public List<PublicAuthorityDto> getPermissions(String token)\n",
+        "    { return null; }\n",
+        "\n",
+        "    @PostMapping(\"/booking/cancel\")\n",
+        "    public String cancelBooking(String id)\n",
+        "    { return null; }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "dos"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    for pos in ["6:5", "10:5"] {
+        run_in(&root, &["chain", "new", "--yes",
+                        "--tip", "docs/spec.md:1:1",
+                        "--as.1", "spring-controller",
+                        "--tip", &format!("src/Service.java:{pos}")]);
+    }
+    run_in(&root, &["check", "."]);
+    (tmp, root)
+}
+
+/// **El filtro que motivó todo**: encontrar una entre muchas por su nombre.
+#[test]
+fn chain_list_filters_by_alias_text() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking"]);
+    assert!(out.contains("/booking/cancel"), "{out}");
+    assert!(!out.contains("/permissions/"), "y deja afuera la otra:\n{out}");
+    assert!(out.contains("1 de 2"), "dice cuántas de cuántas:\n{out}");
+}
+
+/// Sin distinguir mayúsculas: nadie se acuerda de cómo estaba escrito.
+#[test]
+fn the_text_filter_ignores_case() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "BOOKING"]);
+    assert!(out.contains("/booking/cancel"), "{out}");
+}
+
+/// **Los dos ejes de tipo son independientes.** `--as` es con qué receta se capturó;
+/// `--link` es qué clase de extremo es.
+#[test]
+fn the_two_type_axes_filter_different_things() {
+    let (_t, root) = workspace_with_two_endpoints();
+
+    let (out, _, _) = run_in(&root, &["chain", "list", "--as", "spring-controller"]);
+    assert!(out.contains("2 de 2"), "las dos se capturaron con el plugin:\n{out}");
+
+    let (out, _, _) = run_in(&root, &["chain", "list", "--as", "interface"]);
+    assert!(out.contains("0 de 2"), "ninguna con ese generador:\n{out}");
+
+    // Y el otro eje, sobre las mismas cadenas: los dos extremos son captures.
+    let (out, _, _) = run_in(&root, &["chain", "list", "--link", "capture"]);
+    assert!(out.contains("2 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--link", "abstract"]);
+    assert!(out.contains("0 de 2"), "no hay punta abierta acá:\n{out}");
+}
+
+/// **Se combinan con Y**, que es lo que permite bajar de 98 a una sin salir del
+/// comando.
+#[test]
+fn filters_accumulate() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking", "--as", "spring-controller"]);
+    assert!(out.contains("1 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "booking", "--as", "interface"]);
+    assert!(out.contains("0 de 2"), "el que no matchea corta:\n{out}");
+}
+
+/// Por estado: *"qué quedó sin aceptar"*.
+#[test]
+fn chain_list_filters_by_state() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "--state", "pendiente"]);
+    assert!(out.contains("2 de 2"), "recién creadas, las dos pendientes:\n{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--state", "ok"]);
+    assert!(out.contains("0 de 2"), "{out}");
+}
+
+/// Por archivo o subárbol: *"qué hay bilinkeado bajo `src/`"*.
+#[test]
+fn chain_list_filters_by_subtree() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list", "--under", "src/"]);
+    assert!(out.contains("2 de 2"), "{out}");
+    let (out, _, _) = run_in(&root, &["chain", "list", "--under", "no/existe/"]);
+    assert!(out.contains("0 de 2"), "{out}");
+}
+
+/// **Sin filtros el listado es el de siempre**, y no dice "0 de N": el conteo sólo
+/// tiene sentido cuando hay algo contra qué compararlo.
+#[test]
+fn without_filters_the_listing_is_unchanged() {
+    let (_t, root) = workspace_with_two_endpoints();
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(!out.contains(" de 2"), "sin filtro no hay conteo:\n{out}");
+}
