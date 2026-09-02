@@ -969,8 +969,7 @@ mod tests {
             link: Some(format!("capture {aprobado}").parse().unwrap()),
             hash: "deadbeef".into(),
             hash_ast: None,
-            hash_n1: None,
-            hash_ast_n1: None,
+            n: None,
         });
         bl.write(&bilink_format::BiLink::path_in(layer, "uuid1")).unwrap();
 

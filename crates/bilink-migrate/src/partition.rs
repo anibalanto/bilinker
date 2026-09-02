@@ -176,15 +176,18 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
             hash_ast: hash_ast.clone(),
             // El cierre de firma es posterior al formato 1: no hay nada que traer,
             // y fabricarlo pediría resolver tipos, que una migración no hace.
-            hash_n1: None,
-            hash_ast_n1: None,
+            n: None,
         }),
         None => { p.pending += 1; None }
     };
 
     // `name.N` pasa a ser `name` adentro de su endpoint: es un dato de una punta
     // y ahora hay dónde ponerlo.
-    Ok(v2::Endpoint { link, accepted, name: name.clone() })
+    //
+    // `as` no se puede traer y tampoco deducir: el formato 1 no lo escribía, y qué
+    // generador produjo una query no se lee de la query. Su ausencia dice
+    // exactamente eso —no se sabe con qué se capturó—, que es lo cierto.
+    Ok(v2::Endpoint { link, accepted, name: name.clone(), r#as: None })
 }
 
 /// El capture que el endpoint estructural del bilink vecino aprueba.

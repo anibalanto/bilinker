@@ -22,6 +22,13 @@ pub struct Declaration {
     pub kind: Option<String>,
     /// El `name` de cada tip, en el orden en que se pasaron.
     pub name: [Option<String>; 2],
+    /// El nombre del generador que capturó cada tip: lo que dijo `--as.N`.
+    ///
+    /// Va acá y no adentro del tip porque **es declaración y no ubicación**: el
+    /// generador ya hizo lo suyo cuando este struct llega, y lo que queda es dejar
+    /// escrito con qué se hizo. Sin `--as`, ninguno — que es lo que dice un capture
+    /// del núcleo, y lo que dice todo archivo escrito antes de este campo.
+    pub r#as: [Option<String>; 2],
     /// El uuid del bilink remoto, cuando un tip es `repo`. En una cadena local se
     /// genera; cruzando la frontera se toma del proveedor, porque **el uuid
     /// compartido es el rendezvous**.
@@ -71,6 +78,8 @@ pub fn chain_new(
         bl.kind = decl.kind.clone();
         bl.endpoint.get_mut(0).name = decl.name[0].clone();
         bl.endpoint.get_mut(1).name = decl.name[1].clone();
+        bl.endpoint.get_mut(0).r#as = decl.r#as[0].clone();
+        bl.endpoint.get_mut(1).r#as = decl.r#as[1].clone();
         let path = bilink_path(root, &all_layers[0], &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -97,8 +106,13 @@ pub fn chain_new(
         bl.kind = decl.kind.clone();
         // El `name` de un tip viaja con el endpoint estructural, que es el 0 en el
         // primer nodo y el 1 en el último. Los mids no llevan ninguno.
-        if i == 0        { bl.endpoint.get_mut(0).name = decl.name[0].clone(); }
-        if i == n - 1    { bl.endpoint.get_mut(1).name = decl.name[1].clone(); }
+        //
+        // El `as` viaja igual, y por una razón más fuerte: dice con qué se capturó
+        // un fragmento, y un mid no captura ninguno.
+        if i == 0        { bl.endpoint.get_mut(0).name = decl.name[0].clone();
+                           bl.endpoint.get_mut(0).r#as = decl.r#as[0].clone(); }
+        if i == n - 1    { bl.endpoint.get_mut(1).name = decl.name[1].clone();
+                           bl.endpoint.get_mut(1).r#as = decl.r#as[1].clone(); }
         let path = bilink_path(root, layer, &uuid);
         bl.write(&path)?;
         created.push(path);

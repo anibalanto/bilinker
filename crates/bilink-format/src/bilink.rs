@@ -1,6 +1,6 @@
 //! El archivo `<uuid>.yaml`: una declaración y dos decisiones.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -103,6 +103,23 @@ pub struct Endpoint {
     /// Etiqueta del rol de este extremo. Inerte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Con qué generador se capturó este extremo: el nombre que tomó `--as.N`.
+    /// Inerte.
+    ///
+    /// **Es la receta, no el valor.** Lo que el generador sabe componer —la ruta de
+    /// un endpoint, su verbo— sale del fragmento cada vez que se lee, que es lo que
+    /// no puede mentir. Guardar el valor lo dejaría envejecer en silencio, porque
+    /// este campo no entra en ningún hash; guardar con qué componerlo no envejece.
+    ///
+    /// **Se guarda y no se deduce al leer.** Un generador sabe decir si tiene algo
+    /// que decir sobre un nodo, y eso sirve para sugerir y nunca para elegir: si al
+    /// escribir se rechaza adivinar cuál es, deducirlo al leer es adivinar lo mismo
+    /// sin nadie mirando la sugerencia.
+    ///
+    /// Que nombre un generador que no está instalado **no es un error**: es un dato
+    /// que no se pudo usar. El capture resuelve igual y `check` contesta igual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#as: Option<String>,
 }
 
 /// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
@@ -128,26 +145,88 @@ pub struct Accepted {
     /// Sólo donde hay gramática tree-sitter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_ast: Option<String>,
-    /// El **vecindario de nivel 1**: los tipos que la firma menciona, plegados.
+    /// El **vecindario de nivel 1**: los tipos que la firma menciona, un salto.
     ///
     /// Es un valor que bilinker guarda y compara **sin poder calcularlo por su
     /// cuenta** — resolver un tipo hasta su declaración es trabajo de language
     /// server. Se compara, no se resuelve: el mismo patrón que un `accepted.link`
     /// de endpoint layer, que lleva una copia opaca de un id ajeno.
     ///
-    /// Ausente donde el fragmento no tiene firma resoluble: prosa, un DTO, un
-    /// lenguaje sin anotaciones de tipo. Ver `concepts/accept.md` § "El cierre de
-    /// firma".
+    /// **Un campo con tres estados**, y los niveles adentro. Ver `N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hash_n1: Option<String>,
-    /// Ídem sobre las s-expressions de los vecinos, y **todo-o-nada**.
+    pub n: Option<N>,
+}
+
+/// El vecindario, con sus tres estados — y el tercero es que este campo no esté.
+///
+/// Escrito como campos sueltos —`hash_n1`, `hash_ast_n1` y una marca aparte—
+/// quedaban representables combinaciones que no significan nada: un fold de ASTs sin
+/// el fold de textos que lo acompaña, y una renuncia conviviendo con el valor al que
+/// se renunció. **Que ningún código las produzca no es lo mismo que que no se puedan
+/// escribir**, y el YAML lo escribe cualquiera a mano.
+///
+/// **El nivel 0 —el fragmento— no entra.** Se hashea igual que un vecino y la
+/// escalera queda tentadora, pero es obligatorio, no se puede renunciar, y sale de
+/// tree-sitter y no de un language server. Adentro del mapa, `n: {}` sería una
+/// aceptación sin contenido aprobado. Ver `concepts/accept.md` § "El nivel 0 no
+/// entra".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum N {
+    /// `n: declined` — alguien aceptó sin vecindario, a propósito.
     ///
-    /// Presente sólo si **todos** los vecinos tienen gramática. Si a alguno le
-    /// falta, un cambio real en ése movería `hash_n1` y no éste, y eso se leería
-    /// como "sólo formateo" cuando no lo fue — un falso RESTYLED es peor que
+    /// **Va en el contenedor y no adentro de un nivel**, porque la renuncia es una
+    /// sola y es del 1 para arriba: el nivel 2 son los campos de los tipos que el 1
+    /// resuelve, así que renunciar al 1 deja al 2 sin base. Escrita adentro del
+    /// nivel 1 decía *"el nivel 1 fue renunciado"* cuando quiere decir *"el
+    /// vecindario fue renunciado"* — y obligaba a preguntarse qué pasa con el 2.
+    Declined(DeclinedMark),
+    /// `n: {1: {…}, 2: {…}}` — se resolvió, por nivel.
+    Levels(BTreeMap<u8, Neighbourhood>),
+}
+
+/// El literal `declined`, y nada más.
+///
+/// Un enum de un solo valor y no un `bool`: `declined: true` obligaría a decidir qué
+/// significa `false`, y no significa nada — la ausencia ya dice lo otro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DeclinedMark {
+    Declined,
+}
+
+/// Los dos folds de **un nivel**, que van juntos o no van.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Neighbourhood {
+    /// SHA-256 plegado de los vecinos, en orden de identidad.
+    pub hash: String,
+    /// Ídem sobre sus s-expressions, y **todo-o-nada**.
+    ///
+    /// Presente sólo si **todos** los vecinos del nivel tienen gramática. Si a
+    /// alguno le falta, un cambio real en ése movería `hash` y no éste, y eso se
+    /// leería como "sólo formateo" cuando no lo fue — un falso RESTYLED es peor que
     /// ningún estado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hash_ast_n1: Option<String>,
+    pub hash_ast: Option<String>,
+}
+
+impl N {
+    /// La renuncia, sin tener que nombrar el marcador.
+    pub fn declined() -> Self { Self::Declined(DeclinedMark::Declined) }
+
+    /// El vecindario de un nivel, si se adquirió.
+    pub fn level(&self, k: u8) -> Option<&Neighbourhood> {
+        match self { Self::Levels(m) => m.get(&k), Self::Declined(_) => None }
+    }
+
+    /// Un solo nivel, que es el único que hoy se resuelve.
+    pub fn of_level_1(nb: Neighbourhood) -> Self {
+        Self::Levels(BTreeMap::from([(1u8, nb)]))
+    }
+
+    /// Si hay algún nivel adquirido.
+    pub fn is_acquired(&self) -> bool { matches!(self, Self::Levels(_)) }
 }
 
 impl Accepted {
@@ -160,8 +239,7 @@ impl Accepted {
         self.link == other.link
             && self.hash == other.hash
             && self.hash_ast == other.hash_ast
-            && self.hash_n1 == other.hash_n1
-            && self.hash_ast_n1 == other.hash_ast_n1
+            && self.n == other.n
     }
 }
 
@@ -179,8 +257,8 @@ impl BiLink {
         Self {
             kind: None,
             endpoint: Endpoints {
-                zero: Endpoint { link: link0, accepted: None, name: None },
-                one:  Endpoint { link: link1, accepted: None, name: None },
+                zero: Endpoint { link: link0, accepted: None, name: None, r#as: None },
+                one:  Endpoint { link: link1, accepted: None, name: None, r#as: None },
             },
         }
     }
@@ -257,8 +335,7 @@ mod tests {
             link: Some(ep("capture abc123")),
             hash: "c00e0760".into(),
             hash_ast: Some("1b9e44a2".into()),
-            hash_n1: None,
-            hash_ast_n1: None,
+            n: None,
         });
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();
@@ -335,5 +412,94 @@ mod tests {
         let raw = "endpoint:\n  0: {link: capture a}\n  1: {link: capture b}\nresolved_at: 2026-01-01\n";
         let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
         assert!(err.contains("resolved_at"), "{err}");
+    }
+}
+
+/// Los tres estados de `n`, en el archivo.
+///
+/// Es un enum **untagged**: la forma del valor lo discrimina, un string o un mapa.
+/// Vale probarlo por separado porque untagged falla en silencio si las dos variantes
+/// se pisan, y acá no se pisan por construcción.
+#[cfg(test)]
+mod n_shape_tests {
+    use super::*;
+
+    fn round_trip(n: Option<N>) -> (String, Option<N>) {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Holder {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            n: Option<N>,
+        }
+        let y = serde_yaml_ng::to_string(&Holder { n }).unwrap();
+        let back: Holder = serde_yaml_ng::from_str(&y).unwrap();
+        (y, back.n)
+    }
+
+    /// Adquirido: un mapa con los dos folds.
+    #[test]
+    fn an_acquired_neighbourhood_is_keyed_by_level() {
+        let n = Some(N::of_level_1(Neighbourhood {
+            hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()),
+        }));
+        let (y, back) = round_trip(n.clone());
+        assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n    hash_ast: 88e834c4\n");
+        assert_eq!(back, n);
+    }
+
+    /// Y `hash_ast` es opcional **adentro**: todo-o-nada sobre los vecinos, no sobre
+    /// el campo entero.
+    #[test]
+    fn the_ast_fold_is_optional_inside_a_level() {
+        let n = Some(N::of_level_1(Neighbourhood { hash: "96c765b9".into(), hash_ast: None }));
+        let (y, back) = round_trip(n.clone());
+        assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n");
+        assert_eq!(back, n);
+    }
+
+    /// **La puerta que el mapa deja abierta**: un nivel 2 es una clave más, y no una
+    /// forma nueva. No se resuelve todavía; lo que se prueba es que la forma lo
+    /// admite sin cambiar nada.
+    #[test]
+    fn a_second_level_is_one_more_key() {
+        let n = Some(N::Levels(BTreeMap::from([
+            (1u8, Neighbourhood { hash: "96c765b9".into(), hash_ast: Some("88e834c4".into()) }),
+            (2u8, Neighbourhood { hash: "4b1e0d77".into(), hash_ast: None }),
+        ])));
+        let (y, back) = round_trip(n.clone());
+        assert_eq!(y, "n:\n  1:\n    hash: 96c765b9\n    hash_ast: 88e834c4\n  2:\n    hash: 4b1e0d77\n");
+        assert_eq!(back, n);
+    }
+
+    /// La renuncia: un string, y nada más.
+    #[test]
+    fn a_decline_is_the_bare_word() {
+        let (y, back) = round_trip(Some(N::declined()));
+        assert_eq!(y, "n: declined\n");
+        assert_eq!(back, Some(N::declined()));
+    }
+
+    /// Ausente es el tercer estado, y no se serializa.
+    #[test]
+    fn absent_is_the_third_state() {
+        let (y, back) = round_trip(None);
+        assert_eq!(y, "{}\n");
+        assert_eq!(back, None);
+    }
+
+    /// **Lo que el plegado vuelve imposible.** Los tres estados que la forma plana
+    /// dejaba escribir ya no tienen dónde ir: un fold de ASTs sin su fold de textos
+    /// no parsea, porque `hash` es obligatorio adentro del mapa.
+    #[test]
+    fn an_ast_fold_without_its_text_fold_cannot_be_written() {
+        let r: Result<N, _> = serde_yaml_ng::from_str("1:\n  hash_ast: 88e834c4\n");
+        assert!(r.is_err(), "un hash_ast suelto no es un nivel");
+    }
+
+    /// Y una renuncia no puede convivir con el valor al que se renunció: son
+    /// variantes del mismo campo, no dos campos.
+    #[test]
+    fn a_decline_cannot_carry_a_hash() {
+        let r: Result<N, _> = serde_yaml_ng::from_str("declined:\n  hash: 96c765b9\n");
+        assert!(r.is_err(), "o se renunció, o hay niveles");
     }
 }

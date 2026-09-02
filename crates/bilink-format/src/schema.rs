@@ -89,6 +89,53 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // *conservarlos*: `Accepted` tiene `deny_unknown_fields`, así que le falla y le
     // falla explícito — la versión es lo que le permite decir por qué.
     ("3.4.0", "d9f899c1df0be5b3b18691ed67ced79d9b82f31ecacbf8728df0c0c6c28083db"),
+    // 3.5.0 agrega `accepted.n1`, con un solo valor: `declined`. Dice que alguien
+    // **renunció** al vecindario, y no que el fragmento no tenga uno.
+    //
+    // **Aditivo, y sube igual.** Un parser de 3.4.0 no puede leer el campo —
+    // `deny_unknown_fields`— así que falla explícito y la versión le dice por qué.
+    // Lo que no puede pasar es que lo ignore: leería la renuncia como *"este
+    // fragmento no tiene firma resoluble"*, que es la confusión que el campo existe
+    // para cerrar.
+    //
+    // No hay migración: ningún archivo existente lo lleva, y su ausencia sigue
+    // significando lo que significaba.
+    ("3.5.0", "685a031d0ef3c40f6af7549f092bb9a244b2c17f9b514ee215ecb02d7d3ccb3c"),
+    // 3.6.0 pliega el vecindario en **un** campo con tres estados: `n1` adquirido
+    // —`{hash, hash_ast}`—, `n1: declined`, o ausente. Reemplaza a `hash_n1`,
+    // `hash_ast_n1` y la marca suelta que 3.5.0 había agregado.
+    //
+    // **No es aditivo, y aun así no hay migración**: al 2026-09-01 no existe un solo
+    // archivo con `hash_n1` escrito. Se verificó sobre `.bilink/` de accreta y de las
+    // cinco capas impl, y la razón de fondo es que escribirlo pide un language server
+    // corriendo, que todavía no pasó en ningún repo. La ventana se cierra sola el día
+    // que alguien acepte con el daemon prendido — de ahí que el cambio de forma vaya
+    // ahora y no después.
+    ("3.6.0", "cb3afb41005b3a860b6f7595af3978fcdd08e83c5e0fd55bf46100d0ac432366"),
+    // 3.7.0 mete los niveles adentro del campo: `n: {1: {hash, hash_ast}}`, y la
+    // renuncia pasa al contenedor — `n: declined` en vez de `n1: declined`.
+    //
+    // **La renuncia es del vecindario entero**, del nivel 1 para arriba, y escrita
+    // adentro del nivel 1 decía otra cosa. Con un solo nivel las dos frases coinciden;
+    // con dos, la de adentro obliga a preguntar qué pasa con el 2.
+    //
+    // Sigue sin haber migración, y por tercera y última vez por el mismo motivo: no
+    // existe un solo archivo con vecindario escrito. La ventana se cierra el día que
+    // alguien acepte con un language server prendido.
+    ("3.7.0", "e1e221f6b62f0b60aadcf7deef97b7134e7795823c99256f10b7f077548df0f1"),
+    // 3.8.0 agrega `as` al endpoint: con qué generador se capturó ese extremo.
+    //
+    // **Aditivo, y sube igual**, por el motivo de 3.1.0: ningún archivo existente lo
+    // lleva, su ausencia significa "no se sabe con qué se capturó", y no hay
+    // migración. Lo que un parser de 3.7.0 no puede hacer es *conservarlo*:
+    // `Endpoint` tiene `deny_unknown_fields`, así que le falla explícito y la
+    // versión le dice por qué.
+    //
+    // Es el primer campo del formato que registra **quién produjo** un dato en vez
+    // de qué dato es, y no contradice que un capture no deje rastro: el capture no
+    // puede llevarlo porque su id es su contenido, y el bilink sí porque su id es un
+    // UUID. La limitación era mecánica, no un principio.
+    ("3.8.0", "f288aa28b5f5846fbb20e6195938b3b2e15ea3487a9acf1a750cc7afb064b3e0"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

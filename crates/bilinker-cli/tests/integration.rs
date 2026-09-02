@@ -267,7 +267,7 @@ fn as_interface_ignores_the_body_and_sees_the_return_type() {
     ]);
     assert!(ok, "{stderr}");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "{stderr}");
 
     let java = root.join("src/Service.java");
@@ -280,6 +280,76 @@ fn as_interface_ignores_the_body_and_sees_the_return_type() {
     fs::write(&java, src.replace("List<PublicAuthorityDto>", "List<HSIRoleInfoDto>")).unwrap();
     let (out, _, _) = run_in(&root, &["check", "."]);
     assert!(out.contains("ALTERED"), "el tipo de retorno sí:\n{out}");
+}
+
+/// El generador desaparece, y el bilink deja escrito cuál era.
+///
+/// El capture sigue sin decirlo —su id es su contenido, no hay dónde—, pero el
+/// bilink tiene UUID y ahí sí: sin esto, nada que lea el bilink después puede saber
+/// qué clase de cosa tiene enfrente.
+#[test]
+fn chain_new_records_the_generator_of_each_tip() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let bl = bilink_file_of(&root);
+    assert!(bl.contains("as: interface"), "falta el as del tip que lo pidió:\n{bl}");
+    // El otro tip no lo lleva: lo capturó el núcleo, y el núcleo no es un generador.
+    assert_eq!(bl.matches("as:").count(), 1, "sólo el tip que lo pidió:\n{bl}");
+}
+
+/// Y sobrevive a un `accept`, como todo campo inerte.
+#[test]
+fn the_generator_survives_an_accept() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    let bl = bilink_file_of(&root);
+    assert!(bl.contains("as: interface"), "accept perdió el as:\n{bl}");
+}
+
+/// Un `as` que nombra un generador que no está instalado es un dato que no se pudo
+/// usar, **nunca un error**.
+///
+/// Es la mitad de "y no deja rastro" que sigue valiendo entera: perder el plugin
+/// cuesta lo que el plugin sabía, no el vínculo. El capture resuelve igual porque es
+/// una query normal, y `check` contesta igual porque el campo es inerte.
+#[test]
+fn a_generator_that_is_not_installed_costs_the_alias_and_not_the_link() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
+
+    // Un generador que este binario no tiene: lo escribió otro que sí lo tenía.
+    let path = bilink_path_of(&root);
+    let bl = fs::read_to_string(&path).unwrap();
+    fs::write(&path, bl.replace("as: interface", "as: django-view")).unwrap();
+
+    // La capa estaba limpia y sigue limpia: el campo es inerte, así que no puede
+    // mover ningún estado — ni siquiera nombrando algo que no existe.
+    let (out, stderr, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "un as desconocido no puede mover ningún estado:\n{stderr}{out}");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root))]);
+    assert!(ok, "el capture resuelve igual:\n{stderr}");
+    assert!(out.contains("getPermissions"), "y devuelve el fragmento:\n{out}");
 }
 
 /// En un lenguaje sin entrada en la tabla, falla y dice qué hacer.
@@ -354,7 +424,7 @@ fn a_spring_endpoint_survives_a_rename_and_sees_the_shape() {
     ]);
     assert!(ok, "{stderr}");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "{stderr}");
 
     let java = root.join("src/Service.java");
@@ -387,13 +457,120 @@ fn a_spring_endpoint_sees_the_class_prefix() {
     ]);
     assert!(ok, "{stderr}");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     let java = root.join("src/Service.java");
     let src = fs::read_to_string(&java).unwrap();
     fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
     let (out, _, _) = run_in(&root, &["check", "."]);
     assert!(out.contains("ALTERED"), "la ruta compuesta entra en el fragmento:\n{out}");
+}
+
+/// Un controller donde la anotación de verbo no lleva literal: la ruta la aporta
+/// entera la clase, y dos hermanos comparten la misma anotación pelada. Es la mitad
+/// de la superficie de una api real.
+fn workspace_with_markerless_verbs() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Booking.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/public-api/institution/booking\")\n",
+        "public class Booking {\n",
+        "\n",
+        "    @GetMapping\n",
+        "    public List<PublicAppointmentListDto> getBookingList(Integer id)\n",
+        "    {\n",
+        "        return svc.list(id);\n",
+        "    }\n",
+        "\n",
+        "    @GetMapping\n",
+        "    public List<PublicProfessionalDto> getProfessionals(Integer id)\n",
+        "    {\n",
+        "        return svc.professionals(id);\n",
+        "    }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "ctl"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    (tmp, root)
+}
+
+/// **Sin literal en la anotación, el ancla es el nombre del método** — y sólo el
+/// ancla. Sin esto el único predicado sería el nombre de la anotación, que no
+/// distingue un endpoint de sus hermanos.
+#[test]
+fn a_markerless_verb_anchors_on_the_method_name() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let cap = capture_of(&root, "Booking.java");
+    let name = cap.lines().find(|l| l.contains("getBookingList"))
+        .unwrap_or_else(|| panic!("el nombre no entró en la query:\n{cap}"));
+    assert!(name.contains("#eq?"), "el nombre entra como predicado:\n{cap}");
+    // Y **no** como `@target`, que es el reparto inverso al de `--as interface`:
+    // renombrar no cambia el contrato del endpoint, así que tiene que ser una
+    // relocalización y no un cambio de contenido.
+    assert!(!name.contains("@target"), "el nombre ancla y no es contenido:\n{cap}");
+}
+
+/// Y ancla en el hermano correcto: tocar el otro endpoint de la misma clase, con la
+/// misma anotación pelada, no mueve nada.
+#[test]
+fn a_markerless_endpoint_ignores_its_sibling() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    let java = root.join("src/Booking.java");
+    let edit = |from: &str, to: &str| {
+        let src = fs::read_to_string(&java).unwrap();
+        fs::write(&java, src.replace(from, to)).unwrap();
+    };
+
+    edit("PublicProfessionalDto", "OtraCosaDto");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "el contrato del hermano no es el propio:\n{out}");
+
+    edit("PublicAppointmentListDto", "HSIRoleInfoDto");
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "el propio tipo de retorno sí:\n{out}");
+}
+
+/// **Lo que cuesta**: sin literal propio no hay nada más que distinga un endpoint de
+/// sus hermanos, así que renombrar el método rompe el ancla y hay que repuntarlo. El
+/// precio de no anclar sería peor — un vínculo que apunta a otro endpoint y contesta
+/// OK.
+#[test]
+fn renaming_a_markerless_endpoint_costs_a_recapture() {
+    let (_tmp, root) = workspace_with_markerless_verbs();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Booking.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
+
+    let java = root.join("src/Booking.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("getBookingList", "listarTurnos")).unwrap();
+
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "renombrar rompe el ancla, y eso se reporta:\n{out}");
+    assert!(out.contains("UNRESOLVED"), "y el capture es el que no resuelve:\n{out}");
 }
 
 /// La detección sugiere y no elige: sin `--as`, el capture es el nodo entero.
@@ -486,12 +663,34 @@ fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 fn capture_file_of(root: &std::path::Path) -> String {
+    capture_of(root, "Service.java")
+}
+
+/// El único bilink de la capa: los fixtures crean una cadena y nada más.
+fn bilink_path_of(root: &std::path::Path) -> std::path::PathBuf {
+    std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .expect("no hay bilink en la capa")
+}
+
+fn bilink_file_of(root: &std::path::Path) -> String {
+    std::fs::read_to_string(bilink_path_of(root)).unwrap()
+}
+
+fn uuid_of(root: &std::path::Path) -> String {
+    bilink_path_of(root).file_stem().unwrap().to_string_lossy().into_owned()
+}
+
+/// El capture de un archivo cualquiera, para los fixtures que no usan `Service.java`.
+fn capture_of(root: &std::path::Path, file: &str) -> String {
     let dir = root.join(".bilink/capture");
     std::fs::read_dir(&dir).unwrap()
         .filter_map(|e| e.ok())
         .map(|e| std::fs::read_to_string(e.path()).unwrap())
-        .find(|c| c.contains("Service.java"))
-        .expect("no hay capture de Service.java")
+        .find(|c| c.contains(file))
+        .unwrap_or_else(|| panic!("no hay capture de {file}"))
 }
 
 /// Dos posiciones en un tip son **una** query con dos `@target`, anclada una vez.
@@ -544,7 +743,7 @@ fn drift_fires_only_for_the_captured_parts() {
     ]);
     assert!(ok, "{stderr}");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept failed:\n{stderr}");
 
     let java = root.join("src/Service.java");
@@ -696,7 +895,7 @@ fn check_marks_altered_after_accept_and_file_change() {
     run_in(&root, &["check", "."]);
 
     // Aceptar de verdad, no simularlo: es lo que escribe el bloque `accepted`.
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept failed:\n{stderr}");
 
     let (stdout, _, ok) = run_in(&root, &["check", "."]);
@@ -928,7 +1127,7 @@ fn accepted_chain_on_spec(root: &std::path::Path) -> String {
         .to_string();
 
     run_in(root, &["check", "."]);
-    let (_, stderr, ok) = run_in(root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept failed:\n{stderr}");
 
     uuid[..8].to_string()
@@ -1131,7 +1330,7 @@ fn accepted_layer() -> (tempfile::TempDir, PathBuf, String) {
         .expect("uuid").trim().to_string();
 
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept failed:\n{stderr}");
     (tmp, root, uuid)
 }
@@ -1171,15 +1370,15 @@ fn check_layer_chain_dirty_when_hash_differs() {
     // no hay nada que copiar hasta que el vecino aceptó.
     let impl_layer = root.join(".stratum/impl");
     run_in(&impl_layer, &["check", "."]);
-    run_in(&impl_layer, &["accept", "."]);
+    run_in(&impl_layer, &["accept", "--no-n1", "."]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     assert!(run_in(&root, &["check", "."]).2, "la cadena tiene que arrancar limpia");
 
     // El fragmento del otro extremo cambia y se re-acepta ahí.
     write_and_commit(&root, ".stratum/impl/src/lib.rs", "pub fn run() { let x = 1; }\n");
     run_in(&impl_layer, &["check", "."]);
-    run_in(&impl_layer, &["accept", "."]);
+    run_in(&impl_layer, &["accept", "--no-n1", "."]);
 
     // Desde la capa spec, el endpoint `path` ve que su copia dejó de coincidir.
     assert!(check_states(&root).contains("CHAIN_DIRTY"),
@@ -1257,7 +1456,7 @@ fn check_detects_reanchored_when_anchor_is_renamed() {
         "    println!(\"{} {} {}\", x, y, z);\n}\n"));
     run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     write_and_commit(&root, "src/lib.rs", concat!(
         "pub fn transformar() {\n",
@@ -1278,7 +1477,7 @@ fn reanchored_survives_a_rename_plus_small_edit() {
         "    println!(\"{} {} {}\", x, y, z);\n}\n"));
     run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     // Renombrada **y** con una línea distinta: la similitud tiene que aguantar.
     write_and_commit(&root, "src/lib.rs", concat!(
@@ -1301,7 +1500,7 @@ fn ambiguous_candidates_stay_unanchored() {
         "pub fn procesar() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n"));
     run_in(&root, &["chain", "new", "--tip", "src/lib.rs:1:1", "--tip", "docs/spec.md"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     // Dos candidatos idénticos entre sí: ninguno le saca margen al otro.
     write_and_commit(&root, "src/lib.rs", concat!(
@@ -1504,6 +1703,9 @@ fn chain_new_omits_the_declaration_fields_when_not_given() {
 
     assert!(!bl.contains("kind:"), "un kind ausente no se escribe:\n{bl}");
     assert!(!bl.contains("name:"), "un name ausente no se escribe:\n{bl}");
+    // Sin `--as` no hay generador, y "no se sabe con qué se capturó" se dice
+    // callándose: escribir el campo vacío diría otra cosa.
+    assert!(!bl.contains("as:"), "un as ausente no se escribe:\n{bl}");
 }
 
 /// Y sobreviven a un `accept`: son inertes, así que nada los toca.
@@ -1515,7 +1717,7 @@ fn the_declaration_fields_survive_an_accept() {
         "--kind", "governs", "--name.0", "la-decision",
     ]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     let bl = std::fs::read_dir(root.join(".bilink")).unwrap()
         .filter_map(|e| e.ok())
@@ -1540,7 +1742,7 @@ fn get_diff_works_with_a_cold_cache() {
     let (_t, root) = isolated_git_workspace();
     run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     let uuid = sole_uuid(&root);
 
     fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
@@ -1563,7 +1765,7 @@ fn check_still_tells_expanded_from_altered_with_a_cold_cache() {
     let (_t, root) = isolated_git_workspace();
     run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     // El fragmento crece alrededor de lo aceptado.
     let spec = fs::read_to_string(root.join("docs/spec.md")).unwrap();
@@ -1606,7 +1808,7 @@ fn the_approximate_diff_works_from_a_nested_layer() {
 
     run_in(&nested, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", ">impl/src/lib.rs:1:1"]);
     run_in(&nested, &["check", "."]);
-    run_in(&nested, &["accept", "."]);
+    run_in(&nested, &["accept", "--no-n1", "."]);
     let uuid = sole_uuid(&nested);
 
     // El hash aceptado deja de verificar en ese commit: es lo que empuja al
@@ -1642,7 +1844,7 @@ fn appending_a_yaml_item_does_not_move_the_one_above() {
     // El **último** item: es el que cambia de forma cuando aparece otro abajo.
     run_in(&root, &["chain", "new", "--tip", "docs/spec.yaml:6:3", "--tip", "src/Service.java:2:5"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     let spec = fs::read_to_string(root.join("docs/spec.yaml")).unwrap();
     fs::write(root.join("docs/spec.yaml"),
@@ -2113,7 +2315,7 @@ fn the_cache_does_not_return_states_from_the_previous_branch() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     run_in(&root, &["sync"]);
     let accepted_in_main = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
 
@@ -2128,7 +2330,7 @@ fn the_cache_does_not_return_states_from_the_previous_branch() {
     assert!(states.contains("ALTERED"),
             "la cache de main no puede contestar por otra: el fragmento acá sí cambió:\n{states}");
 
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     assert_eq!(fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap(),
                accepted_in_main,
                "aceptar el mismo contenido en dos HEADs escribe los mismos valores");
@@ -2249,7 +2451,7 @@ fn decide_on(root: &Path, branch: &str, content: &str) {
     fs::write(root.join("src/Service.java"), content).unwrap();
     commit(root, "el fragmento cambia");
     run_in(root, &["check", "."]);
-    let (_, stderr, ok) = run_in(root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló en {branch}:\n{stderr}");
     let (_, stderr, ok) = run_in(root, &["sync"]);
     assert!(ok, "sync falló en {branch}:\n{stderr}");
@@ -2377,7 +2579,7 @@ fn accept_absorbs_in_a_commit_of_its_own_right_before_deciding() {
     let e = rev(&root, "HEAD");
 
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
     // El tip es una decisión: un padre, y nada de código.
@@ -2411,12 +2613,12 @@ fn no_ref_commit_both_absorbs_and_decides() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
     commit(&root, "y la spec también");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     run_in(&root, &["sync"]);
 
     for c in ref_commits(&root, &bref) {
@@ -2439,7 +2641,7 @@ fn an_accept_with_the_project_still_has_a_single_parent() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);          // este absorbe
+    run_in(&root, &["accept", "--no-n1", "."]);          // este absorbe
 
     let tree_before = rev(&root, &format!("{bref}^{{tree}}"));
 
@@ -2448,8 +2650,8 @@ fn an_accept_with_the_project_still_has_a_single_parent() {
               "public class Service {\n    public void run() { int x = 2; }\n}\n").unwrap();
     commit(&root, "otra vez");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);          // este también absorbe
-    run_in(&root, &["accept", "."]);          // y este no tiene nada que hacer
+    run_in(&root, &["accept", "--no-n1", "."]);          // este también absorbe
+    run_in(&root, &["accept", "--no-n1", "."]);          // y este no tiene nada que hacer
 
     let parents = parents_of(&root, &bref);
     assert_eq!(parents.len(), 1, "el tip es la decisión, no la absorción:\n{parents:?}");
@@ -2477,7 +2679,7 @@ fn accept_writes_one_commit_per_acceptance_not_per_invocation() {
 
     let before = rev(&root, &bref);
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
     // Lo nuevo **de la ref**, del más viejo al más nuevo: una absorción y dos
@@ -2524,7 +2726,7 @@ fn the_decisions_of_one_invocation_share_the_code_tree_of_their_absorption() {
 
     let before = rev(&root, &bref);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     for c in git_out(&root, &["rev-list", "--first-parent",
                               &format!("{before}..{bref}")]).lines() {
@@ -2550,7 +2752,7 @@ fn accept_does_not_commit_in_a_repo_that_has_not_cut_over() {
     let after_project_commit = rev(&root, "HEAD");
 
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
     assert_ne!(before, after_project_commit);
@@ -2593,9 +2795,9 @@ fn relayer_moves_the_bilinks_up_without_altering_anything() {
     // **Abajo primero**: un endpoint `path` copia el `accepted` de su vecino, así
     // que no se puede aceptar antes que él.
     run_in(&sub.join(".stratum/impl"), &["check", "."]);
-    run_in(&sub.join(".stratum/impl"), &["accept", "."]);
+    run_in(&sub.join(".stratum/impl"), &["accept", "--no-n1", "."]);
     run_in(&sub, &["check", "."]);
-    run_in(&sub, &["accept", "."]);
+    run_in(&sub, &["accept", "--no-n1", "."]);
 
     // **El check de la raíz no los ve**: para él son otra capa, y no lo dice.
     assert!(!root.join(".bilink").join(format!("{uuid}.yaml")).exists(),
@@ -2806,14 +3008,14 @@ fn history_lists_every_deed_on_a_bilink_with_its_author_and_kind() {
     fs::write(root.join("docs/spec.md"), "# Spec\n\nLo de Ana.\n").unwrap();
     commit(&root, "la spec cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
 
     as_person(&root, "luis");
     fs::write(root.join("src/Service.java"),
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", &format!("{uuid}.1")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
 
     let (out, stderr, ok) = run_in(&root, &["history", &uuid]);
     assert!(ok, "history falló:\n{stderr}");
@@ -2840,7 +3042,7 @@ fn history_filters_to_one_endpoint() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", &format!("{uuid}.1")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
 
     let (todo, _, _) = run_in(&root, &["history", &uuid]);
     let (solo0, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
@@ -2870,7 +3072,7 @@ fn history_reads_a_capture_that_prune_already_removed() {
 
     // Y después de un prune, sigue estando: sale del árbol del commit, no del tip.
     commit(&root, "el rename");
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     run_in(&root, &["capture", "prune"]);
 
     let (h2, _, ok) = run_in(&root, &["history", &format!("{uuid}.0")]);
@@ -2890,7 +3092,7 @@ fn history_degrades_one_deed_at_a_time_over_the_grammar() {
     fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
     commit(&root, "la spec cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
 
     // Y uno de la forma vieja encima.
     pre_grammar_commit(&root, &bref, &uuid, "accept .: 9 endpoint(s)");
@@ -2912,7 +3114,7 @@ fn history_has_a_json_format() {
     fs::write(root.join("docs/spec.md"), "# Spec\n\nLo nuevo.\n").unwrap();
     commit(&root, "la spec cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
 
     let (out, stderr, ok) = run_in(&root, &["history", &uuid, "--format", "json"]);
     assert!(ok, "history --format json falló:\n{stderr}");
@@ -3017,14 +3219,14 @@ fn two_clones_accepting_different_endpoints_converge_and_keep_both_commits() {
 
     // Ana acepta un endpoint y publica.
     run_in(&ana, &["check", "."]);
-    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["accept", "--no-n1", &format!("{uuid}.0")]);
     let de_ana = ref_tip(&ana, &branch);
     let (_, stderr, ok) = run_in(&ana, &["push"]);
     assert!(ok, "el push de Ana falló:\n{stderr}");
 
     // Luis, que partió del mismo commit y no trajo nada, acepta **el otro** endpoint.
     run_in(&luis, &["check", "."]);
-    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    run_in(&luis, &["accept", "--no-n1", &format!("{uuid}.1")]);
     let de_luis = ref_tip(&luis, &branch);
 
     // Su push se rechaza, y el error dice que fue divergencia, no reescritura.
@@ -3063,11 +3265,11 @@ fn two_clones_accepting_the_same_thing_end_up_with_both_names_in_agree() {
     // Los dos aceptan **el mismo endpoint sobre el mismo contenido**: los valores
     // direccionan por contenido, así que coinciden byte a byte.
     run_in(&ana, &["check", "."]);
-    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["accept", "--no-n1", &format!("{uuid}.0")]);
     run_in(&ana, &["push"]);
 
     run_in(&luis, &["check", "."]);
-    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    run_in(&luis, &["accept", "--no-n1", &format!("{uuid}.0")]);
     assert_eq!(agree_of(&luis, &uuid, 0), vec!["luis"]);
 
     let (out, err, ok) = run_in(&luis, &["pull"]);
@@ -3088,7 +3290,7 @@ fn two_clones_accepting_the_same_endpoint_differently_report_a_conflict() {
     let branch = branch_of(&ana);
 
     run_in(&ana, &["check", "."]);
-    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["accept", "--no-n1", &format!("{uuid}.0")]);
     run_in(&ana, &["push"]);
 
     // Luis aprueba **otro** contenido para el mismo endpoint: dos decisiones humanas
@@ -3096,7 +3298,7 @@ fn two_clones_accepting_the_same_endpoint_differently_report_a_conflict() {
     fs::write(luis.join("docs/spec.md"), "# Spec\n\nLo de Luis, que es otra cosa.\n").unwrap();
     commit(&luis, "la spec cambia de otra forma");
     run_in(&luis, &["check", "."]);
-    run_in(&luis, &["accept", &format!("{uuid}.0")]);
+    run_in(&luis, &["accept", "--no-n1", &format!("{uuid}.0")]);
     let antes = ref_tip(&luis, &branch);
 
     let (out, _, ok) = run_in(&luis, &["pull"]);
@@ -3116,11 +3318,11 @@ fn pull_fetches_into_its_own_namespace_and_never_over_the_local_ref() {
     let branch = branch_of(&ana);
 
     run_in(&ana, &["check", "."]);
-    run_in(&ana, &["accept", &format!("{uuid}.0")]);
+    run_in(&ana, &["accept", "--no-n1", &format!("{uuid}.0")]);
     run_in(&ana, &["push"]);
 
     run_in(&luis, &["check", "."]);
-    run_in(&luis, &["accept", &format!("{uuid}.1")]);
+    run_in(&luis, &["accept", "--no-n1", &format!("{uuid}.1")]);
     let propio = ref_tip(&luis, &branch);
 
     run_in(&luis, &["pull", "--dry-run"]);
@@ -3152,7 +3354,7 @@ fn verify_ref_accepts_what_bilinker_writes() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     run_in(&root, &["sync"]);
 
     let (out, ok) = verify(&root, &[&bref]);
@@ -3318,7 +3520,7 @@ fn verify_ref_rejects_a_commit_signed_by_a_key_outside_the_allowlist() {
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
     git(&root, &["config", "commit.gpgsign", "true"]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     git(&root, &["config", "commit.gpgsign", "false"]);
 
     let firmado = rev(&root, &bref);
@@ -3331,7 +3533,7 @@ fn verify_ref_rejects_a_commit_signed_by_a_key_outside_the_allowlist() {
     fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
     commit(&root, "la spec cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     let (out, ok) = verify(&root, &[&format!("{firmado}..{}", rev(&root, &bref)),
                                     "--signers", &allow.display().to_string()]);
@@ -3505,7 +3707,7 @@ fn a_second_endorsement_adds_a_name_and_writes_a_commit() {
     let before = rev(&root, &bref);
 
     as_person(&root, "ana");
-    let (out, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    let (out, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     assert!(ok, "endosar un endpoint OK falló:\n{stderr}");
     assert!(out.contains("agree: ana, t"), "y lo dice:\n{out}");
 
@@ -3524,9 +3726,9 @@ fn blame_attributes_each_endorsement_to_the_commit_that_added_it() {
     let bref = format!("refs/bilink/{}", branch_of(&root));
 
     as_person(&root, "ana");
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     as_person(&root, "pablo");
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
 
     assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "pablo", "t"]);
 
@@ -3564,10 +3766,10 @@ fn endorsing_twice_writes_nothing() {
     let bref = format!("refs/bilink/{}", branch_of(&root));
 
     as_person(&root, "ana");
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     let after_first = rev(&root, &bref);
 
-    let (out, _, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    let (out, _, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     assert!(ok, "repetir no es un error");
     assert!(out.contains("nada que agregar"), "y se dice:\n{out}");
     assert_eq!(after_first, rev(&root, &bref), "no se escribió ningún commit");
@@ -3581,7 +3783,7 @@ fn changing_the_values_empties_the_list() {
     let (_t, root, uuid, _x) = cut_over();
 
     as_person(&root, "ana");
-    run_in(&root, &["accept", &format!("{uuid}.0")]);
+    run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     assert_eq!(agree_of(&root, &uuid, 0), vec!["ana", "t"]);
 
     // El fragmento cambia y alguien más lo aprueba: los anteriores no aprobaron esto.
@@ -3589,7 +3791,7 @@ fn changing_the_values_empties_the_list() {
     commit(&root, "la spec cambia");
     as_person(&root, "pablo");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.0")]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.0")]);
     assert!(ok, "accept falló:\n{stderr}");
 
     assert_eq!(agree_of(&root, &uuid, 0), vec!["pablo"],
@@ -3617,12 +3819,12 @@ fn a_path_endpoint_does_not_copy_the_agree_of_its_neighbour() {
     // Ana aprueba el fragmento, abajo. Pablo aprueba la copia, arriba.
     as_person(&root, "ana");
     run_in(&impl_dir, &["check", "."]);
-    let (_, stderr, ok) = run_in(&impl_dir, &["accept", &format!("{uuid}.1")]);
+    let (_, stderr, ok) = run_in(&impl_dir, &["accept", "--no-n1", &format!("{uuid}.1")]);
     assert!(ok, "accept del fragmento falló:\n{stderr}");
 
     as_person(&root, "pablo");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.1")]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
     assert!(ok, "accept de la copia falló:\n{stderr}");
 
     assert_eq!(agree_of(&impl_dir, &uuid, 1), vec!["ana"], "abajo, quien aprobó el fragmento");
@@ -3670,13 +3872,13 @@ fn every_message_written_on_the_ref_parses_against_the_grammar() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&root, "el fragmento cambia");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
 
     fs::write(root.join("docs/spec.md"), "# Spec\n\nOtro contenido.\n").unwrap();
     commit(&root, "y la spec");
     run_in(&root, &["sync"]);
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "--content", "."]);
+    run_in(&root, &["accept", "--no-n1", "--content", "."]);
 
     let commits = ref_commits(&root, &bref);
     assert!(commits.len() >= 5, "hacen falta varios actos para que valga:\n{commits:?}");
@@ -3755,7 +3957,7 @@ fn the_history_written_before_the_grammar_is_read_as_pre_grammar() {
 
     // Y la ref sigue usable: el acto siguiente escribe con la gramática nueva encima.
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept sobre una ref con historia vieja falló:\n{stderr}");
 
     let msg = git_out(&root, &["log", "-1", "--format=%B", &bref]);
@@ -3846,7 +4048,7 @@ fn log_shows_only_the_acts_of_the_ref() {
         fs::write(root.join("src/Service.java"), content).unwrap();
         commit(&root, msg);
         run_in(&root, &["check", "."]);
-        run_in(&root, &["accept", "."]);
+        run_in(&root, &["accept", "--no-n1", "."]);
     }
 
     let (out, stderr, ok) = run_in(&root, &["log"]);
@@ -3920,7 +4122,7 @@ fn accepted_then_changed() -> (tempfile::TempDir, PathBuf, String, String, Strin
     commit(&root, "B — el contenido que se acepta");
     let b = rev(&root, "HEAD");
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
     // El fragmento cambia después, para que el endpoint quede no-OK y `--diff`
@@ -4024,7 +4226,7 @@ fn without_the_ref_the_same_rebase_loses_the_accepted_text() {
     commit(&root, "B — el contenido que se acepta");
     let b = rev(&root, "HEAD");
     run_in(&root, &["check", "."]);
-    run_in(&root, &["accept", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "la aceptación, en la rama"]);
 
@@ -4190,7 +4392,7 @@ fn accreta_shape() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
     for _ in 0..2 {
         for r in [&impl_dir, &uno, &padre] {
             run_in(r, &["check", "."]);
-            run_in(r, &["accept", "."]);
+            run_in(r, &["accept", "--no-n1", "."]);
         }
     }
     for r in [&impl_dir, &padre] {
@@ -4274,7 +4476,7 @@ fn chain_dirty_propagates_across_a_repo_boundary_between_two_refs() {
               "public class Service {\n    public void run() { int x = 1; }\n}\n").unwrap();
     commit(&impl_dir, "el fragmento del anidado cambia");
     run_in(&impl_dir, &["check", "."]);
-    let (_, stderr, ok) = run_in(&impl_dir, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&impl_dir, &["accept", "--no-n1", "."]);
     assert!(ok, "accept en el anidado falló:\n{stderr}");
 
     assert_ne!(ref_impl_before, rev(&impl_dir, &bref),
@@ -4291,7 +4493,7 @@ fn chain_dirty_propagates_across_a_repo_boundary_between_two_refs() {
     let ref_impl_now = rev(&impl_dir, &bref);
     // El endpoint que propaga es el `path`, que en esta cadena es el `.1`. Se acepta
     // la capa entera, que es lo que alguien tipea.
-    let (_, stderr, ok) = run_in(&uno, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&uno, &["accept", "--no-n1", "."]);
     assert!(ok, "accept del lado del padre falló:\n{stderr}");
     let _ = &uuid;
 
@@ -4385,7 +4587,7 @@ fn a_false_ok_would_silently_skip_the_acceptance() {
 
     let before = fs::read_to_string(&path).unwrap();
     run_in(&root, &["check", "."]);
-    let (_, stderr, ok) = run_in(&root, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
 
     assert_ne!(before, fs::read_to_string(&path).unwrap(),
@@ -4422,7 +4624,7 @@ fn provider_and_consumer() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
         .expect("uuid").trim().to_string();
 
     run_in(&provider, &["check", "."]);
-    run_in(&provider, &["accept", "."]);
+    run_in(&provider, &["accept", "--no-n1", "."]);
     git_commit_all(&provider, "el bilink abstracto");
     corte(&provider);
 
@@ -4482,7 +4684,7 @@ fn accept_bulk_never_touches_the_abstract_endpoint() {
               "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
     commit(&provider, "el fragmento cambia");
     run_in(&provider, &["check", "."]);
-    run_in(&provider, &["accept", "."]);
+    run_in(&provider, &["accept", "--no-n1", "."]);
 
     let bl = fs::read_to_string(provider.join(format!(".bilink/{uuid}.yaml"))).unwrap();
     let after_abstract = bl.split("link: abstract").nth(1).unwrap_or("");
@@ -4515,7 +4717,7 @@ fn the_consumer_stores_two_opaque_hashes_and_an_alias() {
     consume(&consumer, &uuid);
 
     run_in(&consumer, &["check", "."]);
-    let (_, stderr, ok) = run_in(&consumer, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&consumer, &["accept", "--no-n1", "."]);
     assert!(ok, "accept falló:\n{stderr}");
     assert!(check_states(&consumer).trim().is_empty(), "y queda OK");
 
@@ -4533,14 +4735,14 @@ fn the_consumer_sees_drift_only_after_bringing_the_provider() {
     let (_t, provider, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     // El proveedor cambia lo publicado y lo acepta.
     fs::write(provider.join("src/Perm.java"),
               "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
     commit(&provider, "el fragmento cambia");
     run_in(&provider, &["check", "."]);
-    let (_, stderr, ok) = run_in(&provider, &["accept", "."]);
+    let (_, stderr, ok) = run_in(&provider, &["accept", "--no-n1", "."]);
     assert!(ok, "accept del proveedor falló:\n{stderr}");
 
     // Sin traer nada, el consumidor sigue viendo lo que trajo la última vez.
@@ -4562,7 +4764,7 @@ fn the_link_is_rejected_when_the_other_end_stops_being_abstract() {
     let (_t, _p, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     let remote = consumer.join(format!(".bilink/hsi/.bilink/{uuid}.yaml"));
     let text = fs::read_to_string(&remote).unwrap();
@@ -4573,7 +4775,7 @@ fn the_link_is_rejected_when_the_other_end_stops_being_abstract() {
             "la otra punta ya no admite ser ampliada:\n{states}");
 
     // Y aceptar se niega: fijaría el vínculo contra algo que dejó de sostenerlo.
-    let (_, stderr, ok) = run_in(&consumer, &["accept", &format!("{}.0", &uuid[..8])]);
+    let (_, stderr, ok) = run_in(&consumer, &["accept", "--no-n1", &format!("{}.0", &uuid[..8])]);
     assert!(!ok, "aceptar un REJECTED tiene que fallar");
     assert!(stderr.contains("abstract"), "y decir por qué:\n{stderr}");
 }
@@ -4585,7 +4787,7 @@ fn a_removed_remote_bilink_is_broken_and_not_unreachable() {
     let (_t, _p, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     fs::remove_file(consumer.join(format!(".bilink/hsi/.bilink/{uuid}.yaml"))).unwrap();
 
@@ -4640,7 +4842,7 @@ fn two_consumers_share_one_provider_file_that_never_changes() {
     assert!(ok, "el segundo consumidor falló:\n{stderr}");
     run_in(&otro, &["fetch", "hsi"]);
     run_in(&otro, &["check", "."]);
-    run_in(&otro, &["accept", "."]);
+    run_in(&otro, &["accept", "--no-n1", "."]);
     assert!(check_states(&otro).trim().is_empty(), "y queda OK");
 
     // El uuid es el mismo de los dos lados: **es el rendezvous**.
@@ -4670,7 +4872,7 @@ fn the_consumer_refuses_a_provider_format_it_does_not_understand() {
     let (_t, _p, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
     assert!(check_states(&consumer).trim().is_empty(), "arranca limpio");
 
     let version = consumer.join(".bilink/hsi/.bilink/version");
@@ -4698,7 +4900,7 @@ fn the_frontier_is_additive_and_needs_no_migration() {
     let before = fs::read_to_string(&ledger).unwrap_or_default();
 
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     assert_eq!(before, fs::read_to_string(&ledger).unwrap_or_default(),
                "ningún archivo existente usa los tipos nuevos: no hay qué migrar");
@@ -4717,7 +4919,7 @@ fn a_provider_clone_never_enters_the_ref() {
     let (_t, _p, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     // El consumidor corta a la ref con el clon del proveedor ya en el árbol.
     git_commit_all(&consumer, "los bilinks, todavía en la rama");
@@ -4780,13 +4982,13 @@ fn get_diff_crosses_the_frontier_and_deepens_the_clone() {
     let (_t, provider, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     fs::write(provider.join("src/Perm.java"),
               "public class Perm {\n    public boolean can(String op) { return check(op); }\n}\n").unwrap();
     commit(&provider, "el fragmento publicado cambia");
     run_in(&provider, &["check", "."]);
-    run_in(&provider, &["accept", "."]);
+    run_in(&provider, &["accept", "--no-n1", "."]);
     run_in(&consumer, &["fetch", "hsi"]);
 
     let (out, stderr, ok) = run_in(&consumer, &["get", &format!("{}.0", &uuid[..8]), "--diff"]);
@@ -4805,7 +5007,7 @@ fn a_repo_endpoint_diff_does_not_look_in_the_local_history() {
     let (_t, _p, consumer, uuid) = provider_and_consumer();
     consume(&consumer, &uuid);
     run_in(&consumer, &["check", "."]);
-    run_in(&consumer, &["accept", "."]);
+    run_in(&consumer, &["accept", "--no-n1", "."]);
 
     // Con la cache borrada, un endpoint local caería al walk local. Éste no.
     let _ = fs::remove_dir_all(consumer.join(".bilink/cache"));
@@ -4902,7 +5104,7 @@ fn the_catalog_shows_what_a_provider_publishes_with_its_code() {
     let otro = out.lines().find_map(|l| l.strip_prefix("Created chain: "))
         .expect("uuid").trim().to_string();
     run_in(&provider, &["check", "."]);
-    run_in(&provider, &["accept", "."]);
+    run_in(&provider, &["accept", "--no-n1", "."]);
 
     fs::create_dir_all(consumer.join(".bilink")).unwrap();
     let (_, stderr, ok) = run_in(&consumer, &["fetch", "hsi"]);
@@ -4935,7 +5137,7 @@ fn browsing_the_catalog_does_not_widen_the_sparse_set() {
     commit(&provider, "otro fragmento publicable");
     run_in(&provider, &["chain", "new", "--tip", "src/Turnos.java:2:5", "--tip", "abstract"]);
     run_in(&provider, &["check", "."]);
-    run_in(&provider, &["accept", "."]);
+    run_in(&provider, &["accept", "--no-n1", "."]);
 
     fs::create_dir_all(consumer.join(".bilink")).unwrap();
     run_in(&consumer, &["fetch", "hsi"]);

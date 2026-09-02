@@ -3,6 +3,7 @@ name = "bilinker-lsp"
 version = "0.1.0"
 edition = "2021"
 
+license.workspace = true
 [[bin]]
 name = "bilinker-lsp"
 path = "src/main.rs"

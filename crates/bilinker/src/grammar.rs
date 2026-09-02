@@ -105,6 +105,32 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
     }
 }
 
+/// Los node kinds que **llevan una firma resoluble**: un callable con tipo de
+/// retorno y parámetros.
+///
+/// Es lo que separa *"este fragmento no tiene vecindario"* de *"nadie pudo mirarlo"*,
+/// y se contesta con la gramática y sin proveedor — que es lo que permite que el
+/// aviso de `accept` sea preciso en vez de ruido. Ver `concepts/accept.md`
+/// § "Cuándo se adquiere el vecindario".
+///
+/// **Una clase o un DTO no están acá**, y es deliberado: su declaración no menciona
+/// tipos del modo en que los menciona una firma. Es el mismo corte que hace la spec
+/// cuando enumera dónde `n1` está legítimamente ausente.
+pub fn signature_kinds(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "java" => &["method_declaration", "constructor_declaration"],
+        "rust" => &["function_item", "function_signature_item"],
+        "typescript" | "tsx" => &[
+            "function_declaration",
+            "generator_function_declaration",
+            "method_definition",
+            "method_signature",
+        ],
+        // Prosa, YAML, TOML, texto: no hay firma que resolver.
+        _ => &[],
+    }
+}
+
 /// Returns the field name that holds the "name" identifier for a given node kind.
 pub fn name_field(lang: &str, kind: &str) -> Option<&'static str> {
     match (lang, kind) {
