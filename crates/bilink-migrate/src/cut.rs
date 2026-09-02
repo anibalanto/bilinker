@@ -170,7 +170,11 @@ pub fn exclude_in(repo_root: &Path) -> Result<()> {
 
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let mut out = current.clone();
-    for pat in [".bilink-migrate-*", ".bilink-formato-1"] {
+    // **Un patrón, no un backup por nombre.** Estaba cableado a `.bilink-formato-1`,
+    // que era el único backup que existía; el segundo corte dejó
+    // `.bilink-formato-3/` sin excluir y apareció como untracked. Un glob cubre los
+    // que vengan sin que nadie tenga que acordarse.
+    for pat in [".bilink-migrate-*", ".bilink-formato-*"] {
         if !current.lines().any(|l| l.trim() == pat) {
             if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
             out.push_str(pat);
