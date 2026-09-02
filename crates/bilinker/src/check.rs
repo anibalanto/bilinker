@@ -285,9 +285,17 @@ fn compare_contract(
     // Y separa cuatro casos que antes se veían iguales: un vecino que entró, uno que
     // salió, uno que se mudó de archivo y uno que se renombró. Los cuatro movían el
     // fold y ninguno decía cuál había sido.
-    let declarados = declared.and_then(|d| d.level(1)).map(|l| l.link.ids()).unwrap_or(&[]);
-    if declarados != expected.link.ids() {
-        return Ok(Some(EndpointState::ContractRelocated));
+    //
+    // **Con `unknown` de cualquiera de los dos lados no hay comparación que hacer**, y
+    // no hacerla no es que coincida: no hay ids de un lado. Eso no queda limpio —hay un
+    // capture que alguien tiene que acuñar— y por ahora sale por el casillero de
+    // *difieren*, que es el que no miente sobre estar bien. El nombre propio de ese
+    // estado va con el reporte de `check`, no con el formato.
+    let declarados = declared.and_then(|d| d.level(1))
+        .map(|l| l.link.known_ids()).unwrap_or(Some(&[]));
+    match (declarados, expected.link.known_ids()) {
+        (Some(hoy), Some(aprobado)) if hoy == aprobado => {}
+        _ => return Ok(Some(EndpointState::ContractRelocated)),
     }
 
     let (Some(p), Some(range)) = (nb, range) else {
@@ -878,7 +886,7 @@ mod tests {
             agree: Default::default(), link: None,
             hash: String::new(), hash_ast: None,
             n: Some(N::of_level_1(Neighbourhood {
-                link: CaptureSet::new(vec!["a".repeat(32)]),
+                link: CaptureSet::new(vec!["a".repeat(32)]).into(),
                 hash: "loquesea".into(), hash_ast: None,
             })),
         };

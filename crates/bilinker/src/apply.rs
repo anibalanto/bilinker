@@ -171,9 +171,21 @@ fn neighbourhood_fix(
     let Some(locs) = p.of(layer, &cap.file, &at)? else { return Ok(None) };
     let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(None) };
 
-    let declarado = e.n.as_ref().and_then(|d| d.level(1)).map(|l| l.link.ids()).unwrap_or(&[]);
-    if declarado == f.n.link.ids() { return Ok(None); }
-    Ok(Some(Fix::Neighbourhood { to: f.n.link, captures: f.captures }))
+    let declarado = e.n.as_ref().and_then(|d| d.level(1)).map(|l| l.link.known_ids());
+    // **Un `unknown` declarado no se arregla acá todavía.** Llenarlo con los captures
+    // que el proveedor alcanza es un fix legítimo y es su propia decisión: pide que
+    // `check` sepa nombrar el estado, y que las posiciones que se le pasan al proveedor
+    // sean las de los vecinos y no las de la firma misma. Hasta entonces `apply` no lo
+    // toca: el `unknown` es un estado seguro, y un capture que apunta al propio
+    // fragmento deja el endpoint verde afirmando algo falso.
+    let declarado = match declarado {
+        Some(None)      => return Ok(None),
+        Some(Some(ids)) => ids,
+        None            => &[],
+    };
+    let Some(hoy) = f.n.link.captures() else { return Ok(None) };
+    if declarado == hoy.ids() { return Ok(None); }
+    Ok(Some(Fix::Neighbourhood { to: hoy.clone(), captures: f.captures }))
 }
 
 /// Acuña el capture nuevo y repunta el `link`. **No toca `accepted`.**

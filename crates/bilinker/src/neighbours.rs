@@ -231,7 +231,7 @@ pub fn fold(layer: &Path, locs: &[Location]) -> Result<Option<Folded>> {
 
     Ok(Some(Folded {
         n: Neighbourhood {
-            link: bilink_format::CaptureSet::new(captures.iter().map(|(id, ..)| id.clone()).collect()),
+            link: bilink_format::CaptureSet::new(captures.iter().map(|(id, ..)| id.clone()).collect()).into(),
             hash:     hash::sha256(texts.as_bytes()),
             hash_ast: every_one_has_a_grammar.then(|| hash::sha256(sexps.as_bytes())),
         },
@@ -334,7 +334,8 @@ mod tests {
         let d = layer_with(&[("a.rs", "struct A { x: u8 }\n"), ("nota.txt", "hola\n")]);
         let con = fold(d.path(), &[loc("a.rs", "A", 0, 18)]).unwrap().unwrap().n;
         assert!(con.hash_ast.is_some());
-        assert_eq!(con.link.len(), 1, "el vecino capturable está nombrado");
+        assert_eq!(con.link.known_ids().expect("resuelto, no unknown").len(), 1,
+                   "el vecino capturable está nombrado");
 
         let sin = fold(d.path(), &[loc("a.rs", "A", 0, 18), loc("nota.txt", "nota", 0, 5)]).unwrap();
         assert!(sin.is_none(), "todo o nada: no se saltea un vecino");

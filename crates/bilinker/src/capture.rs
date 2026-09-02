@@ -89,10 +89,13 @@ pub fn orphans(layer: &Path) -> Result<Vec<(String, Capture)>> {
 }
 
 /// Los captures que el vecindario **declarado** de un endpoint nombra.
+///
+/// Un nivel `unknown` no nombra ninguno — no tiene ids que nombrar — y por eso no
+/// mantiene vivo a nadie.
 fn declared_neighbours(e: &bilink_format::Endpoint) -> Vec<String> {
     e.n.iter()
         .flat_map(|n| n.0.values())
-        .flat_map(|lvl| lvl.link.ids().iter().cloned())
+        .flat_map(|lvl| lvl.link.known_ids().into_iter().flatten().cloned())
         .collect()
 }
 
@@ -102,7 +105,7 @@ fn declared_neighbours(e: &bilink_format::Endpoint) -> Vec<String> {
 /// el mismo motivo por el que `n` es un campo con tres estados y no dos.
 fn accepted_neighbours(a: &bilink_format::Accepted) -> Vec<String> {
     let Some(bilink_format::N::Levels(levels)) = a.n.as_ref() else { return Vec::new() };
-    levels.values().flat_map(|nb| nb.link.ids().iter().cloned()).collect()
+    levels.values().flat_map(|nb| nb.link.known_ids().into_iter().flatten().cloned()).collect()
 }
 
 pub(crate) fn git_path_from_repo_root(layer: &Path, file: &str) -> String {
@@ -1091,7 +1094,7 @@ mod prune_neighbourhood_tests {
             hash: h.into(),
             hash_ast: None,
             n: Some(N::of_level_1(Neighbourhood {
-                link: CaptureSet::new(vec![v.to_string()]),
+                link: CaptureSet::new(vec![v.to_string()]).into(),
                 hash: h.into(),
                 hash_ast: None,
             })),
