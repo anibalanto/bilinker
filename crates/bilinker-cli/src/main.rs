@@ -107,6 +107,21 @@ enum Command {
         rollback: bool,
     },
 
+    /// Devolver el vecindario de nivel 1 que la migración 003 descartó
+    RestoreN1 {
+        /// Capa a restituir (default: directorio actual)
+        path: Option<PathBuf>,
+        /// Alcanzar también las capas descendientes
+        #[arg(long)]
+        recursive: bool,
+        /// Mostrar qué escribiría sin escribir nada
+        #[arg(long)]
+        dry_run: bool,
+        /// De dónde leer el backup (default: .bilink-formato-3/ de la capa)
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
+
     /// Manage chains of bilinks
     Chain {
         #[command(subcommand)]
@@ -1297,6 +1312,63 @@ Eliminar? [y/N] ");
             }
         }
 
+        Command::RestoreN1 { path, recursive, dry_run, from } => {
+            let base = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+                .unwrap_or_else(|| cwd.clone());
+            let layers = if recursive {
+                bilinker::index::layer_roots(&base)
+            } else {
+                vec![base.clone()]
+            };
+
+            let mut total = 0usize;
+            let mut salteados = 0usize;
+            let mut capas = 0usize;
+            for layer in &layers {
+                let r = bilinker::restore_n1::restore(layer, from.as_deref(), dry_run)?;
+                if r.no_backup || (r.restored.is_empty() && r.skipped.is_empty()) { continue; }
+                capas += 1;
+                let rel = layer.strip_prefix(&base).unwrap_or(layer);
+                println!("{}", if rel.as_os_str().is_empty() { Path::new(".") } else { rel }.display());
+                println!("  restituidos  {}", r.restored.len());
+                if !r.skipped.is_empty() {
+                    // **Nombrados y no sólo contados.** Un endpoint que se queda en
+                    // `declined` es limpio para `check`, así que esta salida es el
+                    // único registro de que ahí había un contrato.
+                    let mut por_motivo: std::collections::BTreeMap<String, Vec<&str>> =
+                        Default::default();
+                    for (at, why) in &r.skipped {
+                        por_motivo.entry(why.to_string()).or_default().push(at);
+                    }
+                    for (why, ats) in &por_motivo {
+                        println!("  salteados    {}   {why}", ats.len());
+                        println!("    {}", ats.join("  "));
+                    }
+                }
+                total += r.restored.len();
+                salteados += r.skipped.len();
+
+                // La restitución devuelve decisiones, así que cierra con un commit
+                // sobre la ref como cualquier otra — uno por capa, porque trae un
+                // conjunto de vuelta de una sola vez.
+                if !dry_run && r.touched() {
+                    // **La prosa lleva los salteados por uuid.** Un endpoint que se
+                    // queda en `declined` no vuelve a aparecer en ningún inventario,
+                    // así que este commit es el único registro de que ahí había un
+                    // contrato y de que no se pudo devolver.
+                    let mut prosa = format!("{} restituidos", r.restored.len());
+                    if !r.skipped.is_empty() {
+                        prosa.push_str(&format!(", {} salteados: {}", r.skipped.len(),
+                            r.skipped.iter().map(|(at, _)| at.as_str())
+                                .collect::<Vec<_>>().join(" ")));
+                    }
+                    seal_with(layer, bilinker::refmsg::RefCommand::RestoreN1, Some(prosa))?;
+                }
+            }
+            let verbo = if dry_run { "se restituirían" } else { "restituidos" };
+            println!("\n{total} {verbo}, {salteados} salteados, en {capas} capa(s)");
+        }
+
         Command::Migrate { path, recursive, dry_run, cut, rollback } => {
             let base = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
                 .unwrap_or_else(|| cwd.clone());
@@ -1919,11 +1991,22 @@ fn short(sha: &str) -> &str {
 /// No hace nada en un repo que todavía no cortó a la ref, donde los bilinks viven en
 /// la rama del proyecto y commitearlos es de quien trabaja.
 fn seal(cwd: &Path, command: bilinker::refmsg::RefCommand) -> anyhow::Result<()> {
+    seal_with(cwd, command, None)
+}
+
+/// Ídem, con prosa. La lleva quien commitea **un conjunto** de decisiones de una vez:
+/// sin endpoint en la primera línea, lo que dice qué se decidió es la prosa.
+fn seal_with(
+    cwd: &Path,
+    command: bilinker::refmsg::RefCommand,
+    prose: Option<String>,
+) -> anyhow::Result<()> {
     if let Some(a) = bilinker::bilink_ref::absorb_act(cwd)? {
         eprintln!("commit:  refs/bilink/… @ {}  (absorbe {})", short(&a.sha),
                   short(a.absorbed.as_deref().unwrap_or("?")));
     }
-    let message = bilinker::refmsg::RefMessage::new(command).with_invocation(invocation());
+    let mut message = bilinker::refmsg::RefMessage::new(command).with_invocation(invocation());
+    if let Some(p) = prose { message = message.with_prose(p); }
     match bilinker::bilink_ref::decide_act(cwd, &message)? {
         Some(c) if c.wrote => eprintln!("commit:  refs/bilink/… @ {}", short(&c.sha)),
         _ => {}

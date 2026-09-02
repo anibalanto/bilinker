@@ -34,6 +34,7 @@ pub mod pull;
 pub mod push;
 pub mod query;
 pub mod relayer;
+pub mod restore_n1;
 pub mod refmsg;
 pub mod review;
 pub mod state;
