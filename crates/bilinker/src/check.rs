@@ -254,7 +254,15 @@ fn compare_contract(
         return Ok(Some(EndpointState::ContractUnverified));
     };
 
-    let folded = crate::neighbours::fold(layer, &locs)?;
+    // **Se descartan los captures**: `check` no escribe nada versionado, y acuñar es
+    // de `accept`. Lo que se compara son los hashes, que se calculan igual.
+    //
+    // Y `None` es *"no se puede representar"* —algún vecino sin capture posible—, que
+    // cae en el mismo casillero que un daemon caído: no pude.
+    let Some(folded) = crate::neighbours::fold(layer, &locs)? else {
+        return Ok(Some(EndpointState::ContractUnverified));
+    };
+    let folded = folded.n;
     if folded.hash == expected.hash {
         return Ok(None);
     }
@@ -840,7 +848,7 @@ mod tests {
     #[test]
     fn an_unchanged_neighbourhood_says_nothing() {
         let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
-        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap();
+        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap().unwrap().n;
         let acc = accepted_with(Some(hoy.hash.clone()), hoy.hash_ast.clone());
         let p = Fake(Some(locs));
         assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(), None);
@@ -850,7 +858,7 @@ mod tests {
     #[test]
     fn a_field_added_to_the_dto_moves_the_contract() {
         let antes = dto_layer("pub struct Dto { pub x: u8 }");
-        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap().unwrap().n;
 
         let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8, pub y: u8 }");
         let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);
@@ -863,7 +871,7 @@ mod tests {
     #[test]
     fn a_reformatted_neighbourhood_is_restyled_and_not_altered() {
         let antes = dto_layer("pub struct Dto { pub x: u8 }");
-        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap();
+        let viejo = crate::neighbours::fold(antes.0.path(), &antes.3).unwrap().unwrap().n;
 
         let (d, cap, range, locs) = dto_layer("pub struct Dto {\n    pub x: u8\n}");
         let acc = accepted_with(Some(viejo.hash), viejo.hash_ast);

@@ -301,10 +301,27 @@ pub fn capture_as(
     sel:  &[((usize, usize), (usize, usize))],
     generator: Option<&dyn CaptureGenerator>,
 ) -> Result<CaptureResult> {
+    let commit = git::head_commit_for_file(root, file)?;
+    let (capture, hash, ranges) = compute(root, file, sel, generator)?;
+    Ok(CaptureResult { capture, hash, commit, ranges })
+}
+
+/// El capture y su hash, **sin preguntarle nada a git**.
+///
+/// `capture_as` es esto más el commit del archivo. Van separados porque hay un
+/// llamador que no necesita el commit y **no debería necesitar un repo**: el
+/// [vecindario](crate::neighbours) acuña un capture por vecino sólo para tener su id
+/// y su hash, y pedir git ahí ataría el cálculo del id a que el archivo esté
+/// versionado — que no tiene nada que ver.
+pub fn compute(
+    root: &Path,
+    file: &str,
+    sel:  &[((usize, usize), (usize, usize))],
+    generator: Option<&dyn CaptureGenerator>,
+) -> Result<(Capture, String, bilink_format::Ranges)> {
     if sel.is_empty() {
         bail!("un capture con posiciones necesita al menos una");
     }
-    let commit = git::head_commit_for_file(root, file)?;
     let file_path = root.join(file);
     let source = std::fs::read_to_string(&file_path)
         .with_context(|| format!("reading {}", file_path.display()))?;
@@ -386,15 +403,7 @@ pub fn capture_as(
     // del fragmento que `check` va a comparar, no el de los nodos crudos.
     let hash = hash::sha256(ranges.text(&source).as_bytes());
 
-    Ok(CaptureResult {
-        capture: Capture {
-            file:   file.to_string(),
-            query:  Some(query),
-        },
-        hash,
-        commit,
-        ranges,
-    })
+    Ok((Capture { file: file.to_string(), query: Some(query) }, hash, ranges))
 }
 
 /// Lo que un generador necesita saber del archivo, y nada más.
