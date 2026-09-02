@@ -131,6 +131,25 @@ pub fn signature_kinds(lang: &str) -> &'static [&'static str] {
     }
 }
 
+/// Los campos de una firma que **llevan tipos**, y por lo tanto las posiciones donde
+/// tiene sentido preguntarle al proveedor por el vecindario.
+///
+/// Son los mismos que captura [`--as interface`](../../../commands/chain.md), y no es
+/// casualidad: el vecindario es de la firma, así que un capture de contrato y un
+/// capture de la función entera tienen que preguntar en las mismas posiciones.
+///
+/// **El nombre no está**, por el mismo motivo que `--as spring-controller` lo deja
+/// afuera del contrato: cómo se llama la función no es un tipo que la firma
+/// mencione. Preguntar ahí devuelve la función misma, que es un vecino de sí misma.
+pub fn signature_fields(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "java" => &["type", "parameters"],
+        "rust" => &["return_type", "parameters"],
+        "typescript" | "tsx" => &["return_type", "parameters"],
+        _ => &[],
+    }
+}
+
 /// Returns the field name that holds the "name" identifier for a given node kind.
 pub fn name_field(lang: &str, kind: &str) -> Option<&'static str> {
     match (lang, kind) {
