@@ -12,4 +12,5 @@ endpoint:
       agree:
       - Anibal
       link: capture fc7a4a40db2a29741652ec6aa2644558
-      hash: 25a729341e50f4dd11f37c706def055fd41b91c55fc19b853dd9dc3af0e548e8
+      hash: c54ff041315891c49d8e61afdea846353d43bad07098150b3cbbd2a1735d2f7a
+      n: declined
