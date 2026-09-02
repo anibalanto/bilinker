@@ -282,6 +282,76 @@ fn as_interface_ignores_the_body_and_sees_the_return_type() {
     assert!(out.contains("ALTERED"), "el tipo de retorno sí:\n{out}");
 }
 
+/// El generador desaparece, y el bilink deja escrito cuál era.
+///
+/// El capture sigue sin decirlo —su id es su contenido, no hay dónde—, pero el
+/// bilink tiene UUID y ahí sí: sin esto, nada que lea el bilink después puede saber
+/// qué clase de cosa tiene enfrente.
+#[test]
+fn chain_new_records_the_generator_of_each_tip() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let bl = bilink_file_of(&root);
+    assert!(bl.contains("as: interface"), "falta el as del tip que lo pidió:\n{bl}");
+    // El otro tip no lo lleva: lo capturó el núcleo, y el núcleo no es un generador.
+    assert_eq!(bl.matches("as:").count(), 1, "sólo el tip que lo pidió:\n{bl}");
+}
+
+/// Y sobrevive a un `accept`, como todo campo inerte.
+#[test]
+fn the_generator_survives_an_accept() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    let bl = bilink_file_of(&root);
+    assert!(bl.contains("as: interface"), "accept perdió el as:\n{bl}");
+}
+
+/// Un `as` que nombra un generador que no está instalado es un dato que no se pudo
+/// usar, **nunca un error**.
+///
+/// Es la mitad de "y no deja rastro" que sigue valiendo entera: perder el plugin
+/// cuesta lo que el plugin sabía, no el vínculo. El capture resuelve igual porque es
+/// una query normal, y `check` contesta igual porque el campo es inerte.
+#[test]
+fn a_generator_that_is_not_installed_costs_the_alias_and_not_the_link() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--no-n1", "."]);
+
+    // Un generador que este binario no tiene: lo escribió otro que sí lo tenía.
+    let path = bilink_path_of(&root);
+    let bl = fs::read_to_string(&path).unwrap();
+    fs::write(&path, bl.replace("as: interface", "as: django-view")).unwrap();
+
+    // La capa estaba limpia y sigue limpia: el campo es inerte, así que no puede
+    // mover ningún estado — ni siquiera nombrando algo que no existe.
+    let (out, stderr, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "un as desconocido no puede mover ningún estado:\n{stderr}{out}");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root))]);
+    assert!(ok, "el capture resuelve igual:\n{stderr}");
+    assert!(out.contains("getPermissions"), "y devuelve el fragmento:\n{out}");
+}
+
 /// En un lenguaje sin entrada en la tabla, falla y dice qué hacer.
 #[test]
 fn as_interface_refuses_a_language_it_does_not_know() {
@@ -594,6 +664,23 @@ fn workspace_with_three_methods() -> (tempfile::TempDir, std::path::PathBuf) {
 
 fn capture_file_of(root: &std::path::Path) -> String {
     capture_of(root, "Service.java")
+}
+
+/// El único bilink de la capa: los fixtures crean una cadena y nada más.
+fn bilink_path_of(root: &std::path::Path) -> std::path::PathBuf {
+    std::fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .expect("no hay bilink en la capa")
+}
+
+fn bilink_file_of(root: &std::path::Path) -> String {
+    std::fs::read_to_string(bilink_path_of(root)).unwrap()
+}
+
+fn uuid_of(root: &std::path::Path) -> String {
+    bilink_path_of(root).file_stem().unwrap().to_string_lossy().into_owned()
 }
 
 /// El capture de un archivo cualquiera, para los fixtures que no usan `Service.java`.
@@ -1616,6 +1703,9 @@ fn chain_new_omits_the_declaration_fields_when_not_given() {
 
     assert!(!bl.contains("kind:"), "un kind ausente no se escribe:\n{bl}");
     assert!(!bl.contains("name:"), "un name ausente no se escribe:\n{bl}");
+    // Sin `--as` no hay generador, y "no se sabe con qué se capturó" se dice
+    // callándose: escribir el campo vacío diría otra cosa.
+    assert!(!bl.contains("as:"), "un as ausente no se escribe:\n{bl}");
 }
 
 /// Y sobreviven a un `accept`: son inertes, así que nada los toca.

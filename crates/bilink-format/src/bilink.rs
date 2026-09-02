@@ -103,6 +103,23 @@ pub struct Endpoint {
     /// Etiqueta del rol de este extremo. Inerte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Con qué generador se capturó este extremo: el nombre que tomó `--as.N`.
+    /// Inerte.
+    ///
+    /// **Es la receta, no el valor.** Lo que el generador sabe componer —la ruta de
+    /// un endpoint, su verbo— sale del fragmento cada vez que se lee, que es lo que
+    /// no puede mentir. Guardar el valor lo dejaría envejecer en silencio, porque
+    /// este campo no entra en ningún hash; guardar con qué componerlo no envejece.
+    ///
+    /// **Se guarda y no se deduce al leer.** Un generador sabe decir si tiene algo
+    /// que decir sobre un nodo, y eso sirve para sugerir y nunca para elegir: si al
+    /// escribir se rechaza adivinar cuál es, deducirlo al leer es adivinar lo mismo
+    /// sin nadie mirando la sugerencia.
+    ///
+    /// Que nombre un generador que no está instalado **no es un error**: es un dato
+    /// que no se pudo usar. El capture resuelve igual y `check` contesta igual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#as: Option<String>,
 }
 
 /// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
@@ -240,8 +257,8 @@ impl BiLink {
         Self {
             kind: None,
             endpoint: Endpoints {
-                zero: Endpoint { link: link0, accepted: None, name: None },
-                one:  Endpoint { link: link1, accepted: None, name: None },
+                zero: Endpoint { link: link0, accepted: None, name: None, r#as: None },
+                one:  Endpoint { link: link1, accepted: None, name: None, r#as: None },
             },
         }
     }

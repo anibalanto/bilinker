@@ -123,6 +123,19 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // existe un solo archivo con vecindario escrito. La ventana se cierra el día que
     // alguien acepte con un language server prendido.
     ("3.7.0", "e1e221f6b62f0b60aadcf7deef97b7134e7795823c99256f10b7f077548df0f1"),
+    // 3.8.0 agrega `as` al endpoint: con qué generador se capturó ese extremo.
+    //
+    // **Aditivo, y sube igual**, por el motivo de 3.1.0: ningún archivo existente lo
+    // lleva, su ausencia significa "no se sabe con qué se capturó", y no hay
+    // migración. Lo que un parser de 3.7.0 no puede hacer es *conservarlo*:
+    // `Endpoint` tiene `deny_unknown_fields`, así que le falla explícito y la
+    // versión le dice por qué.
+    //
+    // Es el primer campo del formato que registra **quién produjo** un dato en vez
+    // de qué dato es, y no contradice que un capture no deje rastro: el capture no
+    // puede llevarlo porque su id es su contenido, y el bilink sí porque su id es un
+    // UUID. La limitación era mecánica, no un principio.
+    ("3.8.0", "f288aa28b5f5846fbb20e6195938b3b2e15ea3487a9acf1a750cc7afb064b3e0"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

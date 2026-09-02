@@ -1615,8 +1615,18 @@ Eliminar? [y/N] ");
                 // `kind` y `name` son declaración, y todo archivo de bilinker sale
                 // de un comando: sin estos flags la única forma de poblarlos sería
                 // abrir el YAML, que es lo que el formato no le pide a nadie.
+                //
+                // El `as` no se pide con un flag propio: es el nombre que ya tomó
+                // `--as.N`, anotado donde quede legible después. Y se acomoda a
+                // dónde cayó cada tip: con `--from-repo` el `--tip` que se escribió
+                // es uno solo y termina en la posición 1, porque la 0 la ocupa el
+                // repo del proveedor — que no captura nada y por eso no lleva `as`.
+                let as_by_tip = match from_repo {
+                    Some(_) => [None, as0],
+                    None    => [as0, as1],
+                };
                 let decl = bilinker::chain::Declaration {
-                    kind, name: [name0, name1], uuid: from_repo_uuid,
+                    kind, name: [name0, name1], r#as: as_by_tip, uuid: from_repo_uuid,
                 };
                 let result = bilinker::chain::chain_new(&cwd, &tips, &mids, &decl)?;
 
