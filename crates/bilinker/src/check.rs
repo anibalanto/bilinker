@@ -17,6 +17,30 @@ use crate::cache::Cache;
 use crate::state::{CaptureState, EndpointState};
 use crate::{grammar, hash, query};
 
+/// Lo que `check` encontró: lo que verificó, y lo que no pudo leer.
+///
+/// **Las dos listas viajan juntas porque el conteo de una no es el total.** Un
+/// `check` que verificó 203 de 206 no puede decir `all clean (206)` ni
+/// `all clean (203)` a secas: el primero miente sobre lo que miró, el segundo
+/// esconde lo que no pudo mirar.
+#[derive(Debug)]
+pub struct Checked {
+    pub results: Vec<CheckResult>,
+    pub unreadable: Vec<Unreadable>,
+}
+
+/// Un bilink que no parsea. **Es un estado, no una ausencia.**
+///
+/// Saltearlo para no abortar el recorrido de los demás está bien; saltearlo en
+/// silencio hace que *"no pude leer 206"* salga igual que *"no hay ninguno"*.
+#[derive(Debug)]
+pub struct Unreadable {
+    /// Relativo a la capa: es lo que se imprime.
+    pub path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Debug)]
 pub struct CheckResult {
     pub uuid: String,
     pub state0: EndpointState,
@@ -32,7 +56,7 @@ impl CheckResult {
 }
 
 /// Verifica una capa y deja el resultado en la cache.
-pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
+pub fn check(root: &Path, path: &Path) -> Result<Checked> {
     check_with(root, path, None)
 }
 
@@ -44,8 +68,22 @@ pub fn check(root: &Path, path: &Path) -> Result<Vec<CheckResult>> {
 /// no es suyo — por lo mismo que no clona.
 pub fn check_with(
     root: &Path, path: &Path, nb: crate::neighbours::Provider<'_>,
-) -> Result<Vec<CheckResult>> {
+) -> Result<Checked> {
     let layer = if path.join(".bilink").is_dir() { path.to_path_buf() } else { root.to_path_buf() };
+
+    // **La versión de la capa se compara antes de abrir un bilink.** Un archivo de
+    // formato viejo puede parsear bien y significar otra cosa, así que deducirlo del
+    // parseo no alcanza: la versión es el único dato que discrimina en esa dirección.
+    //
+    // Y se pregunta **cuando hay archivos del formato**, que es lo que hace que la
+    // versión importe. Sin `.bilink/`, o con uno que sólo tiene la cache y el
+    // `.gitignore`, no hay nada que se pueda leer con el parser equivocado: `0
+    // bilink(s)` es cierto, y negarse ahí volvería `check` inusable fuera de una capa
+    // y adentro de una recién declarada. Con archivos y sin `version` sí hay algo, y
+    // es formato 1.
+    if bilink_format::has_format_files(&layer) {
+        bilink_format::ensure_readable(&layer)?;
+    }
     // **La cache se invalida sola al cambiar de rama.** Sin esto una capa devuelve
     // estados de la rama anterior en silencio: `git checkout` no toca `.bilink/`, y
     // los estados cacheados describen bilinks que ya no están en el árbol.
@@ -53,6 +91,7 @@ pub fn check_with(
     let mut cache = Cache::load_for(&layer, ref_commit.as_deref());
     cache.ref_commit = ref_commit;
     let mut out = Vec::new();
+    let mut unreadable = Vec::new();
 
     // Un mismo capture se resuelve **una sola vez**, aunque lo referencien varios
     // endpoints. La comparación contra `accepted` sí corre por endpoint, porque
@@ -60,7 +99,20 @@ pub fn check_with(
     let mut resolved: HashMap<String, (CaptureState, Option<Ranges>)> = HashMap::new();
 
     for path in bilink_files(&layer.join(".bilink")) {
-        let Ok(bl) = BiLink::load(&path) else { continue };
+        // Se saltea para no abortar el recorrido de los demás —igual que un
+        // directorio que no se puede leer— pero **se cuenta y se nombra**: un archivo
+        // roto no es razón para dejar de decir lo que se sabe del resto, ni para
+        // dejar de decir que está roto.
+        let bl = match BiLink::load(&path) {
+            Ok(bl) => bl,
+            Err(e) => {
+                unreadable.push(Unreadable {
+                    path: path.strip_prefix(&layer).unwrap_or(&path).to_path_buf(),
+                    error: e.root_cause().to_string(),
+                });
+                continue;
+            }
+        };
         let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
 
         let mut states = [EndpointState::Pending; 2];
@@ -81,7 +133,7 @@ pub fn check_with(
     }
     cache.save(&layer)?;
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
-    Ok(out)
+    Ok(Checked { results: out, unreadable })
 }
 
 /// Cómo se llama este endpoint, si su generador sabe nombrarlo.
@@ -717,6 +769,73 @@ mod tests {
                    "en prosa el AST no discrimina contenido: no hay RESTYLED que dar");
     }
 
+    // ─── lo que no se puede leer ──────────────────────────────────────────────
+
+    /// **Una capa de otro major no se verifica: se rechaza.**
+    ///
+    /// Un archivo de formato viejo puede parsear bien y significar otra cosa, así que
+    /// leerlo y reportar estados sería inventar.
+    #[test]
+    fn a_layer_of_another_major_is_refused_before_reading_anything() {
+        let (d, cap, _, _) = dto_layer("pub struct Dto { pub x: u8 }");
+        let bl = bilink_format::BiLink::new(
+            format!("capture {}", cap.id()).parse().unwrap(),
+            bilink_format::LinkEndpoint::Abstract);
+        cap.write_in(d.path()).unwrap();
+        bl.write(&bilink_format::BiLink::path_in(
+            d.path(), "44444444-4444-4444-8444-444444444444")).unwrap();
+        bilink_format::write_version(d.path(), "0.0.1").unwrap();
+
+        let e = check_with(d.path(), d.path(), None).unwrap_err();
+        let m = e.downcast_ref::<bilink_format::Mismatch>().expect("es un Mismatch");
+        assert_eq!(m.declared.as_deref(), Some("0.0.1"));
+    }
+
+    /// **Sin archivos del formato no hay versión que comparar.**
+    ///
+    /// Ni afuera de una capa ni adentro de una que sólo tiene su cache: negarse ahí
+    /// volvería `check` inusable justo donde no hay nada que malinterpretar.
+    #[test]
+    fn a_layer_with_no_format_files_is_not_a_version_problem() {
+        let d = tempdir().unwrap();
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        assert!(r.results.is_empty() && r.unreadable.is_empty());
+
+        // Y con `.bilink/` declarado, pero todavía vacío — el caso del consumidor
+        // que puso el `.toml` del alias y nada más.
+        std::fs::create_dir_all(d.path().join(".bilink/cache")).unwrap();
+        std::fs::write(d.path().join(".bilink/.hsi.toml"), "remote = \"x\"\n").unwrap();
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        assert!(r.results.is_empty(), "0 bilink(s) es cierto");
+    }
+
+    /// **Un archivo que no parsea se cuenta, y el resto se evalúa igual.**
+    ///
+    /// Es la diferencia entre *"no pude leer uno"* y *"no hay ninguno"*, que es la
+    /// que se perdía al saltearlo en silencio.
+    #[test]
+    fn an_unreadable_bilink_is_counted_and_the_rest_is_still_checked() {
+        let (d, cap, _, _) = dto_layer("pub struct Dto { pub x: u8 }");
+        let sano = "55555555-5555-4555-8555-555555555555";
+        let roto = "66666666-6666-4666-8666-666666666666";
+        let bl = bilink_format::BiLink::new(
+            format!("capture {}", cap.id()).parse().unwrap(),
+            bilink_format::LinkEndpoint::Abstract);
+        cap.write_in(d.path()).unwrap();
+        bl.write(&bilink_format::BiLink::path_in(d.path(), sano)).unwrap();
+        std::fs::write(bilink_format::BiLink::path_in(d.path(), roto),
+                       "endpoint:\n  0:\n    link: capture x\n    campo_que_no_existe: 1\n").unwrap();
+        bilink_format::ensure_version(d.path()).unwrap();
+
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        assert_eq!(r.results.len(), 1, "el sano se evalúa igual");
+        assert_eq!(r.results[0].uuid, sano);
+        assert_eq!(r.unreadable.len(), 1, "y el roto no desaparece");
+        // El path que se imprime es relativo a la capa, y el error dice qué pasó.
+        assert!(r.unreadable[0].path.to_string_lossy().contains(roto));
+        assert!(!r.unreadable[0].error.is_empty());
+    }
+
     // ─── la divergencia y la ubicación del vecindario ─────────────────────────
 
     /// **Dos decisiones incompatibles son un estado, y no se evalúa nada más.**
@@ -738,10 +857,11 @@ mod tests {
         bl.endpoint.get_mut(0).accepted = vec![entrada("h1"), entrada("h2")];
         cap.write_in(d.path()).unwrap();
         bl.write(&bilink_format::BiLink::path_in(d.path(), uuid)).unwrap();
+        bilink_format::ensure_version(d.path()).unwrap();
         let _ = range;
 
         let r = check_with(d.path(), d.path(), None).unwrap();
-        let it = r.iter().find(|x| x.uuid == uuid).expect("el bilink está");
+        let it = r.results.iter().find(|x| x.uuid == uuid).expect("el bilink está");
         assert_eq!(it.state0, EndpointState::ConsensusDiverged, "{:?}", it.state0);
         assert!(!it.state0.is_clean(), "divergido no es limpio: check tiene que fallar");
     }

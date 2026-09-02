@@ -79,6 +79,9 @@ impl Capture {
     /// Devuelve `(id, path, ya_existía)`. Que exista no es una condición especial:
     /// el id sale del contenido, así que el mismo fragmento es el mismo archivo.
     pub fn write_in(&self, layer: &Path) -> Result<(String, PathBuf, bool)> {
+        // **Crear el primer capture es crear la capa**, y una capa sin `version` es
+        // indistinguible de una anterior a que el campo existiera.
+        crate::version::ensure_layer(layer)?;
         let id   = self.id();
         let path = Self::path_in(layer, &id);
         if path.exists() {

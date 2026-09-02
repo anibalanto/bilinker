@@ -175,6 +175,82 @@ fn run_in(root: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+/// Como [`run_in`], con el código de salida en vez de si fue cero.
+///
+/// **Cuál no-cero importa**: un drift que hay que revisar y una capa que hay que
+/// migrar son dos trabajos distintos, y un solo `1` los vuelve el mismo.
+fn code_in(root: &std::path::Path, args: &[&str]) -> (String, String, i32) {
+    let out = std::process::Command::new(bilinker())
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("failed to run bilinker");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+// ─── lo que `check` no puede leer ──────────────────────────────────────────
+//
+// Task `3x`. El síntoma: con el binario en 4.0.0 y los archivos en la forma
+// anterior, `check` decía `all clean (0 bilink(s))` y salía con 0.
+
+/// `check-refuses-an-unreadable-format` — la versión, antes del primer bilink.
+#[test]
+fn check_refuses_a_layer_of_another_format_and_says_both_versions() {
+    let (_tmp, root) = isolated_git_workspace();
+    let (stdout, _, _) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
+    let cap = stdout.trim();
+    fs::write(root.join(".bilink/aaaa0000-0000-4000-8000-000000000001.yaml"),
+        format!("endpoint:\n  0: {{link: capture {cap}}}\n  1: {{link: abstract}}\n")).unwrap();
+
+    // La capa dice ser de otro major. Los archivos podrían parsear igual y
+    // significar otra cosa, así que no se los lee.
+    fs::write(root.join(".bilink/version"), "1.0.0\n").unwrap();
+
+    let (out, err, code) = code_in(&root, &["check", "."]);
+    assert_eq!(code, 2, "no leer nada no es lo mismo que ver drift:\n{err}");
+    assert!(err.contains("1.0.0") && err.contains(bilink_format::VERSION),
+            "dice qué versión hay y qué versión lee:\n{err}");
+    assert!(err.contains("migrate"), "y a dónde ir:\n{err}");
+    assert!(!out.contains("all clean"), "nada de `all clean`:\n{out}");
+}
+
+/// `check-counts-what-it-cannot-parse` — un archivo roto es un estado.
+#[test]
+fn check_counts_an_unreadable_bilink_instead_of_skipping_it() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["accept", "--no-n1", "."]);
+
+    let roto = ".bilink/aaaa0000-0000-4000-8000-000000000002.yaml";
+    fs::write(root.join(roto),
+        "endpoint:\n  0:\n    link: capture x\n    campo_que_no_existe: 1\n").unwrap();
+
+    let (out, err, code) = code_in(&root, &["check", "."]);
+    assert_eq!(code, 1, "un archivo roto es trabajo pendiente:\n{err}");
+    assert!(err.contains("no se pudieron leer") && err.contains("000000000002"),
+            "se cuenta y se nombra:\n{err}");
+    assert!(!out.contains("all clean") && !err.contains("all clean"),
+            "`all clean` es sobre todo lo que hay:\n{out}{err}");
+    assert!(err.contains("1 bilink(s) verificados"),
+            "y lo que sí se leyó se sigue diciendo:\n{err}");
+}
+
+/// `capture-declares-the-version` — crear la capa es declarar su formato.
+///
+/// Lo destapó comparar la versión: sólo `chain new` la declaraba, así que una capa
+/// nacida de `capture` quedaba indistinguible de una anterior al campo.
+#[test]
+fn creating_a_layer_with_capture_declares_its_format() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
+    let v = fs::read_to_string(root.join(".bilink/version")).unwrap();
+    assert_eq!(v.trim(), bilink_format::VERSION);
+}
+
 /// Un ancla cuyo nombre lleva `\` se captura igual.
 ///
 /// El caso real: la sección `#### El separador es \n` de `concepts/capture.md`. Sin

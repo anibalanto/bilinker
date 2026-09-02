@@ -20,7 +20,7 @@ pub use capture::Capture;
 pub use ignore::write_ignore;
 pub use link::{ByteRange, LinkEndpoint, Ranges, ENDPOINT_PREFIXES, FRAGMENT_SEPARATOR};
 pub use schema::{schema, schema_json};
-pub use version::{ensure_version, read_version, write_version, VERSION_FILE};
+pub use version::{ensure_layer, ensure_readable, ensure_version, has_format_files, major, read_version, write_version, Mismatch, VERSION_FILE};
 
 /// La versión del formato, tomada del `Cargo.toml` de este crate.
 ///
