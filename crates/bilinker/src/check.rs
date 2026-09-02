@@ -287,31 +287,40 @@ fn compare_contract(
     // fold y ninguno decía cuál había sido.
     //
     // **Con `unknown` de cualquiera de los dos lados no hay comparación que hacer**, y
-    // no hacerla no es que coincida: no hay ids de un lado. Eso no queda limpio —hay un
-    // capture que alguien tiene que acuñar— y por ahora sale por el casillero de
-    // *difieren*, que es el que no miente sobre estar bien. El nombre propio de ese
-    // estado va con el reporte de `check`, no con el formato.
-    let declarados = declared.and_then(|d| d.level(1))
-        .map(|l| l.link.known_ids()).unwrap_or(Some(&[]));
-    match (declarados, expected.link.known_ids()) {
-        (Some(hoy), Some(aprobado)) if hoy == aprobado => {}
-        _ => return Ok(Some(EndpointState::ContractRelocated)),
+    // no hacerla no es que coincida: no hay ids de un lado. Eso es `ContractUnlocated`
+    // y no `ContractRelocated` —no hay con qué diferir— y **no necesita proveedor**,
+    // así que es lo que se contesta cuando el eje del contenido no se puede mirar.
+    let declarado = declared.and_then(|d| d.level(1)).map(|l| &l.link);
+    let sin_ubicacion = declarado.is_some_and(|l| l.is_unknown()) || expected.link.is_unknown();
+    if !sin_ubicacion {
+        let hoy = declarado.and_then(|l| l.known_ids()).unwrap_or(&[]);
+        if hoy != expected.link.known_ids().unwrap_or(&[]) {
+            return Ok(Some(EndpointState::ContractRelocated));
+        }
     }
+    // Sin ubicación, lo que se degrada no es a *no pude mirar*: la ubicación falta y
+    // eso ya es una respuesta, siempre disponible y siempre con 1. Es lo que hace que
+    // un nivel restituido no desaparezca del inventario sin un language server.
+    let degradado = || Ok(Some(if sin_ubicacion {
+        EndpointState::ContractUnlocated
+    } else {
+        EndpointState::ContractUnverified
+    }));
 
     let (Some(p), Some(range)) = (nb, range) else {
-        return Ok(Some(EndpointState::ContractUnverified));
+        return degradado();
     };
     // **Dónde preguntar lo dice la gramática, no el proveedor.** Si el vecindario no
     // se alcanza desde este fragmento no hay con qué comparar, y eso es "no pude" —
     // el mismo casillero que un daemon caído.
     let crate::neighbours::Reach::At(at) = crate::neighbours::reach(layer, &cap.file, range) else {
-        return Ok(Some(EndpointState::ContractUnverified));
+        return degradado();
     };
     // **`None` del proveedor es "no pude mirar", no "no hay vecinos".** Sin esa
     // distinción un daemon apagado se leería como un contrato que no menciona ningún
     // tipo, y eso es lo mismo que decir OK sobre algo que nadie verificó.
     let Some(locs) = p.of(layer, &cap.file, &at)? else {
-        return Ok(Some(EndpointState::ContractUnverified));
+        return degradado();
     };
 
     // **Se descartan los captures**: `check` no escribe nada versionado, y acuñar es
@@ -320,11 +329,15 @@ fn compare_contract(
     // Y `None` es *"no se puede representar"* —algún vecino sin capture posible—, que
     // cae en el mismo casillero que un daemon caído: no pude.
     let Some(folded) = crate::neighbours::fold(layer, &locs)? else {
-        return Ok(Some(EndpointState::ContractUnverified));
+        return degradado();
     };
     let folded = folded.n;
+    // **Un cambio real de contrato le gana a la ubicación faltante.** Un endpoint tiene
+    // un estado y no dos, y de los dos candidatos uno ya está escrito en el archivo
+    // —que la ubicación falta se ve abriéndolo— y el otro sólo lo dice haber
+    // recalculado. Los dos salen con 1, así que la elección no cambia el inventario.
     if folded.hash == expected.hash {
-        return Ok(None);
+        return if sin_ubicacion { degradado() } else { Ok(None) };
     }
     // Sólo formato en el vecindario: el texto difiere y las s-expressions no. Como
     // con `hash_ast`, la pregunta sólo se hace donde los dos lados lo tienen.
@@ -903,6 +916,55 @@ mod tests {
         assert_eq!(
             compare_contract(d.path(), &cap, Some(&igual), &acc, Some(&range), None).unwrap(),
             Some(EndpointState::ContractUnverified));
+    }
+
+    /// Un nivel con el contrato conservado y sin ubicación, que es lo que deja una
+    /// restitución.
+    fn unlocated(hash: &str, hash_ast: Option<String>) -> Accepted {
+        Accepted {
+            agree: Default::default(), link: None,
+            hash: String::new(), hash_ast: None,
+            n: Some(bilink_format::N::of_level_1(bilink_format::Neighbourhood {
+                link: bilink_format::LevelLink::Unknown,
+                hash: hash.into(), hash_ast,
+            })),
+        }
+    }
+
+    /// **Sin ubicación se contesta igual sin proveedor, y no queda limpio.** Es lo que
+    /// garantiza que un nivel restituido no desaparezca del inventario por no haber
+    /// levantado un language server — y sin eso `apply` sería el único que los ve.
+    #[test]
+    fn an_unlocated_level_answers_without_a_provider() {
+        let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
+        let acc = unlocated("el-contrato", None);
+        let s = compare_contract(d.path(), &cap, None, &acc, Some(&range), None).unwrap();
+        assert_eq!(s, Some(EndpointState::ContractUnlocated), "no es UNVERIFIED: no depende del ambiente");
+        assert!(!s.unwrap().is_clean(), "hay captures que alguien tiene que acuñar");
+    }
+
+    /// Y con el contrato intacto **sigue sin ubicación**: el hash coincide, así que no
+    /// hay drift que reportar, y aun así falta trabajo. No puede salir `Ok`.
+    #[test]
+    fn an_intact_contract_without_its_location_is_not_ok() {
+        let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8 }");
+        let hoy = crate::neighbours::fold(d.path(), &locs).unwrap().unwrap().n;
+        let acc = unlocated(&hoy.hash, hoy.hash_ast.clone());
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(),
+                   Some(EndpointState::ContractUnlocated));
+    }
+
+    /// **Un cambio real de contrato le gana.** Que la ubicación falte ya está escrito
+    /// en el archivo; que un vecino cambió sólo lo dice haber recalculado, así que
+    /// nombrar el primero taparía el segundo.
+    #[test]
+    fn a_real_contract_change_wins_over_the_missing_location() {
+        let (d, cap, range, locs) = dto_layer("pub struct Dto { pub x: u8, pub y: u8 }");
+        let acc = unlocated("el-contrato-de-antes", None);
+        let p = Fake(Some(locs));
+        assert_eq!(compare_contract(d.path(), &cap, None, &acc, Some(&range), Some(&p)).unwrap(),
+                   Some(EndpointState::ContractAltered));
     }
 
     // ─── el eje del vecindario ────────────────────────────────────────────────

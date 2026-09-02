@@ -136,6 +136,25 @@ pub enum EndpointState {
     /// **Es del vecindario y no del fragmento**, y por eso lleva el prefijo que ya
     /// usan `CONTRACT_ALTERED` y `CONTRACT_RESTYLED`.
     ContractRelocated,
+
+    /// El contenido del vecindario está aprobado y **su ubicación no se sabe**: el
+    /// `link` del nivel es `unknown`.
+    ///
+    /// No es `ContractRelocated` —eso es que los dos conjuntos están y difieren, y
+    /// acá no hay con qué diferir— ni `ContractUnverified`, que es *no hubo con
+    /// quién*. **Y no es limpio**: hay captures que alguien tiene que acuñar, así que
+    /// sale con 1 por lo mismo que `Pending`.
+    ///
+    /// Los dos empiezan con `UN` y ahí se parecen: `ContractUnverified` es una
+    /// ausencia **del ambiente**, que se arregla prendiendo un daemon y puede no
+    /// arreglarse nunca sin que nadie haya hecho nada mal; ésta es una ausencia **en
+    /// el archivo**, puesta por algo que ya pasó.
+    ///
+    /// **No necesita proveedor**, que es lo que lo vuelve la respuesta correcta
+    /// justamente cuando no hay ninguno: comparar ids nunca lo necesitó. Es lo que
+    /// garantiza que un nivel sin ubicación no desaparezca del inventario por no haber
+    /// levantado un language server.
+    ContractUnlocated,
 }
 
 impl EndpointState {
@@ -159,7 +178,7 @@ impl EndpointState {
     /// El estado es del eje del **vecindario** y no del fragmento.
     pub fn is_contract(&self) -> bool {
         matches!(self, Self::ContractRestyled | Self::ContractAltered | Self::ContractUnverified
-                     | Self::ContractRelocated)
+                     | Self::ContractRelocated | Self::ContractUnlocated)
     }
 
     /// La punta abierta, que `accept .` nunca toca.
@@ -205,6 +224,7 @@ state_str!(EndpointState,
     ContractRestyled   => "CONTRACT_RESTYLED",
     ContractAltered    => "CONTRACT_ALTERED",
     ContractUnverified => "CONTRACT_UNVERIFIED",
+    ContractUnlocated  => "CONTRACT_UNLOCATED",
     Todo       => "TODO",
     ChainDirty => "CHAIN_DIRTY",
     Broken     => "BROKEN",
