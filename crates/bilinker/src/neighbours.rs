@@ -319,10 +319,6 @@ mod tests {
         assert_eq!(f1.hash_ast, f2.hash_ast);
     }
 
-    /// Un vecino sin gramática deja `hash_ast` **ausente para todo el fold**, no
-    /// afuera: un cambio real en ése movería el texto y no el AST, y eso se leería
-    /// como "sólo formateo" cuando no lo fue.
-    #[test]
     /// **Un vecino que no se puede capturar vuelve el vecindario irrepresentable.**
     ///
     /// Antes se hasheaba por texto y sólo se caía el `hash_ast`. Con los vecinos

@@ -16,5 +16,10 @@ bilink-format    = { path = "../bilink-format" }
 
 stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 
+# La `003` lee la forma 3.8 con structs locales: los dos formatos son el mismo YAML y
+# difieren en dos lugares, así que un crate congelado sería más código que el puente.
+serde         = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+
 [dev-dependencies]
 tempfile = "3"
