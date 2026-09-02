@@ -1,0 +1,17 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+    accepted:
+      agree:
+      - Anibal
+      link: capture 106e065736b7eb785b554acf6f1025ff
+      hash: 5783977ecd7d15fcf26fc56d50ba907258e9eeee17161b612e15bff1a463d1ae
+  1:
+    link: capture 334918eb11d3436650daf1b7e82c1f8a
+    accepted:
+      agree:
+      - Anibal
+      link: capture 334918eb11d3436650daf1b7e82c1f8a
+      hash: 2bee6c90ff2e61eb36008183a390b20857d315c37801b1397919928982a6a262
+    name: la-vista

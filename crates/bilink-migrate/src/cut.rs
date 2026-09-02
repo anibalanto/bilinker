@@ -12,7 +12,58 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::partition::{self, OUT_DIR};
+use crate::partition;
+
+/// Qué necesita el corte de una migración, para no estar acoplado a ninguna.
+///
+/// **El corte es el mismo para todas** —regenerar, verificar, mover, registrar— y lo
+/// único que cambia es cuál migración se está cortando. Cablearlo a una fue barato
+/// mientras hubo una sola: al escribir la segunda, `--cut` no sabía cortarla y falló
+/// verificando la primera.
+pub struct Cuttable {
+    /// La carpeta donde esta migración escribe.
+    pub out_dir: &'static str,
+    /// Dónde va lo anterior. Lleva el nombre del formato que se deja atrás, así que
+    /// dos cortes no se pisan el backup.
+    pub backup_dir: &'static str,
+    /// Qué habría perdido, antes de escribir nada. Vacío es *"no pierde nada"*.
+    pub verify: fn(&Path) -> Result<Vec<String>>,
+    /// Regenerar la salida.
+    pub regenerate: fn(&Path, bool) -> Result<accreta_migrate::Outcome>,
+    /// Cuántos bilinks y captures produjo, y los `commit` rescatados si hay.
+    pub counts: fn(&Path) -> Result<(usize, usize, Vec<(String, u8, String)>)>,
+}
+
+/// El corte de `bilinker-002-file-partition`.
+pub fn partition_cut() -> Cuttable {
+    Cuttable {
+        out_dir:    partition::OUT_DIR,
+        backup_dir: ".bilink-formato-1",
+        verify:     partition::verify,
+        regenerate: partition::run,
+        counts:     |l| {
+            let p = partition::plan(l)?;
+            Ok((p.bilinks.len(), p.captures.len(), p.commits))
+        },
+    }
+}
+
+/// El corte de `bilinker-003-accepted-list`.
+///
+/// **No verifica nada, y es correcto.** La `002` puenteaba dos serializaciones y podía
+/// perder un hash por el camino; ésta reescribe el mismo YAML cambiando dos campos, y
+/// lo que podría perderse —los captures de un vecindario que no existen— no se pierde:
+/// se declara con `declined`, que es la decisión del ítem y no una falla.
+pub fn accepted_list_cut() -> Cuttable {
+    use crate::accepted_list;
+    Cuttable {
+        out_dir:    accepted_list::OUT_DIR,
+        backup_dir: ".bilink-formato-3",
+        verify:     |_| Ok(Vec::new()),
+        regenerate: accepted_list::run,
+        counts:     |l| Ok((accepted_list::plan(l)?.files.len(), 0, Vec::new())),
+    }
+}
 
 pub struct CutPlan {
     pub layer: PathBuf,
@@ -33,28 +84,30 @@ pub struct CutPlan {
 /// corte. La regla operativa es regenerar justo antes de cortar, y acá está
 /// incorporada para que no dependa de que alguien se acuerde.
 pub fn plan_cut(layer: &Path) -> Result<CutPlan> {
+    plan_cut_of(layer, &partition_cut())
+}
+
+pub fn plan_cut_of(layer: &Path, m: &Cuttable) -> Result<CutPlan> {
     let src = layer.join(".bilink");
     if !src.exists() {
         bail!("no hay .bilink/ en {}", layer.display());
     }
 
-    let problems = partition::verify(layer)
+    let problems = (m.verify)(layer)
         .with_context(|| format!("verificando la migración de {}", layer.display()))?;
     if !problems.is_empty() {
         bail!("la migración de {} pierde información:\n  {}",
               layer.display(), problems.join("\n  "));
     }
 
-    let plan = partition::plan(layer)?;
-    partition::run(layer, false)?;
+    let (bilinks, captures, commits) = (m.counts)(layer)?;
+    (m.regenerate)(layer, false)?;
 
     Ok(CutPlan {
         layer:    layer.to_path_buf(),
-        from:     layer.join(OUT_DIR),
-        backup:   layer.join(".bilink-formato-1"),
-        bilinks:  plan.bilinks.len(),
-        captures: plan.captures.len(),
-        commits:  plan.commits,
+        from:     layer.join(m.out_dir),
+        backup:   layer.join(m.backup_dir),
+        bilinks, captures, commits,
     })
 }
 
@@ -88,8 +141,12 @@ pub fn execute(cut: &CutPlan) -> Result<()> {
 /// No toca el ledger: quitarlo es del comando que llama, que sabe qué migraciones
 /// estaba deshaciendo.
 pub fn rollback(layer: &Path) -> Result<()> {
+    rollback_of(layer, ".bilink-formato-1")
+}
+
+pub fn rollback_of(layer: &Path, backup_dir: &str) -> Result<()> {
     let live   = layer.join(".bilink");
-    let backup = layer.join(".bilink-formato-1");
+    let backup = layer.join(backup_dir);
     if !backup.exists() {
         bail!("no hay backup en {} — el corte no se hizo, o ya se deshizo", backup.display());
     }
@@ -191,4 +248,34 @@ mod tests {
             d.path().join(".bilink/aaaa1111-0000-4000-8000-000000000001.yaml")).unwrap(), after,
             "y no tocar lo que ya estaba");
     }
+}
+
+/// Qué corte le corresponde a cada capa, **según el formato que declara**.
+///
+/// La primera versión de esto elegía *"la primera migración que el ledger no tiene"*,
+/// y está mal por un caso que aparece enseguida: **una capa puede haber nacido en un
+/// formato**. Los repos de `hsi`, `retinar` y `filasvirtuales` los creó `init` en 3.8
+/// y nunca corrieron la `002` — con la regla del ledger, `--cut` intentaba cortar una
+/// migración de formato 1 sobre archivos de formato 3 y fallaba verificando.
+///
+/// Lo que decide es `.bilink/version`, que **es el dato que existe para esto** y que
+/// hasta acá no tenía lector: se escribía y nadie lo comparaba nunca. Ver la task
+/// `3x`, que es el mismo campo sin leer en el otro comando.
+pub fn cuts_for(layers: &[PathBuf]) -> Vec<(PathBuf, Cuttable)> {
+    layers.iter().filter_map(|l| {
+        let major = bilink_format::read_version(l)
+            .and_then(|v| v.split('.').next()?.parse::<u32>().ok());
+        let cut = match major {
+            // Sin versión declarada es una capa anterior a que el campo existiera:
+            // formato 1, y le toca la `002`. Es la misma lectura que hace
+            // `read_version` cuando el archivo no está.
+            None    => partition_cut(),
+            Some(3) => accepted_list_cut(),
+            // Al día, o de un formato que este binario no puentea. Lo segundo no es
+            // un corte que haya que elegir: es una versión que no se entiende, y
+            // decirlo es de quien lee, no de acá.
+            _ => return None,
+        };
+        Some((l.clone(), cut))
+    }).collect()
 }

@@ -1,0 +1,17 @@
+kind: governs
+endpoint:
+  0:
+    link: path <
+    accepted:
+      agree:
+      - Anibal
+      link: capture 0714dc31013d9a9ede71138ca76acd27
+      hash: c8fd9da08cdf4ad3ef1af0b6e982da24d3e3e352ff5131b11e2d0cbf196d3f1c
+  1:
+    link: capture aa38bf026a558f586ec7c87e8959fd0e
+    accepted:
+      agree:
+      - Anibal
+      link: capture aa38bf026a558f586ec7c87e8959fd0e
+      hash: 9fb8873755859e2377d60b97c1acfa4a12833b2c79802f54f2c8c4d18877b04a
+    name: el-verificador

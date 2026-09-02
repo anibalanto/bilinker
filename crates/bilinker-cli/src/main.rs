@@ -1273,9 +1273,14 @@ Eliminar? [y/N] ");
                 bilink_migrate::cut::exclude_in(&accreta_migrate::repo_root_of(layer))?;
             }
 
+            // **Cuál migración se corta lo dice `.bilink/version`.** Con una sola el
+            // corte podía estar cableado; con dos hay que elegir, y elegir por el
+            // ledger falla en una capa que **nació** en un formato y nunca migró.
+            let cortes = bilink_migrate::cut::cuts_for(&layers);
+
             if rollback {
-                for layer in &layers {
-                    bilink_migrate::cut::rollback(layer)?;
+                for (layer, m) in &cortes {
+                    bilink_migrate::cut::rollback_of(layer, m.backup_dir)?;
                     println!("  restaurado  {}", layer.display());
                 }
                 // El ledger vuelve atrás con los archivos: si quedara escrito, el
@@ -1297,8 +1302,8 @@ Eliminar? [y/N] ");
                 // Se planifican **todas** antes de mover ninguna: si una capa no
                 // verifica, no se corta nada. Un corte a medias deja el repo con
                 // dos formatos y ningún binario que entienda los dos.
-                for layer in &layers {
-                    match bilink_migrate::cut::plan_cut(layer) {
+                for (layer, m) in &cortes {
+                    match bilink_migrate::cut::plan_cut_of(layer, m) {
                         Ok(c) => cuts.push(c),
                         Err(e) => anyhow::bail!("{layer:?}: {e}\n\nNo se cortó ninguna capa."),
                     }
@@ -1324,7 +1329,7 @@ Eliminar? [y/N] ");
                 let written = accreta_migrate::record(&layers, &bilink_migrate::all())?;
                 println!();
                 for l in &written { println!("ledger: {}", l.display()); }
-                eprintln!("\ncorte hecho en {} capa(s). Lo anterior queda en .bilink-formato-1/", cuts.len());
+                eprintln!("\ncorte hecho en {} capa(s). Lo anterior queda en el backup de cada una.", cuts.len());
                 eprintln!("Revisar con `bilinker check .` y commitear.");
                 return Ok(());
             }

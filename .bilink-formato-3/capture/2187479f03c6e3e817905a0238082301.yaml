@@ -1,0 +1,8 @@
+file: crates/bilinker-lsp/src/main.rs
+query: |-
+  (impl_item
+    trait: (type_identifier) @n0 (#eq? @n0 "LanguageServer")
+    type: (type_identifier) @n1 (#eq? @n1 "Backend")
+    body: (declaration_list
+    (function_item
+    name: (identifier) @n2 (#eq? @n2 "initialize")) @target))

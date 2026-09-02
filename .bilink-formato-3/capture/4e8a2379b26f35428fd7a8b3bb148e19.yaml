@@ -1,0 +1,4 @@
+file: crates/bilink-migrate/src/cut.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "execute")) @target

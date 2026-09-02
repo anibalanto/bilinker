@@ -144,6 +144,20 @@ pub fn run(layer: &Path, dry_run: bool) -> Result<Outcome> {
         for (name, text) in &plan.files {
             std::fs::write(dst.join(name), text)?;
         }
+        // **Un `.bilink/` a medias no es un `.bilink/`.**
+        //
+        // El corte *reemplaza* la carpeta viva por ésta, así que lo que no esté acá
+        // desaparece. Los bilinks son lo único que esta migración transforma, pero la
+        // carpeta lleva más: los captures, la versión, la regla de git y la
+        // procedencia del árbol.
+        //
+        // Se descubrió cortando: la carpeta migrada tenía sólo los 206 bilinks, el
+        // corte se llevó los 199 captures al backup, y **los 206 endpoints quedaron
+        // `UNRESOLVED`** — un vínculo apuntando a un capture que ya no está.
+        copiar_lo_que_no_cambia(&src, &dst)?;
+        // La versión sí cambia, y es lo que esta migración existe para mover.
+        std::fs::write(dst.join(bilink_format::VERSION_FILE),
+                       format!("{}\n", bilink_format::VERSION))?;
     }
     out.changed = plan.files.keys().map(|n| layer.join(OUT_DIR).join(n)).collect();
     out.notes.push(plan.summary());
@@ -175,6 +189,40 @@ impl Plan {
         }
         s
     }
+}
+
+/// Copia lo que la migración no transforma: `capture/`, la regla de git, la
+/// procedencia.
+///
+/// **No enumera lo que hay que copiar: copia lo que no reconoce.** Enumerar es lo que
+/// hace que la próxima cosa que viva en `.bilink/` se pierda en el próximo corte.
+fn copiar_lo_que_no_cambia(src: &Path, dst: &Path) -> Result<()> {
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        // Los bilinks los escribió la migración, y la versión se escribe aparte.
+        if n.ends_with(".yaml") && !n.starts_with('.') { continue }
+        if n == bilink_format::VERSION_FILE { continue }
+        // La cache y el índice son derivados y no se versionan: no vale la pena
+        // arrastrarlos, y `check` los regenera.
+        if n == "cache" || n == "index" { continue }
+        let to = dst.join(&name);
+        if e.file_type()?.is_dir() { copiar_arbol(&e.path(), &to)?; }
+        else { std::fs::copy(e.path(), &to)?; }
+    }
+    Ok(())
+}
+
+fn copiar_arbol(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let to = dst.join(e.file_name());
+        if e.file_type()?.is_dir() { copiar_arbol(&e.path(), &to)?; }
+        else { std::fs::copy(e.path(), &to)?; }
+    }
+    Ok(())
 }
 
 pub fn plan(layer: &Path) -> Result<Plan> {
@@ -309,5 +357,43 @@ mod tests {
             .unwrap_or_else(|e| panic!("el formato nuevo tiene que leerlo: {e}\n{y}"));
         assert_eq!(bl.endpoint.get(0).accepted.len(), 1);
         assert_eq!(bl.endpoint.get(0).accepted[0].n, Some(bilink_format::N::declined()));
+    }
+}
+
+#[cfg(test)]
+mod carpeta_completa_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// **El corte reemplaza la carpeta, así que lo que no esté se pierde.**
+    ///
+    /// Se descubrió cortando accreta: la carpeta migrada tenía sólo los 206 bilinks,
+    /// el corte se llevó los 199 captures al backup, y los 206 endpoints quedaron
+    /// `UNRESOLVED` — un vínculo apuntando a un capture que ya no está.
+    #[test]
+    fn the_migrated_folder_carries_everything_the_live_one_had() {
+        let d = tempdir().unwrap();
+        let bl = d.path().join(".bilink");
+        std::fs::create_dir_all(bl.join("capture")).unwrap();
+        std::fs::create_dir_all(bl.join("cache")).unwrap();
+        std::fs::write(bl.join("7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.yaml"),
+            "endpoint:\n  '0':\n    link: capture aaa\n  '1':\n    link: abstract\n").unwrap();
+        std::fs::write(bl.join("capture/aaa.yaml"), "file: Svc.rs\n").unwrap();
+        std::fs::write(bl.join(".gitignore"), "cache/\nindex/\n").unwrap();
+        std::fs::write(bl.join("head"), "branch main\ncommit abc\n").unwrap();
+        std::fs::write(bl.join("version"), "3.8.0\n").unwrap();
+        std::fs::write(bl.join("cache/state"), "derivado\n").unwrap();
+
+        run(d.path(), false).unwrap();
+        let out = d.path().join(OUT_DIR);
+
+        assert!(out.join("capture/aaa.yaml").exists(), "los captures viajan");
+        assert!(out.join(".gitignore").exists(), "y la regla de git");
+        assert!(out.join("head").exists(), "y la procedencia del árbol");
+        assert_eq!(std::fs::read_to_string(out.join("version")).unwrap().trim(),
+                   bilink_format::VERSION, "la versión sí cambia");
+        // La cache es un derivado y `check` la regenera: arrastrarla sería copiar
+        // conclusiones viejas sobre archivos nuevos.
+        assert!(!out.join("cache").exists(), "los derivados no viajan");
     }
 }
