@@ -974,6 +974,11 @@ Eliminar? [y/N] ");
                     let before   = before.as_deref().map(parse_pos).transpose()?;
                     let after    = after.as_deref().map(parse_pos).transpose()?;
                     let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
+                    // El alias contesta **qué** se está mirando; el archivo y las
+                    // líneas contestan dónde. Sin alias el encabezado es el de antes.
+                    if let Some(a) = bilinker::cache::Cache::load(&root).alias(name, endpoint) {
+                        eprintln!("# {a}");
+                    }
                     eprintln!("# {}  lines {}", result.file, result.line_span());
                     // La vista es el default: si alguien quiere el texto exacto es
                     // **para compararlo**, y comparar lo hacen `check` y `--diff`.
@@ -1969,10 +1974,30 @@ fn list_chains(root: &Path) -> anyhow::Result<()> {
         let nodes: Vec<(PathBuf, bilink_format::BiLink)> = layers_with(root, &uuid).into_iter()
             .filter_map(|(l, p)| bilink_format::BiLink::load(&p).ok().map(|bl| (l, bl)))
             .collect();
-        println!("{}  [{}]  {n} nodo(s)", &uuid[..8.min(uuid.len())],
+        // **El nombre antes que el conteo.** Con 98 cadenas, `1 nodo(s)` repetido no
+        // distingue nada; el alias sí. Sin alias se cae al conteo, que es lo que hay
+        // para todo lo escrito antes de que `as` existiera.
+        let como = alias_de_cadena(&uuid, &nodes).unwrap_or_else(|| format!("{n} nodo(s)"));
+        println!("{}  [{}]  {como}", &uuid[..8.min(uuid.len())],
                  chain_overall_state(root, &uuid, &nodes));
     }
     Ok(())
+}
+
+/// Cómo se llama la cadena: el alias del primer extremo que sepa nombrarse.
+///
+/// Los dos tips rara vez se nombran igual —de un lado hay una sección de markdown y
+/// del otro un endpoint— y el que sabe nombrar es el que tiene generador. Con los dos
+/// nombrados gana el primero, que es un desempate arbitrario y no importa: una cadena
+/// tiene un nombre, no dos.
+fn alias_de_cadena(uuid: &str, nodes: &[(PathBuf, bilink_format::BiLink)]) -> Option<String> {
+    for (layer, _) in nodes {
+        let cache = bilinker::cache::Cache::load(layer);
+        for n in [0u8, 1u8] {
+            if let Some(a) = cache.alias(uuid, n) { return Some(a.to_string()) }
+        }
+    }
+    None
 }
 
 /// El peor estado de la cadena.

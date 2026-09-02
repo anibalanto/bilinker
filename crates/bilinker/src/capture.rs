@@ -410,6 +410,22 @@ pub trait CaptureGenerator {
 
     /// La query, y los nodos que espera que capture.
     fn query<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Generated<'t>>;
+
+    /// Cómo se llama este fragmento, en el vocabulario de este generador.
+    ///
+    /// **Se compone del fragmento, no se guarda.** Un alias guardado es un valor
+    /// derivado con vida propia: el día que cambia la ruta sigue diciendo lo viejo, y
+    /// lo diría en silencio porque los campos semánticos son inertes. Un rótulo falso
+    /// sobre una referencia verificada es peor que no tener rótulo.
+    ///
+    /// **Y es de cada generador, no del formato.** Un endpoint se nombra por su verbo
+    /// y su ruta; una firma, por su método. Un generador que no sepa nombrar devuelve
+    /// `None` y el bilink se muestra por UUID, que es lo que se muestra hoy.
+    ///
+    /// La `query` entra porque a veces el nombre vive ahí y no en el fragmento: donde
+    /// la anotación no lleva literal, el nombre del método es el ancla y **no** es
+    /// contenido capturado.
+    fn alias(&self, _source: &str, _ranges: &Ranges, _query: &str) -> Option<String> { None }
 }
 
 /// Los generadores que este binario conoce.

@@ -10,6 +10,8 @@
 use anyhow::{bail, Result};
 use tree_sitter::Node;
 
+use bilink_format::Ranges;
+
 use crate::capture::{CaptureGenerator, GenCtx, Generated};
 use crate::grammar;
 use crate::query;
@@ -67,6 +69,16 @@ impl CaptureGenerator for Interface {
             query: crate::capture::pattern_for(ctx, &[node], &targets),
             targets,
         })
+    }
+
+    /// Una firma se nombra por su método, que es lo que la distingue.
+    ///
+    /// **Y sale de la query, no del fragmento.** `--as interface` pone el nombre en
+    /// los dos roles —capturado *y* anclado—, así que está en los dos lados; leerlo
+    /// del ancla es lo que hace que el mismo código sirva cuando un generador lo deja
+    /// sólo ahí.
+    fn alias(&self, _source: &str, _ranges: &Ranges, query: &str) -> Option<String> {
+        nombre_anclado(query)
     }
 }
 
@@ -144,6 +156,80 @@ impl CaptureGenerator for SpringController {
 
         Ok(Generated { query, targets })
     }
+
+    /// `GET /public-api/user/info/from-token`, compuesto de lo capturado.
+    ///
+    /// La ruta de clase y el literal del método son dos de los cuatro `@target`; el
+    /// verbo sale del nombre de la anotación. Nada de esto se busca afuera del
+    /// fragmento, que es lo que hace que no pueda mentir.
+    fn alias(&self, source: &str, ranges: &Ranges, query: &str) -> Option<String> {
+        let partes: Vec<&str> = ranges.parts().iter()
+            .filter_map(|r| source.get(r.start..r.end))
+            .collect();
+
+        // La anotación de verbo es la primera parte que nombra un mapping; lo que
+        // haya antes es la ruta de clase, que puede no estar.
+        let (verbo_i, verbo) = partes.iter().enumerate()
+            .find_map(|(i, p)| verbo_de(p).map(|v| (i, v)))?;
+
+        let mut ruta = String::new();
+        for p in &partes[..verbo_i] { ruta.push_str(&literal_de(p).unwrap_or_default()); }
+        ruta.push_str(&literal_de(partes[verbo_i]).unwrap_or_default());
+        if ruta.is_empty() { ruta.push('/'); }
+
+        // **Sin literal propio, la ruta y el verbo los comparten los hermanos.** Lo
+        // que distingue es el nombre del método, y está en la query porque `32` lo
+        // puso ahí como ancla justo donde el literal falta: donde falta el literal
+        // sobra el ancla, y viceversa.
+        match (literal_de(partes[verbo_i]), nombre_anclado(query)) {
+            (None, Some(m)) => Some(format!("{verbo} {ruta}  ·  {m}")),
+            _               => Some(format!("{verbo} {ruta}")),
+        }
+    }
+}
+
+/// El verbo que declara una anotación de mapping, si es una.
+fn verbo_de(texto: &str) -> Option<&'static str> {
+    let nombre = texto.trim_start_matches('@');
+    let nombre = nombre.split(['(', ' ', '\n']).next()?;
+    Some(match nombre {
+        "GetMapping"     => "GET",
+        "PostMapping"    => "POST",
+        "PutMapping"     => "PUT",
+        "DeleteMapping"  => "DELETE",
+        "PatchMapping"   => "PATCH",
+        // `@RequestMapping` sin `method` no declara verbo: es la ruta de la clase.
+        _ => return None,
+    })
+}
+
+/// El literal de ruta de una anotación, si lo lleva.
+///
+/// Toma el **primer** string de los argumentos: `("/x")` y `(value = "/x", produces
+/// = "…")` dan lo mismo. `produces` y `consumes` van después y no son ruta.
+fn literal_de(texto: &str) -> Option<String> {
+    let (_, resto) = texto.split_once('"')?;
+    let (lit, _) = resto.split_once('"')?;
+    (!lit.is_empty()).then(|| lit.to_string())
+}
+
+/// El nombre que la query ancla con `name: (identifier) @nN (#eq? @nN "…")`.
+///
+/// **El último, no el primero.** `name: (identifier)` aparece también en las
+/// anotaciones —`@RequestMapping`, `@GetMapping` son identificadores con nombre—, y
+/// el patrón las escribe antes porque van más arriba en el árbol. El nombre del
+/// método es siempre el último que el patrón ancla.
+fn nombre_anclado(query: &str) -> Option<String> {
+    let mut ultimo = None;
+    let mut resto = query;
+    while let Some((_, r)) = resto.split_once("name: (identifier)") {
+        resto = r;
+        let Some((_, r2)) = resto.split_once("#eq?") else { break };
+        let Some((_, r3)) = r2.split_once('"') else { break };
+        let Some((nombre, _)) = r3.split_once('"') else { break };
+        if !nombre.is_empty() { ultimo = Some(nombre.to_string()); }
+    }
+    ultimo
 }
 
 /// La anotación de ruta de un método, si la tiene.

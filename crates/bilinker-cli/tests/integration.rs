@@ -5176,3 +5176,76 @@ fn the_catalog_marks_what_is_already_consumed() {
     assert!(ok);
     assert!(out.contains("ya lo consumís"), "se marca:\n{out}");
 }
+
+// ─── task `3d`: el alias se deriva del fragmento ──────────────────────────────
+
+/// **El verbo y la ruta salen de lo capturado**, y `chain list` los muestra en vez
+/// del hexadecimal.
+#[test]
+fn chain_list_names_a_spring_endpoint_by_its_verb_and_route() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("GET /public-api/user/permissions/from-token"),
+            "la ruta compuesta es el nombre de la cadena:\n{out}");
+    assert!(!out.contains("nodo(s)"), "con alias no se cae al conteo:\n{out}");
+}
+
+/// Y el encabezado de `get` lo lleva: contesta **qué** se está mirando, mientras el
+/// archivo y las líneas contestan dónde.
+#[test]
+fn the_get_header_carries_the_alias() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+
+    let (_, stderr, _) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root))]);
+    assert!(stderr.contains("GET /public-api/user/permissions/from-token"), "{stderr}");
+}
+
+/// **Un bilink sin `as` no tiene alias, y el listado sigue sirviendo.** Es el estado
+/// de todo lo escrito antes de que el campo existiera.
+#[test]
+fn without_a_generator_the_listing_falls_back_to_the_uuid() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &["chain", "new", "--yes",
+                    "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5"]);
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("nodo(s)"), "sin generador que nombre, el conteo:\n{out}");
+}
+
+/// **El alias sigue a la ruta, porque se compone y no se guarda.** Es la propiedad
+/// entera del ítem: un rótulo guardado seguiría diciendo lo viejo, y en silencio.
+#[test]
+fn renaming_the_route_renames_the_alias() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    run_in(&root, &["check", "."]);
+
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(out.contains("GET /public-api/usuario/permissions/from-token"),
+            "el alias se compone del fragmento de hoy:\n{out}");
+    assert!(!out.contains("/public-api/user/"), "y no queda el viejo:\n{out}");
+}

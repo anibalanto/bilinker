@@ -67,6 +67,11 @@ pub fn check_with(
         for n in [0u8, 1u8] {
             states[n as usize] = check_endpoint(&layer, &bl, uuid, n, &mut resolved, &mut cache, nb)?;
             cache.set_endpoint_state(uuid, n, states[n as usize]);
+            // El alias sale del mismo trabajo: resolver el capture es lo que `check`
+            // ya hizo para escribir `range`. `None` **borra** el que hubiera — un
+            // `as` que se sacó no puede dejar el rótulo viejo colgado.
+            let alias = alias_de(&layer, &bl, n, &resolved);
+            cache.set_alias(uuid, n, alias);
         }
         out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1] });
     }
@@ -77,6 +82,25 @@ pub fn check_with(
     cache.save(&layer)?;
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
     Ok(out)
+}
+
+/// Cómo se llama este endpoint, si su generador sabe nombrarlo.
+///
+/// **Sin `as` no hay alias**, y eso no es una falla: es lo que dice todo bilink
+/// escrito antes de que el campo existiera. Un `as` que nombra un generador que no
+/// está instalado tampoco falla — es un dato que no se pudo usar.
+fn alias_de(
+    layer: &Path,
+    bl: &BiLink,
+    n: u8,
+    resolved: &HashMap<String, (CaptureState, Option<Ranges>)>,
+) -> Option<String> {
+    let e = bl.endpoint.get(n);
+    let g = crate::capture::generator_named(e.r#as.as_deref()?).ok()?;
+    let cap = crate::capture::capture_of(layer, &e.link).ok()??;
+    let (_, ranges) = resolved.get(e.link.capture_id()?)?;
+    let source = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
+    g.alias(&source, ranges.as_ref()?, cap.query.as_deref()?)
 }
 
 fn check_endpoint(
