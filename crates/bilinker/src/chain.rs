@@ -142,8 +142,10 @@ pub fn resolve_layer_link(
 /// interpretar lo que publica".
 fn bilink_path(root: &Path, layer: &Path, uuid: &str) -> PathBuf {
     let layer_root = root.join(layer);
+    // `ensure_layer` primero, porque mira si **había** capa: al revés, la regla que
+    // se repone abajo crearía el directorio y la versión nunca se escribiría.
+    let _ = bilink_format::ensure_layer(&layer_root);
     let _ = bilink_format::write_ignore(&layer_root);
-    let _ = bilink_format::ensure_version(&layer_root);
     BiLink::path_in(&layer_root, uuid)
 }
 

@@ -1129,12 +1129,28 @@ Eliminar? [y/N] ");
         Command::Check { path } => {
             let root = project_root(&cwd)?;
             let check_path = if path.is_absolute() { path } else { cwd.join(path) };
-            let results = bilinker::check::check_with(&root, &check_path, Some(&lspd_neighbours::Lspd))?;
+            let checked = match bilinker::check::check_with(
+                &root, &check_path, Some(&lspd_neighbours::Lspd),
+            ) {
+                Ok(c)  => c,
+                Err(e) => {
+                    // **Una versión que no se entiende sale con 2, no con 1.** No es
+                    // lo mismo *"hay endpoints no-OK"* que *"no leí nada"*: un CI que
+                    // trata cualquier no-cero igual no nota la diferencia, y uno que
+                    // sí puede distinguir un drift que hay que revisar de una capa que
+                    // hay que migrar.
+                    if let Some(m) = e.downcast_ref::<bilink_format::Mismatch>() {
+                        eprintln!("Error: {m}");
+                        std::process::exit(2);
+                    }
+                    return Err(e);
+                }
+            };
 
             // Se imprime todo lo que no está OK; solo falla lo que no tiene auto-fix.
             let mut exit_code = 0;
             let mut shown     = 0;
-            for r in &results {
+            for r in &checked.results {
                 if !r.all_ok() {
                     shown += 1;
                     println!("{}  ({}, {})", &r.uuid[..8], r.state0, r.state1);
@@ -1143,8 +1159,30 @@ Eliminar? [y/N] ");
                     exit_code = 1;
                 }
             }
-            if shown == 0 {
-                eprintln!("all clean ({} bilink(s))", results.len());
+
+            // **Un bilink ilegible sale con 1** por lo mismo que `PENDING`: hay
+            // trabajo que hacer y nadie lo hizo. Que el archivo esté roto en vez de
+            // pendiente no lo vuelve menos trabajo.
+            if !checked.unreadable.is_empty() {
+                exit_code = 1;
+                eprintln!("\n{} bilink(s) no se pudieron leer:", checked.unreadable.len());
+                for u in &checked.unreadable {
+                    eprintln!("  {}  {}", u.path.display(), u.error);
+                }
+            }
+
+            // `all clean` es una afirmación sobre **todo lo que hay**, así que no se
+            // imprime cuando quedó algo sin leer.
+            match (shown, checked.unreadable.len()) {
+                (0, 0) => eprintln!("all clean ({} bilink(s))", checked.results.len()),
+                (0, u) => eprintln!("\n{} bilink(s) verificados, todos OK — {u} ilegible(s)",
+                                    checked.results.len()),
+                // Con no-OK arriba el detalle ya está impreso, así que la línea final
+                // sólo hace falta para decir sobre cuántos se dijo — y eso hace falta
+                // justamente cuando quedó algo afuera.
+                (_, 0) => {}
+                (_, u) => eprintln!("\n{} bilink(s) verificados — {u} ilegible(s)",
+                                    checked.results.len()),
             }
             std::process::exit(exit_code);
         }

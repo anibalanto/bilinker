@@ -123,28 +123,26 @@ pub fn resolve(layer: &Path, alias: &str, uuid: &str) -> Result<Resolution> {
 /// ciclos de release independientes, así que **la divergencia de versiones es lo
 /// normal, no un accidente**.
 pub fn verify_format_version(clone: &Path, alias: &str) -> Result<()> {
-    let Some(theirs) = bilink_format::read_version(clone) else {
+    // **El criterio es uno solo, y el mensaje es de cada lado.** Comparar el major
+    // vale igual para la capa propia que para la de un proveedor —el que
+    // malinterpreta es el parser, y no le cambia nada de quién sean los archivos—
+    // pero el remedio no: adentro se migra, y acá no se puede tocar el repo de otro.
+    let Err(m) = bilink_format::ensure_readable(clone) else { return Ok(()) };
+
+    match m.declared {
         // Sin archivo es formato 1 — anterior a que el archivo existiera. Un
         // proveedor así no publica abstracciones todavía.
-        bail!(
+        None => bail!(
             "el proveedor '{alias}' no declara versión de formato: es anterior a la \
              frontera.\n  No se puede interpretar lo que publica."
-        );
-    };
-    let ours = bilink_format::VERSION;
-
-    if major(&theirs) != major(ours) {
-        bail!(
-            "el proveedor '{alias}' publica formato {theirs} y este binario lee {ours}.\n  \
+        ),
+        Some(theirs) => bail!(
+            "el proveedor '{alias}' publica formato {theirs} y este binario lee {}.\n  \
              No se interpreta lo que no se entiende: actualizar bilinker, o fijar el \
-             `.toml` a una rama del proveedor que use un formato compatible."
-        );
+             `.toml` a una rama del proveedor que use un formato compatible.",
+            m.ours
+        ),
     }
-    Ok(())
-}
-
-fn major(v: &str) -> &str {
-    v.split('.').next().unwrap_or(v)
 }
 
 /// Los archivos del proveedor que este repo necesita: **derivado de los bilinks**.
