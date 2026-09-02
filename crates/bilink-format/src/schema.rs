@@ -158,6 +158,21 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // mecánica; la de `n` no lo es, porque los `n` ya escritos **no tienen ids que
     // poner** y calcularlos pide un language server que una migración no levanta.
     ("4.0.0", "98377d7b17e211e03d864af4a89dcf0bf4fb18588cc76615552b162a28e6102f"),
+    // 4.1.0 le da al `link` de un nivel del vecindario su tercera forma: `unknown`,
+    // que es *"el contrato está y de qué vecinos salió no se sabe"*.
+    //
+    // La `003` tuvo los dos hashes de 165 niveles en la mano y los descartó porque no
+    // había cómo escribir el hueco: lo único que quedaba era `declined`, que es una
+    // **respuesta** —"nadie vigila este vecindario"— puesta donde iba una
+    // **imposibilidad**. Con el valor, el eje del contenido se conserva y se verifica,
+    // y el de la ubicación queda declarado como trabajo pendiente.
+    //
+    // **Aditivo, y sube igual** por el motivo de 3.1.0 y 3.8.0: ningún archivo
+    // existente lo lleva. Lo que un parser de 4.0.0 no puede hacer es leerlo mal — el
+    // slot no tiene fallback, así que le falla explícito y la versión le dice por qué.
+    // Y el guard lo detecta solo: el valor discrimina al parsear, así que está en el
+    // `pattern` publicado.
+    ("4.1.0", "93dc3197a79ef0c8ce01624318fb56330bb3623f4d94851aca4d90708c22238a"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

@@ -209,6 +209,109 @@ impl JsonSchema for CaptureSet {
     }
 }
 
+/// El literal con que se escribe una ubicación que no se sabe.
+pub const LEVEL_LINK_UNKNOWN: &str = "unknown";
+
+/// La ubicación de **un nivel** del vecindario, con sus tres formas.
+///
+/// | | |
+/// |---|---|
+/// | *(ausente)* | se miró y no hay vecinos — una firma de puros primitivos |
+/// | `capture <id> <id> …` | éstos son los vecinos, ordenados por id |
+/// | `unknown` | el contrato está y de qué vecinos salió no se sabe |
+///
+/// **`unknown` va en este slot y no en un campo hermano.** Un `unknown: true` al lado
+/// de `link` deja escribible `link: capture <id>` con la contradicción encima — la
+/// misma familia de combinación inválida por la que [`N`] es un campo con tres estados
+/// y no tres campos sueltos. Y no va en [`N`]: ahí sería un estado del vecindario
+/// entero, y escribirlo tiraría los hashes, que son la parte que sí se tiene.
+///
+/// Ver `concepts/bilink.md` § "El `link` de un nivel del vecindario".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LevelLink {
+    /// `capture <id> …` — éstos son los vecinos. El conjunto vacío es la ausencia del
+    /// campo, y se omite al serializar.
+    Captures(CaptureSet),
+    /// `unknown` — el nivel está adquirido y su ubicación no se sabe.
+    ///
+    /// **Es incomparable**: no hay ids de ninguno de los dos lados, así que dos
+    /// `unknown` no coinciden — no poder comparar no es que coincida.
+    Unknown,
+}
+
+impl Default for LevelLink {
+    /// La ausencia, que es el conjunto vacío. **Nunca `unknown`**: eso es un dato que
+    /// alguien escribió, no lo que se asume cuando no hay nada escrito.
+    fn default() -> Self { Self::Captures(CaptureSet::default()) }
+}
+
+impl LevelLink {
+    /// El conjunto, **sólo cuando la ubicación se sabe**. `None` es `unknown`.
+    pub fn captures(&self) -> Option<&CaptureSet> {
+        match self { Self::Captures(c) => Some(c), Self::Unknown => None }
+    }
+
+    /// Los ids, **sólo cuando la ubicación se sabe**. `None` es `unknown`, y no es un
+    /// conjunto vacío: quien pregunta tiene que decidir qué hace con eso, que es lo
+    /// que impide leer *"no sé dónde"* como *"no hay vecinos"*.
+    pub fn known_ids(&self) -> Option<&[String]> { self.captures().map(CaptureSet::ids) }
+
+    pub fn is_unknown(&self) -> bool { matches!(self, Self::Unknown) }
+
+    /// La ausencia del campo: el conjunto vacío. **`unknown` no es ausencia.**
+    pub fn is_absent(&self) -> bool {
+        matches!(self, Self::Captures(c) if c.is_empty())
+    }
+}
+
+impl From<CaptureSet> for LevelLink {
+    fn from(c: CaptureSet) -> Self { Self::Captures(c) }
+}
+
+impl std::fmt::Display for LevelLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Captures(c) => c.fmt(f),
+            Self::Unknown     => f.write_str(LEVEL_LINK_UNKNOWN),
+        }
+    }
+}
+
+impl std::str::FromStr for LevelLink {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        if s.trim() == LEVEL_LINK_UNKNOWN { return Ok(Self::Unknown); }
+        s.parse::<CaptureSet>().map(Self::Captures).with_context(|| format!(
+            "la ubicación de un nivel se escribe `capture <id>…` o `{LEVEL_LINK_UNKNOWN}`"))
+    }
+}
+
+impl Serialize for LevelLink {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for LevelLink {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for LevelLink {
+    fn schema_name() -> std::borrow::Cow<'static, str> { "LevelLink".into() }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "La ubicación de un nivel del vecindario: los captures de \
+                            sus vecinos, o `unknown` cuando el contrato está y su \
+                            ubicación no se sabe.",
+            "pattern": "^(capture( [0-9a-f]{32})+|unknown)$",
+        })
+    }
+}
+
 /// El vecindario **declarado**: qué captures lo componen, por nivel.
 ///
 /// **No lleva hashes ni `declined`**, y las dos ausencias son la misma razón: un hash
@@ -219,8 +322,8 @@ impl JsonSchema for CaptureSet {
 pub struct DeclaredN(pub BTreeMap<u8, DeclaredLevel>);
 
 impl DeclaredN {
-    pub fn of_level_1(link: CaptureSet) -> Self {
-        Self(BTreeMap::from([(1u8, DeclaredLevel { link })]))
+    pub fn of_level_1(link: impl Into<LevelLink>) -> Self {
+        Self(BTreeMap::from([(1u8, DeclaredLevel { link: link.into() })]))
     }
     pub fn level(&self, k: u8) -> Option<&DeclaredLevel> { self.0.get(&k) }
 }
@@ -229,7 +332,7 @@ impl DeclaredN {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeclaredLevel {
-    pub link: CaptureSet,
+    pub link: LevelLink,
 }
 
 /// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
@@ -326,8 +429,8 @@ pub struct Neighbourhood {
     /// escribir una lista vacía —`capture` solo es degenerado y se rechaza— así que
     /// el vacío se dice callándose. Con una secuencia YAML se habría podido escribir
     /// `[]`, que dice lo mismo con una palabra más.
-    #[serde(default, skip_serializing_if = "CaptureSet::is_empty")]
-    pub link: CaptureSet,
+    #[serde(default, skip_serializing_if = "LevelLink::is_absent")]
+    pub link: LevelLink,
     /// SHA-256 plegado de los vecinos, en orden de id de capture.
     pub hash: String,
     /// Ídem sobre sus s-expressions, y **todo-o-nada**.
@@ -649,5 +752,65 @@ mod n_shape_tests {
     fn a_decline_cannot_carry_a_hash() {
         let r: Result<N, _> = serde_yaml_ng::from_str("declined:\n  hash: 96c765b9\n");
         assert!(r.is_err(), "o se renunció, o hay niveles");
+    }
+
+    /// **El caso que la `003` no pudo escribir**: el contrato conservado y su
+    /// ubicación desconocida. Es un nivel adquirido, no una renuncia.
+    #[test]
+    fn a_level_can_hold_its_contract_and_not_its_location() {
+        let n = Some(N::of_level_1(Neighbourhood {
+            link: LevelLink::Unknown,
+            hash: "d3fba7c7".into(),
+            hash_ast: Some("319cfc6f".into()),
+        }));
+        let (y, back) = round_trip(n.clone());
+        assert_eq!(y, "n:\n  1:\n    link: unknown\n    hash: d3fba7c7\n    hash_ast: 319cfc6f\n");
+        assert_eq!(back, n);
+        assert!(n.as_ref().unwrap().is_acquired(), "adquirido, no renunciado");
+    }
+}
+
+/// Las tres formas del `link` de un nivel, y las dos que no se pueden confundir.
+#[cfg(test)]
+mod level_link_tests {
+    use super::*;
+
+    /// La ausencia es el conjunto vacío, y `unknown` **no** es la ausencia: si lo
+    /// fuera, restituir hashes sin el valor diría lo mismo que escribirlo.
+    #[test]
+    fn unknown_is_not_the_absence() {
+        assert!(LevelLink::default().is_absent());
+        assert!(!LevelLink::Unknown.is_absent());
+        assert!(LevelLink::Unknown.is_unknown());
+    }
+
+    /// **No hay cómo leer `unknown` como un conjunto vacío**, que es el error que el
+    /// tipo existe para impedir: quien pregunta por los ids recibe `None`.
+    #[test]
+    fn unknown_hands_out_no_ids() {
+        assert_eq!(LevelLink::Unknown.known_ids(), None);
+        assert_eq!(LevelLink::default().known_ids(), Some(&[][..]));
+        assert!(LevelLink::Unknown.captures().is_none());
+    }
+
+    #[test]
+    fn every_form_round_trips_through_its_string() {
+        let ids = CaptureSet::new(vec!["a".repeat(32), "b".repeat(32)]);
+        for raw in ["unknown", &format!("{ids}")] {
+            let l: LevelLink = raw.parse().unwrap();
+            assert_eq!(l.to_string(), raw, "'{raw}' no round-trippea");
+        }
+    }
+
+    /// Un valor que no es ninguna de las dos formas **falla**, y el error nombra las
+    /// dos. Es lo que hace que un parser de 4.0.0 no lea `unknown` como otra cosa: el
+    /// slot no tiene fallback.
+    #[test]
+    fn anything_else_is_an_error() {
+        for raw in ["", "capture", "pending", "new-data-pending", "unknown abc"] {
+            let err = raw.parse::<LevelLink>().unwrap_err().to_string();
+            assert!(err.contains("unknown") || err.contains("capture"),
+                    "'{raw}' falla sin decir qué se esperaba: {err}");
+        }
     }
 }
