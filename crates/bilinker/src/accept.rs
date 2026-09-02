@@ -574,7 +574,7 @@ mod n1_tests {
     /// Fila 1 — no había, se resolvió: se calcula y se escribe.
     #[test]
     fn row_1_resolved_without_a_previous_one_is_written() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let o = resolve_n1(&cap, &r, None, &folded(), What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("nuevo"));
         assert_eq!(o.as_ref().map(|n| n.is_acquired()).unwrap_or(false), true);
@@ -585,7 +585,7 @@ mod n1_tests {
     /// Es la fila que vuelve imposible el baseline mudo: hoy esto salía `all clean`.
     #[test]
     fn row_2_nothing_to_lose_and_no_provider_refuses() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let e = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap_err();
         assert!(e.to_string().contains("--no-n1"), "el error tiene que dar la salida: {e}");
     }
@@ -593,7 +593,7 @@ mod n1_tests {
     /// Y `--no-n1` la destraba, dejándolo **escrito**.
     #[test]
     fn row_2_declines_explicitly_and_leaves_it_written() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let what = What { no_n1: true, ..What::default() };
         let o = resolve_n1(&cap, &r, None, &None, what, "h").unwrap();
         assert_eq!(o, Some(N::declined()), "la renuncia se escribe, no se omite");
@@ -602,7 +602,7 @@ mod n1_tests {
     /// Fila 3 — había y se resolvió: se recalcula, y una renuncia anterior se levanta.
     #[test]
     fn row_3_resolving_again_lifts_a_previous_decline() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
         p.n = Some(N::declined());
         let o = resolve_n1(&cap, &r, Some(&p), &folded(), What::default(), "h").unwrap();
@@ -616,7 +616,7 @@ mod n1_tests {
     /// cada `accept` — y un pedido que sale siempre no lo lee nadie.
     #[test]
     fn a_written_decline_is_not_asked_for_again() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
         p.n = Some(N::declined());
         let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
@@ -630,7 +630,7 @@ mod n1_tests {
     /// cambiar no la vuelve falsa.
     #[test]
     fn a_written_decline_survives_the_signature_changing() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("otro-hash", None);
         p.n = Some(N::declined());
         let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
@@ -640,7 +640,7 @@ mod n1_tests {
     /// Y `--no-n1` sobre una renuncia da lo mismo: no hace falta, y no cambia nada.
     #[test]
     fn declining_over_a_decline_changes_nothing() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let mut p = previo("h", None);
         p.n = Some(N::declined());
         let what = What { no_n1: true, ..What::default() };
@@ -655,7 +655,7 @@ mod n1_tests {
     /// proveedor caído, el valor viejo sigue ahí y el próximo cierre lo reporta.
     #[test]
     fn row_4_a_provider_outage_never_erases_what_was_there() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
         let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
         assert_eq!(adquirido(&o), Some("viejo"), "una caída no puede bajar la cobertura");
@@ -664,7 +664,7 @@ mod n1_tests {
     /// Y `--no-n1` tampoco lo baja solo: bajar algo pide el escalón.
     #[test]
     fn row_4_declining_over_an_existing_one_needs_force() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
         let what = What { no_n1: true, ..What::default() };
         let e = resolve_n1(&cap, &r, Some(&p), &None, what, "h").unwrap_err();
@@ -675,7 +675,7 @@ mod n1_tests {
     /// porque el conjunto de vecinos pudo cambiar con ella.
     #[test]
     fn row_5_a_changed_signature_cannot_keep_a_stale_neighbourhood() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("viejo_hash", Some("viejo"));
         let e = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "otro").unwrap_err();
         assert!(e.to_string().contains("--no-n1 --force"), "{e}");
@@ -684,7 +684,7 @@ mod n1_tests {
     /// Y con el escalón entero, se baja.
     #[test]
     fn row_5_forced_is_a_decision_and_gets_written() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("viejo_hash", Some("viejo"));
         let what = What { no_n1: true, force: true, ..What::default() };
         let o = resolve_n1(&cap, &r, Some(&p), &None, what, "otro").unwrap();
@@ -696,7 +696,7 @@ mod n1_tests {
     /// sale siempre no lo lee nadie.
     #[test]
     fn without_a_resolvable_signature_there_is_nothing_to_warn_about() {
-        let (d, cap, r) = layer(SIN_FIRMA);
+        let (_d, cap, r) = layer(SIN_FIRMA);
         let o = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap();
         assert_eq!(o, None, "no tener firma no es haber renunciado");
     }
@@ -704,7 +704,7 @@ mod n1_tests {
     /// Con `--place` el contenido no se toca, y el vecindario es del contenido.
     #[test]
     fn place_only_never_touches_the_neighbourhood() {
-        let (d, cap, r) = layer(CON_FIRMA);
+        let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
         let o = resolve_n1(&cap, &r, Some(&p), &None, What::place_only(), "otro").unwrap();
         assert_eq!(adquirido(&o), Some("viejo"));
