@@ -20,6 +20,16 @@ impl Neighbours for Lspd {
     /// Devuelve `None` cuando no hay daemon: **no pude mirar**, que es distinto de
     /// *no hay vecinos*. Se pregunta con un `ping`, que falla en el acto si el socket
     /// no está — por eso `check` sin daemon no se pone más lento.
+    ///
+    /// **Y también cuando el daemon está pero el servidor de atrás sigue indexando.**
+    /// Un `ping` contesta antes que el language server esté listo, así que "hay
+    /// daemon" no alcanza: en esa ventana `definitions` devolvía `[]`, que llega como
+    /// `Some(vec![])` —*"miré y esta firma no menciona ningún tipo"*— y se escribe
+    /// como vecindario adquirido. Es una cobertura afirmada que no existe.
+    ///
+    /// La distinción no se puede hacer de este lado —una firma de puros primitivos
+    /// tiene vecindario vacío, y es legítimo—, así que la da el daemon con
+    /// [`NOT_READY`](lspd_client::NOT_READY) y acá sólo se traduce.
     fn of(&self, layer: &Path, file: &str, ranges: &Ranges) -> Result<Option<Vec<Location>>> {
         if !lspd_client::responds() { return Ok(None); }
 
@@ -32,9 +42,18 @@ impl Neighbours for Lspd {
             // este lado: traducirla allá sería ponerle al daemon una convención que
             // no es suya.
             let (line, col) = line_col_of(&source, r.start);
-            let val = lspd_client::rpc("definitions", serde_json::json!({
+            let val = match lspd_client::rpc("definitions", serde_json::json!({
                 "file": abs.to_string_lossy(), "line": line, "col": col,
-            }))?;
+            })) {
+                Ok(v) => v,
+                // **Un rango sin resolver invalida el vecindario entero**, no sólo el
+                // suyo: el fold es sobre el conjunto, y un conjunto al que le falta
+                // un miembro hashea distinto que el completo. Devolver lo que se
+                // alcanzó a juntar sería exactamente el vacío que este camino existe
+                // para no escribir.
+                Err(e) if not_ready(&e) => return Ok(None),
+                Err(e) => return Err(e),
+            };
             for d in val.as_array().into_iter().flatten() {
                 let Some(loc) = location_of(layer, d) else { continue };
                 out.push(loc);
@@ -42,6 +61,14 @@ impl Neighbours for Lspd {
         }
         Ok(Some(out))
     }
+}
+
+/// Si el daemon contestó *"todavía no puedo"*.
+///
+/// **Por código y no por mensaje.** El texto del error es prosa que alguien va a
+/// mejorar; el código es el contrato.
+fn not_ready(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<lspd_client::RpcError>().is_some_and(|r| r.is_not_ready())
 }
 
 /// Una definición del daemon, traducida a la forma que bilinker foldea.
