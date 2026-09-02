@@ -9,5 +9,8 @@ endpoint:
   1:
     link: capture ab310b177991488139a1fce51ab8cca4
     accepted:
+      agree:
+      - Anibal
       link: capture ab310b177991488139a1fce51ab8cca4
-      hash: 262eadf802c9678118e599681fd0a4694a80bf6781a9f2154a433b16c7801307
+      hash: e1f3aaeada4a0b992b892698d851eefb1255b46ff217affe325e9be661d5dfd7
+      n: declined
