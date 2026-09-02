@@ -36,6 +36,19 @@ pub struct Migration {
     /// calcular y reportar exactamente lo mismo, pero **sin escribir un solo
     /// archivo**. Debe ser idempotente: una capa ya migrada devuelve un
     /// `Outcome` vacío en vez de fallar.
+    ///
+    /// Y **no puede descartar una decisión**: donde no pueda llevar un campo
+    /// hacia adelante, registra el hueco — nunca lo reemplaza por una
+    /// respuesta. *"Nadie vigila esto"* es una decisión que alguien tomó;
+    /// *"no pude traer esto"* es un estado de la migración, y escribir la
+    /// primera donde iba la segunda la vuelve permanente: el archivo no dice
+    /// quién la escribió, así que la herramienta la lee de vuelta como propia
+    /// y ningún `check` posterior la vuelve a preguntar.
+    ///
+    /// El corolario cae sobre el tipo de salida antes que sobre este `fn`: si
+    /// no modela el hueco, la pérdida está en la firma y no en el cuerpo. Que
+    /// fue una migración la que lo dejó va en `Outcome::notes`, que es donde
+    /// va la procedencia.
     pub run: fn(&Path, bool) -> Result<Outcome>,
 }
 

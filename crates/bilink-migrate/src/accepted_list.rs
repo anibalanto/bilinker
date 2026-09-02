@@ -29,6 +29,29 @@
 //! endpoints **antes** de poder leer los archivos con el binario nuevo. Al revés
 //! funciona: se migra, y quien quiera el vecindario lo recupera aceptando.
 //!
+//! # La disyuntiva era falsa, y de acá salió la regla
+//!
+//! Lo de arriba queda como registro de qué se eligió y contra qué. Las salidas que
+//! consideró eran dos de tres: faltaba **conservar los hashes y declarar que falta la
+//! ubicación** —`link: unknown` en el nivel—, que da lo que `declined` buscaba sin
+//! tirar los dos sha256 por endpoint.
+//!
+//! Y no era una opción remota: esta migración **tuvo los hashes en la mano**. `v38`
+//! los lee, y lo único que no podía derivar era el `link`. Lo que le faltó fue un
+//! `v40::Accepted` capaz de escribir un nivel sin ubicación —su `n` es
+//! `Option<String>`, o sea `declined` o nada—, así que la pérdida está en el tipo de
+//! salida y no en el razonamiento de arriba.
+//!
+//! `declined` es una **respuesta** —*"nadie vigila el vecindario de este endpoint"*—
+//! puesta donde iba una **imposibilidad** —*"no pude traer los captures"*—. De acá
+//! sale la regla general que lo prohíbe de ahora en adelante: una migración no puede
+//! descartar una decisión, ver el doc de `accreta_migrate::Migration::run`.
+//!
+//! **Y esta migración no se toca.** Ya corrió y está en los ledgers; el conjunto es de
+//! sólo-agregar, así que reescribirla no le devolvería el vecindario a nadie. Eso lo
+//! hace `bilinker restore-n1`, que no es una migración justamente porque lee los
+//! backups del corte — archivos que el repo no tiene.
+//!
 //! # El conteo no es cosmético
 //!
 //! Cuántos `n` se degradaron va en las notas del ledger. Una renuncia masiva escrita
