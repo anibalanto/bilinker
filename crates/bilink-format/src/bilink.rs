@@ -216,7 +216,7 @@ pub const LEVEL_LINK_UNKNOWN: &str = "unknown";
 ///
 /// | | |
 /// |---|---|
-/// | *(ausente)* | se miró y no hay vecinos — una firma de puros primitivos |
+/// | *(ausente)* | se miró y no hay vecinos — una firma cuyos tipos son todos de otra capa |
 /// | `capture <id> <id> …` | éstos son los vecinos, ordenados por id |
 /// | `unknown` | el contrato está y de qué vecinos salió no se sabe |
 ///
@@ -422,8 +422,11 @@ pub struct Neighbourhood {
     ///
     /// **Vacío se omite, y no hay ambigüedad**: que el nivel exista ya dice que el
     /// vecindario se adquirió, así que la ausencia del campo sólo puede significar
-    /// *"se miró y no hay vecinos"* — el caso legítimo de una firma de puros
-    /// primitivos.
+    /// *"se miró y no hay vecinos"* — el caso legítimo de una firma cuyos tipos
+    /// resuelven todos fuera de la capa, como `Result<T>` con el `Result` de anyhow.
+    ///
+    /// Una firma de **puros primitivos** no llega hasta acá: no aporta ninguna
+    /// posición, así que el nivel no se adquiere y no hay campo del que hablar.
     ///
     /// Es una consecuencia de la forma string: `capture <id> <id>` no tiene cómo
     /// escribir una lista vacía —`capture` solo es degenerado y se rechaza— así que

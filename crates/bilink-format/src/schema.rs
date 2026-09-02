@@ -172,7 +172,14 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // slot no tiene fallback, así que le falla explícito y la versión le dice por qué.
     // Y el guard lo detecta solo: el valor discrimina al parsear, así que está en el
     // `pattern` publicado.
-    ("4.1.0", "93dc3197a79ef0c8ce01624318fb56330bb3623f4d94851aca4d90708c22238a"),
+    //
+    // **Su hash se corrigió sin subir la versión, y está permitido**: 4.1.0 no salió
+    // —no hay release ni tag— así que su entrada todavía se está escribiendo, que es
+    // lo que dice la regla de arriba. Lo que la movió fue **prosa**: corregir un
+    // ejemplo de un doc comment, que schemars publica como `description`. El formato
+    // no cambió, y subir el major por una corrección de comentario habría dicho que
+    // sí.
+    ("4.1.0", "f1e4b6097c4841906baf7a62e23867a7369115907a5c6ed4c5843aefb829a89b"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

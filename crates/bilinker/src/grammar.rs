@@ -131,8 +131,13 @@ pub fn signature_kinds(lang: &str) -> &'static [&'static str] {
     }
 }
 
-/// Los campos de una firma que **llevan tipos**, y por lo tanto las posiciones donde
-/// tiene sentido preguntarle al proveedor por el vecindario.
+/// Los campos de una firma que **llevan tipos**: dónde buscar los identificadores por
+/// los que se le pregunta al proveedor.
+///
+/// **Dicen dónde buscar y no son las posiciones.** El primer byte de uno de estos
+/// campos casi nunca es un tipo: el de `parameters` es el paréntesis, y el de un
+/// retorno compuesto es el tipo de más afuera. Las posiciones salen de recorrerlos con
+/// [`type_identifier_kinds`]. Ver `concepts/accept.md` § "Dónde se pregunta".
 ///
 /// Son los mismos que captura [`--as interface`](../../../commands/chain.md), y no es
 /// casualidad: el vecindario es de la firma, así que un capture de contrato y un
@@ -146,6 +151,28 @@ pub fn signature_fields(lang: &str) -> &'static [&'static str] {
         "java" => &["type", "parameters"],
         "rust" => &["return_type", "parameters"],
         "typescript" | "tsx" => &["return_type", "parameters"],
+        _ => &[],
+    }
+}
+
+/// Los kinds que **nombran un tipo**, y por lo tanto las posiciones donde preguntarle
+/// al proveedor adentro de un campo de la firma.
+///
+/// Es la otra mitad de *"dónde hay un tipo que preguntar"*, y vive de este lado del
+/// puerto por el mismo motivo que [`signature_fields`]: es gramática.
+///
+/// **Los primitivos quedan afuera sin excluirlos.** Una gramática les da kind propio
+/// —`primitive_type`, `integral_type`, `void_type`, `predefined_type`— así que juntar
+/// identificadores de tipo ya los deja fuera, y eso es lo correcto: un `int` no tiene
+/// declaración a la que ir.
+///
+/// Que los tres lenguajes usen el mismo nombre de nodo es una comodidad y no una
+/// garantía; la lista es por lenguaje como todo lo demás acá.
+pub fn type_identifier_kinds(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "java" => &["type_identifier"],
+        "rust" => &["type_identifier"],
+        "typescript" | "tsx" => &["type_identifier"],
         _ => &[],
     }
 }

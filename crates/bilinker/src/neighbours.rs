@@ -44,6 +44,11 @@ pub struct Location {
 /// proveedor. Pasarle el rango lo obligaba a inventar dónde preguntar adentro, y lo
 /// que inventaba era *"el byte donde arranca"* — que sobre un capture de nodo entero
 /// cae en `pub` y no declara nada.
+///
+/// **Cada posición es un identificador de tipo**, y de eso depende que el proveedor
+/// pueda contestar algo útil: sobre un paréntesis o sobre el `ResponseEntity` de un
+/// genérico, un proveedor que resuelve perfecto devuelve la función misma o un tipo
+/// de otra capa. Ver `concepts/accept.md` § "Dónde se pregunta".
 pub trait Neighbours {
     fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>>;
 }
@@ -62,8 +67,9 @@ pub enum Reach {
     /// No hay vecindario: prosa, YAML, un lenguaje sin tipos. La ausencia de `n` es
     /// la correcta y no hay nada que pedir.
     None,
-    /// Hay, y se sabe dónde preguntar: los offsets de los campos de la firma que
-    /// llevan tipos.
+    /// Hay, y se sabe dónde preguntar: el byte inicial de cada identificador de tipo
+    /// que los campos de la firma mencionan. Un campo puede aportar varios
+    /// —`ResponseEntity<List<Dto>>` aporta tres— y `void` ninguno.
     At(Vec<usize>),
     /// Hay, y **no se alcanza desde este fragmento**. El archivo entero, un `enum`, un
     /// `impl`: tienen firmas adentro y ninguna es la suya.
@@ -84,6 +90,10 @@ pub enum Reach {
 /// nodos *es* la firma — todos son hijos suyos. Y desde la firma se baja a los campos
 /// que llevan tipos, que es lo que hace que un capture de contrato y uno de la función
 /// entera pregunten en las **mismas** posiciones.
+///
+/// **De cada campo salen los identificadores de tipo que contiene, no su primer
+/// byte.** Un campo no empieza en un tipo —`parameters` empieza en el paréntesis— así
+/// que proyectarlo pregunta donde no hay nada que declarar. Ver [`type_positions`].
 pub fn reach(layer: &Path, file: &str, ranges: &Ranges) -> Reach {
     use tree_sitter::Parser;
 
@@ -102,6 +112,7 @@ pub fn reach(layer: &Path, file: &str, ranges: &Ranges) -> Reach {
     let Some(tree) = parser.parse(&source, None) else { return Reach::None };
 
     let fields = grammar::signature_fields(lang);
+    let tipos = grammar::type_identifier_kinds(lang);
     let mut at: Vec<usize> = Vec::new();
 
     for r in ranges.parts() {
@@ -128,15 +139,16 @@ pub fn reach(layer: &Path, file: &str, ranges: &Ranges) -> Reach {
         };
         for f in fields {
             if let Some(child) = firma.child_by_field_name(f) {
-                at.push(child.start_byte());
+                type_positions(child, tipos, &mut at);
             }
         }
     }
 
     at.sort_unstable();
     at.dedup();
-    // Una firma sin ningún campo de tipo —`fn f() {}`— no tiene a quién preguntarle, y
-    // eso **sí** es un vecindario vacío legítimo.
+    // Una firma que no menciona ningún tipo —`fn f() {}`, `void f()`, o una de puros
+    // primitivos— no tiene a quién preguntarle, y eso **sí** es un vecindario vacío
+    // legítimo. Los campos pueden estar y no aportar ninguna posición.
     if at.is_empty() { Reach::None } else { Reach::At(at) }
 }
 
@@ -413,6 +425,26 @@ mod port_tests {
     }
 }
 
+/// Los bytes iniciales de los identificadores de tipo que este nodo contiene.
+///
+/// **Un recorrido y no una proyección.** El primer byte de un campo de la firma casi
+/// nunca es un tipo: el de `parameters` es el paréntesis —y preguntar ahí devuelve la
+/// función que lo contiene, o sea el propio fragmento— y el de `Result<Checked>` o
+/// `ResponseEntity<List<Dto>>` es el tipo de más afuera, que suele estar en otra capa
+/// y se descarta, dejando sin preguntar justo al que importa.
+///
+/// Va a cualquier profundidad porque la anidación no tiene tope: `ResponseEntity<
+/// List<Dto>>` esconde su DTO dos niveles adentro. Ver `concepts/accept.md`
+/// § "Dónde se pregunta".
+fn type_positions(node: tree_sitter::Node<'_>, kinds: &[&str], at: &mut Vec<usize>) {
+    let mut cur = node.walk();
+    let mut pila = vec![node];
+    while let Some(n) = pila.pop() {
+        if kinds.contains(&n.kind()) { at.push(n.start_byte()) }
+        pila.extend(n.children(&mut cur));
+    }
+}
+
 /// Si este nodo tiene alguna firma adentro.
 ///
 /// **Es lo que separa "no hay vecindario" de "no pude recorrer hacia el próximo
@@ -472,8 +504,9 @@ mod reach_tests {
         assert_eq!(de(&d, "Svc.rs", "pub enum E", 16), Reach::None);
     }
 
-    /// **La firma se alcanza, y las posiciones son las de sus tipos** — no la del
-    /// `pub` donde el fragmento arranca, que no declara nada.
+    /// **La firma se alcanza, y cada posición cae sobre un identificador de tipo** —
+    /// no sobre el `pub` donde el fragmento arranca, ni sobre el paréntesis donde
+    /// arranca la lista de parámetros. Ninguno de los dos declara nada.
     #[test]
     fn a_signature_is_reached_at_its_types_and_not_at_its_start() {
         let d = en("Svc.rs", SRC);
@@ -483,13 +516,25 @@ mod reach_tests {
             panic!("una firma se alcanza");
         };
         assert!(!at.contains(&arranca), "preguntar en `pub` es el defecto que esto arregla");
-        assert_eq!(at.len(), 2, "el retorno y los parámetros: {at:?}");
-        // En Rust el campo `return_type` es **el tipo**, no la flecha: la posición cae
-        // sobre `Dto` y no sobre `->`.
+        assert_eq!(at.len(), 2, "el tipo del parámetro y el del retorno: {at:?}");
+        // **Las dos caen sobre `Dto`.** Antes una caía sobre el `(` de `parameters`, y
+        // preguntar ahí devuelve la función que lo contiene: el fragmento se declaraba
+        // vecino de sí mismo, y eso no fallaba — cubría.
         for byte in &at {
-            assert!(SRC[*byte..].starts_with("(d: Dto)") || SRC[*byte..].starts_with("Dto {"),
-                    "cae sobre un campo de tipo, y no sobre {:?}", &SRC[*byte..*byte + 8]);
+            assert!(SRC[*byte..].starts_with("Dto"),
+                    "cae sobre un identificador de tipo, y no sobre {:?}", &SRC[*byte..*byte + 8]);
         }
+    }
+
+    /// Y el paréntesis **no es una posición**, dicho sobre el byte y no sobre el
+    /// conteo: es el defecto que producía el vecino de sí mismo.
+    #[test]
+    fn the_parameter_paren_is_never_asked() {
+        let d = en("Svc.rs", SRC);
+        let firma = "pub fn get(d: Dto) -> Dto { todo!() }";
+        let paren = SRC.find("(d: Dto)").unwrap();
+        let Reach::At(at) = de(&d, "Svc.rs", firma, firma.len()) else { panic!() };
+        assert!(!at.contains(&paren), "el `(` no declara ningún tipo: {at:?}");
     }
 
     /// **El archivo entero tiene firmas y ninguna es la suya.** Es *"no pude recorrer
@@ -512,20 +557,65 @@ mod reach_tests {
         assert_eq!(reach(d.path(), "Dtos.rs", &Ranges::one(0, body.len())), Reach::None);
     }
 
-    /// Una firma sin ningún tipo que mencionar **sí se alcanza**, y su vecindario
-    /// vacío es verdadero.
+    /// Una firma que **no menciona ningún tipo** no tiene a quién preguntarle, y eso
+    /// se sabe con la gramática sola: `Reach::None`, sin proveedor y sin aviso.
     ///
-    /// Es el caso que hace que bilinker no pueda defenderse solo del vacío: acá el
-    /// vacío es la respuesta correcta, así que una guarda contra él rompería esto. Por
-    /// eso quien no puede contestar tiene que decirlo, y no callarse.
+    /// **Antes daba `At([el paréntesis])`**, o sea que iba a preguntar por un
+    /// vecindario que la gramática ya sabía vacío. Que ahora se decida de este lado
+    /// achica el vacío indefendible del puerto a lo que de verdad lo es: un proveedor
+    /// que resolvió y no encontró nada **en la capa**.
     #[test]
-    fn a_signature_that_mentions_nothing_is_reached_and_its_emptiness_is_true() {
+    fn a_signature_that_mentions_no_type_has_none_and_nobody_is_asked() {
         let body = "pub fn go() { }\n";
         let d = en("Svc.rs", body);
-        let Reach::At(at) = de(&d, "Svc.rs", "pub fn go() { }", 15) else {
-            panic!("una firma se alcanza aunque no mencione nada");
-        };
-        assert_eq!(at.len(), 1, "la lista de parámetros, vacía: {at:?}");
-        assert!(body[at[0]..].starts_with("()"));
+        assert_eq!(de(&d, "Svc.rs", "pub fn go() { }", 15), Reach::None);
+    }
+
+    /// Y una de puros primitivos es el mismo caso: `u8` es `primitive_type`, no un
+    /// identificador de tipo, y no tiene declaración a la que ir.
+    #[test]
+    fn a_signature_of_only_primitives_has_none() {
+        let body = "pub fn add(a: u8, b: u8) -> u8 { a + b }\n";
+        let d = en("Svc.rs", body);
+        let m = "pub fn add(a: u8, b: u8) -> u8 { a + b }";
+        assert_eq!(de(&d, "Svc.rs", m, m.len()), Reach::None);
+    }
+
+    /// **El retorno genérico es el caso de `hsi`, y es el que más aparece.**
+    ///
+    /// El campo `return_type` de `Result<Checked>` arranca en `Result`, que está en
+    /// otra capa y se descarta — así que proyectando el primer byte, `Checked` no se
+    /// preguntaba nunca. Recorriendo, los dos se preguntan y el proveedor decide.
+    #[test]
+    fn a_generic_return_asks_for_the_type_inside_and_not_only_the_outer_one() {
+        let body = "pub struct Checked { pub x: u8 }\n\npub fn check() -> Result<Checked> { todo!() }\n";
+        let d = en("Svc.rs", body);
+        let m = "pub fn check() -> Result<Checked> { todo!() }";
+        let Reach::At(at) = de(&d, "Svc.rs", m, m.len()) else { panic!("se alcanza") };
+        let ve: Vec<&str> = at.iter().map(|b| body[*b..].split(|c: char| !c.is_alphanumeric()).next().unwrap()).collect();
+        assert!(ve.contains(&"Checked"), "el tipo de adentro se pregunta: {ve:?}");
+        assert!(ve.contains(&"Result"), "y el de afuera también: el proveedor decide, no la gramática: {ve:?}");
+    }
+
+    /// Y en java anida dos veces, que es la forma de 28 de los 98 endpoints de `hsi`.
+    #[test]
+    fn a_doubly_nested_java_return_asks_for_the_dto() {
+        let body = "class C {\n\tpublic ResponseEntity<List<Dto>> get() { return null; }\n}\n";
+        let d = en("C.java", body);
+        let m = "public ResponseEntity<List<Dto>> get() { return null; }";
+        let Reach::At(at) = de(&d, "C.java", m, m.len()) else { panic!("se alcanza") };
+        let ve: Vec<&str> = at.iter().map(|b| body[*b..].split(|c: char| !c.is_alphanumeric()).next().unwrap()).collect();
+        assert!(ve.contains(&"Dto"), "el DTO está tres capas adentro y es el que importa: {ve:?}");
+        assert_eq!(ve.len(), 3, "ResponseEntity, List y Dto: {ve:?}");
+    }
+
+    /// Un `void` no aporta ninguna posición, y su lista de parámetros vacía tampoco:
+    /// son 7 de los 98 de `hsi`.
+    #[test]
+    fn a_void_java_signature_with_no_parameters_has_none() {
+        let body = "class C {\n\tpublic void go() { }\n}\n";
+        let d = en("C.java", body);
+        let m = "public void go() { }";
+        assert_eq!(de(&d, "C.java", m, m.len()), Reach::None);
     }
 }
