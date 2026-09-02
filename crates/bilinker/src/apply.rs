@@ -171,20 +171,22 @@ fn neighbourhood_fix(
     let Some(locs) = p.of(layer, &cap.file, &at)? else { return Ok(None) };
     let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(None) };
 
-    let declarado = e.n.as_ref().and_then(|d| d.level(1)).map(|l| l.link.known_ids());
-    // **Un `unknown` declarado no se arregla acá todavía.** Llenarlo con los captures
-    // que el proveedor alcanza es un fix legítimo y es su propia decisión: pide que
-    // `check` sepa nombrar el estado, y que las posiciones que se le pasan al proveedor
-    // sean las de los vecinos y no las de la firma misma. Hasta entonces `apply` no lo
-    // toca: el `unknown` es un estado seguro, y un capture que apunta al propio
-    // fragmento deja el endpoint verde afirmando algo falso.
-    let declarado = match declarado {
-        Some(None)      => return Ok(None),
-        Some(Some(ids)) => ids,
-        None            => &[],
-    };
     let Some(hoy) = f.n.link.captures() else { return Ok(None) };
-    if declarado == hoy.ids() { return Ok(None); }
+
+    // Tres declaraciones posibles, y cada una compara distinto contra lo de hoy.
+    let hay_fix = match e.n.as_ref().and_then(|d| d.level(1)).map(|l| &l.link) {
+        // **`unknown` es incomparable, así que cualquier conjunto es el fix.** No hay
+        // ids de un lado: dos `unknown` no coinciden entre sí ni con una lista. Es la
+        // otra forma de ganar miembros —ahí faltaba uno, acá falta la lista entera— y
+        // el vacío **también** es un fix, porque *"se miró y no hay vecinos"* es una
+        // respuesta distinta de *"de qué vecinos salió no se sabe"*.
+        Some(l) if l.is_unknown() => true,
+        // Un conjunto declarado se compara por ids, que es la identidad del vecino.
+        Some(l) => l.known_ids().is_some_and(|ids| ids != hoy.ids()),
+        // Sin nivel declarado, sólo un conjunto no vacío agrega algo.
+        None => !hoy.is_empty(),
+    };
+    if !hay_fix { return Ok(None); }
     Ok(Some(Fix::Neighbourhood { to: hoy.clone(), captures: f.captures }))
 }
 
@@ -375,6 +377,67 @@ mod neighbourhood_fix_tests {
         let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
         assert_eq!(to.len(), 1, "un vecino: {to}");
         assert_eq!(captures.len(), 1, "y su capture, para poder escribirlo");
+    }
+
+    /// **Un `unknown` declarado se llena**, que es lo que la `003` dejó pendiente en 139
+    /// niveles.
+    ///
+    /// No hay conjunto contra el que comparar —dos `unknown` no coinciden entre sí ni
+    /// con una lista— así que cualquier conjunto que el proveedor alcance es el fix.
+    #[test]
+    fn an_unknown_level_gets_filled() {
+        let (d, uuid, _) = layer();
+        // La declaración dice "el contrato está y de qué vecinos salió no se sabe".
+        let path = BiLink::path_in(d.path(), &uuid);
+        let mut bl = BiLink::load(&path).unwrap();
+        bl.endpoint.get_mut(0).n = Some(bilink_format::DeclaredN::of_level_1(bilink_format::LevelLink::Unknown));
+        bl.write(&path).unwrap();
+
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
+            .expect("un `unknown` tiene fix: llenarlo");
+        let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
+        assert_eq!(to.len(), 1, "el vecino que el proveedor alcanzó: {to}");
+        assert_eq!(captures.len(), 1, "con su capture, para poder escribirlo");
+
+        // Y llenarlo **no toca `accepted`**: el contrato conservado sigue donde estaba,
+        // así que el endpoint sigue pidiendo una decisión.
+        apply_fix(d.path(), fix).unwrap();
+        let bl = BiLink::load(&path).unwrap();
+        assert!(!bl.endpoint.get(0).n.as_ref().unwrap().level(1).unwrap().link.is_unknown(),
+                "la declaración dejó de decir `unknown`");
+    }
+
+    /// **Y el vacío también es un fix sobre un `unknown`.**
+    ///
+    /// *"Se miró y no hay vecinos"* es una respuesta distinta de *"de qué vecinos salió
+    /// no se sabe"*, así que quedarse en `unknown` sería perder la que sí se consiguió.
+    #[test]
+    fn an_unknown_level_gets_filled_even_when_the_answer_is_empty() {
+        let (d, uuid, _) = layer();
+        let path = BiLink::path_in(d.path(), &uuid);
+        let mut bl = BiLink::load(&path).unwrap();
+        bl.endpoint.get_mut(0).n = Some(bilink_format::DeclaredN::of_level_1(bilink_format::LevelLink::Unknown));
+        bl.write(&path).unwrap();
+
+        // El proveedor miró y no alcanzó nada de esta capa: `Some(vec![])`.
+        let p = Fake { locs: Some(vec![]), asked: Cell::new(0) };
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        assert!(fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
+                "el vacío reemplaza al `unknown`: son dos respuestas distintas");
+    }
+
+    /// **Y sobre un conjunto ya declarado, el vacío no es un fix.** Ahí sí hay con qué
+    /// comparar, y comparar es lo que decide.
+    #[test]
+    fn an_already_empty_declared_set_is_not_a_fix() {
+        let (d, ..) = layer();
+        let p = Fake { locs: Some(vec![]), asked: Cell::new(0) };
+        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        assert!(!fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
+                "sin nivel declarado y sin vecinos, no hay nada que proponer");
     }
 
     /// **Y no aprueba nada**: aplicar deja el endpoint en `RELOCATED`.
