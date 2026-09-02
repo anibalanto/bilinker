@@ -12,8 +12,4 @@ endpoint:
       link: capture 1a4e75bd16ae4e5d6c2eb75ff9b13dd0
       hash: 981fe03c3692439e9b38d53fd63fb192d54fe70d77eb3b8adf59b7e8ffa532ae
       hash_ast: 455f330d9f1bbcf35f88dffa22d38fe5d1440185c75b2ecd314bb644d4731341
-      n:
-        1:
-          link: capture 5904724083b67ce568365a1028aa7c46
-          hash: 024f1cae1c8d97c02d934a7d5880d6497a27b7a57fc393212671ee377ab5c208
-          hash_ast: 676f76dd750bc0c054c199afbb79f46b7b936bb5d02154c5cf63328208694a0a
+      n: declined
