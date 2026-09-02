@@ -48,6 +48,21 @@ pub fn schema_json() -> String {
 /// La regla protege **lo publicado**. Mientras una versión no salió —no hay release,
 /// nadie la bajó— su entrada todavía se está escribiendo y corregirla no reescribe
 /// nada. La línea es la publicación, no el número.
+///
+/// **Y el esquema se puede mover sin que el formato cambie**: un doc comment se
+/// publica como `description`, así que corregir una frase mueve el hash. Subir el
+/// major ahí diría que un lector viejo no entiende un archivo nuevo, que es lo único
+/// que un major significa.
+///
+/// Que fue sólo prosa se verifica y no se estima — generar el esquema de los dos lados
+/// y compararlos **sin las descripciones**:
+///
+/// ```sh
+/// cargo run -q -p bilink-format --bin schema | jq 'del(.. | .description?)'
+/// ```
+///
+/// Si ahí no difieren, el formato no cambió. Ver `concepts/format-version.md`
+/// § "El esquema se puede mover sin que el formato cambie".
 pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     ("2.0.0", "39396775ea75eec5ac760b51a450a4315b2d1a8275860daedf7e4468e5acc21f"),
     // 3.0.0 saca el `offset` del capture: un fragmento deja de ser un rango adentro
