@@ -23,12 +23,17 @@ impl Neighbours for Lspd {
     /// **Y también cuando el daemon está pero el servidor de atrás sigue indexando.**
     /// Un `ping` contesta antes que el language server esté listo, así que "hay
     /// daemon" no alcanza: en esa ventana `definitions` devolvía `[]`, que llega como
-    /// `Some(vec![])` —*"miré y esta firma no menciona ningún tipo"*— y se escribe
-    /// como vecindario adquirido. Es una cobertura afirmada que no existe.
+    /// `Some(vec![])` —*"miré y ninguna de estas posiciones resuelve acá"*— y se
+    /// escribe como vecindario adquirido. Es una cobertura afirmada que no existe.
     ///
-    /// La distinción no se puede hacer de este lado —una firma de puros primitivos
-    /// tiene vecindario vacío, y es legítimo—, así que la da el daemon con
-    /// [`NOT_READY`](lspd_client::NOT_READY) y acá sólo se traduce.
+    /// La distinción no se puede hacer de este lado: un vacío legítimo llega igual, y
+    /// llega seguido —`Result<Checked>` pregunta por los dos y `Result` vive en otro
+    /// crate—. Así que la da el daemon con [`NOT_READY`](lspd_client::NOT_READY) y acá
+    /// sólo se traduce.
+    ///
+    /// **Las posiciones son identificadores de tipo**, no el primer byte de un campo
+    /// de la firma. Es lo que hace que preguntar acá tenga sentido: sobre un `(` un
+    /// language server que resuelve perfecto devuelve la función que lo contiene.
     fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
         if !lspd_client::responds() { return Ok(None); }
 
