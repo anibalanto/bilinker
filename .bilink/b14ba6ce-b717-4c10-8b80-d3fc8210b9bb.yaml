@@ -1,11 +1,11 @@
 endpoint:
-  '0':
+  0:
     link: path <
     accepted:
     - link: capture 4c52548cfd114ce10d583e15c60be53f
       hash: 733bee9e2056ad4544a59edb0481881051a4b8e23ae13cdc5b57611089383b89
       hash_ast: 3213ca9d43d1f60e9b28368aefb3e7c467b20b692dd9cdbd6b8d5f01668f4909
-  '1':
+  1:
     link: capture 52579c456dd30e6c8025082a3f85dd67
     accepted:
     - agree:
@@ -13,4 +13,8 @@ endpoint:
       link: capture 52579c456dd30e6c8025082a3f85dd67
       hash: b93e7c9dccfd44d309f576af9aeb50b8043f1ab6b6a50e378350c93229685332
       hash_ast: c33f34710a43d0fb83a9e4ba82c2ce0cf72b131f93ea82b07d6786c02a4e25b9
-      n: declined
+      n:
+        1:
+          link: unknown
+          hash: 79fca93e13a67850dc17725e43787ea37ccec0f37f587fa0be07078d6b53738f
+          hash_ast: a466b496f01e9218cf00ea9e0316e10dafd4cc4fd7589b3bb7911b7c268dadbb
