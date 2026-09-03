@@ -37,6 +37,62 @@ impl GetResult {
     }
 }
 
+/// Un vecino de nivel 1, traído junto con el fragmento.
+///
+/// **Es un capture como cualquier otro**, así que se resuelve y se muestra con la
+/// misma vista: lo único que cambia es de dónde salió el id. Cuánto se trae ya lo
+/// decidió su capture —un capture nombra un nodo entero, y no hay sub-rango— así que
+/// no hay nada que este comando tenga que elegir.
+pub struct Neighbour {
+    /// El id de su capture: es lo que hay que poder nombrar cuando no resuelve.
+    pub id: String,
+    /// Su fragmento, o por qué no se pudo traer.
+    pub fragment: std::result::Result<GetResult, NotBrought>,
+}
+
+/// Por qué un vecino declarado no pudo traerse.
+pub enum NotBrought {
+    /// El bilink declara un capture que no está en la capa.
+    NoCapture(String),
+    /// El capture está y su fragmento no. Se imprime como cualquier otro que no
+    /// resuelve: archivo, id, estado y query.
+    Unresolved(Unresolved),
+}
+
+/// El vecindario de nivel 1 tal como `get` lo puede mostrar.
+///
+/// **No tener vecinos que traer no es un solo caso**, y sólo `NoSignature` es un
+/// silencio legítimo: los otros tres tienen contrato o lo tuvieron, y callarlos los
+/// volvería indistinguibles de no tener firma —que es afirmar una cobertura que no
+/// hay—. Ver `commands/get.md` § "Cuando no hay vecinos que traer, no es un solo caso".
+pub enum Level1 {
+    /// Los vecinos declarados en `n.1.link`, en el orden en que están escritos, que
+    /// es el del fold. **Nunca vacío**: el conjunto vacío es `Empty`.
+    Brought(Vec<Neighbour>),
+    /// `n` ausente: el fragmento no tiene firma resoluble — prosa, un DTO, un `enum`.
+    NoSignature,
+    /// `n.1` sin `link`: se preguntó y no hay vecinos de esta capa.
+    Empty,
+    /// `n.1.link: unknown`: el contrato está y de qué vecinos salió no se sabe.
+    Unlocated,
+    /// `n: declined`: alguien renunció al vecindario.
+    Declined,
+}
+
+/// Lo que `get` devuelve de un endpoint: **el fragmento y su vecindario**.
+///
+/// Van juntos porque `accept` los aprueba juntos —escribe `hash` y `n` en la misma
+/// entrada, y no hay aprobación parcial— y `get` es el comando con el que se mira
+/// antes de aprobar. Devolver sólo el fragmento es devolver la mitad del contrato.
+///
+/// **Son dos campos y no un `GetResult` con el vecindario adentro**, porque un vecino
+/// *es* un `GetResult`: anidarlo dejaría representable un vecindario de vecindarios, y
+/// el nivel 1 no recursa.
+pub struct Got {
+    pub fragment: GetResult,
+    pub level1: Level1,
+}
+
 pub struct DiffResult {
     pub file: String,
     pub layer_root: std::path::PathBuf,
@@ -54,18 +110,22 @@ pub fn get(
     endpoint: u8,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
-) -> Result<GetResult> {
+) -> Result<Got> {
     let path = crate::accept::find_bilink_path(root, bilink_name)?;
     let uuid = uuid_of(&path);
     let bl = BiLink::load(&path)?;
     if endpoint > 1 { bail!("el endpoint es 0 o 1"); }
-    let link = &bl.endpoint.get(endpoint).link;
+    let ep = bl.endpoint.get(endpoint);
+    let link = &ep.link;
 
     match link {
         LinkEndpoint::Capture(_) => {
             let cap = crate::capture::capture_of(root, link)?
                 .context("el endpoint estructural no tiene capture resoluble")?;
-            resolve(root, &cap, before, after)
+            Ok(Got {
+                fragment: resolve(root, &cap, before, after)?,
+                level1: level1_of(root, ep, before, after),
+            })
         }
         LinkEndpoint::Path(p) => traverse_layer(root, p.clone(), &uuid, before, after),
         // Cruzar la frontera: el fragmento vive en el clon del proveedor, que el
@@ -149,7 +209,7 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
 fn traverse_repo(
     root: &Path, alias: &str, uuid: &str,
     before: Option<(usize, usize)>, after: Option<(usize, usize)>,
-) -> Result<GetResult> {
+) -> Result<Got> {
     let clone = crate::frontier::Provider::clone_path(root, alias);
     if !clone.join(".bilink").is_dir() {
         bail!("el repo '{alias}' no está clonado. Traerlo primero: `bilinker fetch {alias}`.");
@@ -158,13 +218,20 @@ fn traverse_repo(
 
     let remote = BiLink::load(&BiLink::path_in(&clone, uuid))
         .with_context(|| format!("el bilink {uuid} no está en el repo '{alias}'"))?;
-    let id = [0u8, 1u8]
+    let n = [0u8, 1u8]
         .iter()
-        .find_map(|n| remote.endpoint.get(*n).link.capture_id())
+        .copied()
+        .find(|n| remote.endpoint.get(*n).link.capture_id().is_some())
         .context("el bilink remoto no tiene endpoint estructural")?;
-    let cap = bilink_format::Capture::load_in(&clone, id)?;
+    let ep = remote.endpoint.get(n);
+    let cap = bilink_format::Capture::load_in(&clone, ep.link.capture_id().unwrap())?;
 
-    resolve(&clone, &cap, before, after)
+    // El vecindario que se muestra es el del endpoint estructural del proveedor, y
+    // sale de su capa: los ids que declara son captures suyos, no de acá.
+    Ok(Got {
+        fragment: resolve(&clone, &cap, before, after)?,
+        level1: level1_of(&clone, ep, before, after),
+    })
 }
 
 /// Qué cambió del lado del proveedor entre lo que este repo aceptó y lo que publica.
@@ -407,7 +474,7 @@ fn traverse_layer(
     uuid: &str,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
-) -> Result<GetResult> {
+) -> Result<Got> {
     let adjacent_root = {
         let p = stratum::resolve(root, root, layer_path.tokens())
             .map_err(|e| anyhow::anyhow!("resolving adjacent layer: {e}"))?;
@@ -419,10 +486,77 @@ fn traverse_layer(
 
     let adjacent_bl = BiLink::load(&BiLink::path_in(&adjacent_root, uuid))
         .with_context(|| format!("no está el bilink {uuid} en la capa vecina"))?;
-    let (_, cap) = structural_of(&adjacent_root, &adjacent_bl)
+    let (n, cap) = structural_of(&adjacent_root, &adjacent_bl)
         .with_context(|| format!("el bilink vecino {uuid} no tiene endpoint estructural resoluble"))?;
 
-    resolve(&adjacent_root, &cap, before, after)
+    // **El vecindario es del endpoint estructural, y por eso vive del otro lado.** Un
+    // endpoint `path` no tiene vecindario propio: lleva una copia opaca del ajeno, y
+    // lo que hay que mostrar es el del fragmento — que es el que se está trayendo.
+    Ok(Got {
+        fragment: resolve(&adjacent_root, &cap, before, after)?,
+        level1: level1_of(&adjacent_root, adjacent_bl.endpoint.get(n), before, after),
+    })
+}
+
+/// El vecindario declarado de un endpoint, resuelto.
+///
+/// **Se lee la declaración y no lo aceptado**, por la misma razón por la que el
+/// fragmento que se imprime es el de hoy: contrastar contra lo aceptado es `--diff`.
+/// Cuando los dos conjuntos difieren el estado es `CONTRACT_RELOCATED`, y el que hay
+/// que mirar para decidir si se acepta es el de hoy.
+///
+/// La renuncia es la única que sale del `accepted`, y no es una excepción: `declined`
+/// es una decisión, y las decisiones no viven en la declaración.
+fn level1_of(
+    layer: &Path,
+    ep: &bilink_format::Endpoint,
+    before: Option<(usize, usize)>,
+    after: Option<(usize, usize)>,
+) -> Level1 {
+    if let Some(l) = ep.n.as_ref().and_then(|n| n.level(1)) {
+        if l.link.is_unknown() { return Level1::Unlocated; }
+        let ids = l.link.known_ids().unwrap_or_default();
+        return if ids.is_empty() {
+            Level1::Empty
+        } else {
+            Level1::Brought(ids.iter().map(|id| bring(layer, id, before, after)).collect())
+        };
+    }
+
+    // **Sin declaración, la ausencia todavía no dice cuál de dos cosas es**, y la que
+    // falta se lee en la decisión: un contrato aceptado sin declaración que lo ubique
+    // es un `CONTRACT_UNLOCATED`, y decir *"no tiene firma"* ahí afirmaría una
+    // cobertura que no hay. Es el mismo `None` que colapsaba tres casos en `apply`.
+    //
+    // Con más de un `accepted` el endpoint está `CONSENSUS_DIVERGED` y no hay un valor
+    // contra el cual leer nada: se mira el primero, como en todos lados.
+    match ep.accepted.first().and_then(|a| a.n.as_ref()) {
+        Some(bilink_format::N::Declined(_)) => Level1::Declined,
+        // Que el nivel aceptado tenga ids o `unknown` no cambia lo que hay que hacer
+        // —la declaración es la que falta, y la escribe `apply`— así que no cambia lo
+        // que se dice.
+        Some(n) if n.level(1).is_some() => Level1::Unlocated,
+        _ => Level1::NoSignature,
+    }
+}
+
+/// Traer un vecino es **resolver su capture**: la misma llamada que el fragmento.
+///
+/// No falla hacia arriba. El fragmento que se pidió ya salió, y hacer fallar a `get`
+/// por un vecino roto se lo negaría a quien vino a mirarlo — el estado de un capture
+/// es de `check`.
+fn bring(
+    layer: &Path,
+    id: &str,
+    before: Option<(usize, usize)>,
+    after: Option<(usize, usize)>,
+) -> Neighbour {
+    let fragment = match Capture::load_in(layer, id) {
+        Err(e) => Err(NotBrought::NoCapture(format!("{e:#}"))),
+        Ok(cap) => resolve(layer, &cap, before, after)
+            .map_err(|_| NotBrought::Unresolved(unresolved_for(layer, &cap))),
+    };
+    Neighbour { id: id.to_string(), fragment }
 }
 
 /// La referencia que un endpoint que no resuelve **igual puede mostrar**.

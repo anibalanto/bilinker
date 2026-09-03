@@ -525,6 +525,50 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
     Ok(root)
 }
 
+/// El vecindario de nivel 1, debajo del fragmento.
+///
+/// **No tener vecinos que traer no es un solo caso.** Sólo el fragmento sin firma es
+/// silencio: los otros tres tienen contrato o lo tuvieron, y un silencio compartido
+/// los volvería indistinguibles de él — que es afirmar una cobertura que no hay.
+///
+/// Cada vecino lleva su encabezado, que es lo que impide que el fragmento y sus
+/// vecinos se lean como uno solo.
+fn print_level1(level1: &bilinker::get::Level1) {
+    use bilinker::get::{Level1, NotBrought};
+
+    match level1 {
+        // No hay firma, así que no hay vecindario. Decirlo debajo de cada fragmento
+        // de prosa sería ruido en la salida más común del comando.
+        Level1::NoSignature => {}
+        Level1::Empty       => eprintln!("# n1 · sin vecinos"),
+        Level1::Unlocated   => eprintln!("# n1 · ubicación desconocida — acuñar con `bilinker apply`"),
+        Level1::Declined    => eprintln!("# n1 · renunciado"),
+        Level1::Brought(neighbours) => {
+            for neighbour in neighbours {
+                eprintln!();
+                match &neighbour.fragment {
+                    Ok(f) => {
+                        eprintln!("# n1 · {}  lines {}", f.file, f.line_span());
+                        print!("{}", f.view);
+                    }
+                    // La referencia igual: es el dato con el que se arregla, y sin
+                    // ella hay que abrir el `.yaml` del capture para leer la query.
+                    Err(NotBrought::Unresolved(u)) => {
+                        eprintln!("# n1 · no resuelve");
+                        eprint!("{u}");
+                        eprintln!("{}", u.reason);
+                    }
+                    Err(NotBrought::NoCapture(e)) => {
+                        let short = &neighbour.id[..8.min(neighbour.id.len())];
+                        eprintln!("# n1 · capture {short}…  no está en la capa");
+                        eprintln!("{e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Parses a stratum tip: `STRATUM_PATH[:LINE:COL]`.
 ///
 /// The stratum path encodes both layer navigation and the file.  The last
@@ -1070,11 +1114,18 @@ Eliminar? [y/N] ");
                     if let Some(a) = bilinker::cache::Cache::load(&root).alias(name, endpoint) {
                         eprintln!("# {a}");
                     }
-                    eprintln!("# {}  lines {}", result.file, result.line_span());
+                    eprintln!("# {}  lines {}", result.fragment.file, result.fragment.line_span());
                     // La vista es el default: si alguien quiere el texto exacto es
                     // **para compararlo**, y comparar lo hacen `check` y `--diff`.
-                    if raw { println!("{}", result.content); }
-                    else   { print!("{}", result.view); }
+                    if raw {
+                        println!("{}", result.fragment.content);
+                    } else {
+                        print!("{}", result.fragment.view);
+                        // El vecindario va con el fragmento, porque `accept` los
+                        // aprueba juntos. En `--raw` no entra: ahí el stdout es el
+                        // fragmento y nada más, byte por byte.
+                        print_level1(&result.level1);
+                    }
                 }
             } else if pos_form {
                 let mut parts = target.rsplitn(3, ':');
