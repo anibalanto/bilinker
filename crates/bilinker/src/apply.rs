@@ -62,20 +62,86 @@ impl PendingFix {
     }
 }
 
+/// Un endpoint que no se pudo mirar, y por qué.
+///
+/// **No es un fix que falta: es una respuesta que falta.** Un endpoint acá no entra en
+/// la cuenta de *"no hay nada que arreglar"*, porque sobre él no se sabe.
+pub struct Unlooked {
+    pub uuid: String,
+    pub n: u8,
+    /// Qué falló. Es para el reporte, no para decidir: un *"no se pudo"* sin decir qué
+    /// falló es la misma respuesta vacía en otro lugar.
+    pub why: &'static str,
+}
+
+impl Unlooked {
+    pub fn short(&self) -> &str { &self.uuid[..8.min(self.uuid.len())] }
+}
+
+/// Qué salió de recorrer la capa.
+///
+/// **Dos formas y no una lista con un flag.** Una capa fría no tiene una lista de fixes
+/// vacía: no tiene lista. Que el tipo lo diga es lo que impide imprimir
+/// `Pending fixes (0)` sobre algo que nadie miró — el caso que [`is_cold`] describe.
+///
+/// [`is_cold`]: crate::cache::Cache::is_cold
+pub enum Scan {
+    /// La capa no tiene estado calculado. Lo llena `check`, y `apply` lo nombra en vez
+    /// de suplirlo: hacerlo acá escondería el costo de verificar la capa entera adentro
+    /// de un comando que dice *"propone fixes"*.
+    Cold { bilinks: usize },
+    /// La capa se miró. Los que no se pudieron van aparte de los fixes, **no
+    /// mezclados con los que no tenían nada**.
+    Looked { fixes: Vec<PendingFix>, unlooked: Vec<Unlooked> },
+}
+
+/// Qué salió de mirar el vecindario de **un** endpoint.
+///
+/// **Tres valores y no un `Option`**, que es lo que separa *"no hay"* de *"no pude"* —
+/// la misma figura que [`Reach`](crate::neighbours::Reach) tiene un nivel más abajo, y
+/// por el mismo motivo: el tercer valor es el que hace honestos a los otros dos.
+enum Looked {
+    /// Hay conjunto nuevo que proponer.
+    Fix(Fix),
+    /// Se miró, y no hay nada que arreglar.
+    Nada,
+    /// No se pudo mirar.
+    NoSePudo(&'static str),
+}
+
 /// Recorre la capa y calcula la ubicación nueva de cada endpoint que la necesite.
 ///
 /// **Nunca deriva el fix de la cache**: re-resuelve contra git y el AST actuales, y
 /// descarta el fix si el estado re-derivado no coincide con el cacheado.
+///
+/// Lo que sí le pide a la cache es la prueba de que la capa **se miró alguna vez**. No
+/// es lo mismo que heredar una conclusión: un estado cacheado dice *"esto estaba
+/// `MOVED`"* y eso se re-deriva; una cache fría dice *"nadie preguntó"*, y de eso no hay
+/// nada que re-derivar. Ver `commands/apply.md` § "Pero la capa tiene que estar mirada".
 pub fn scan_fixeable(
     layer: &Path,
     nb: crate::neighbours::Provider<'_>,
-) -> Result<Vec<PendingFix>> {
+) -> Result<Scan> {
     let cache = Cache::load(layer);
-    let mut fixes = Vec::new();
+    let bilinks = bilink_files(&layer.join(".bilink"));
 
-    for path in bilink_files(&layer.join(".bilink")) {
+    // **Paso 0: la capa tiene que estar mirada.** Una capa sin bilinks no cuenta —ahí
+    // la cache vacía es la correcta y no hay nada que preguntar—; con bilinks y sin
+    // estado, lo que falta no son fixes sino el `check` que nadie corrió.
+    if !bilinks.is_empty() && cache.is_cold() {
+        return Ok(Scan::Cold { bilinks: bilinks.len() });
+    }
+
+    let mut fixes = Vec::new();
+    let mut unlooked = Vec::new();
+
+    for path in bilinks {
         let Ok(bl) = BiLink::load(&path) else { continue };
         let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+
+        // Qué endpoints de este bilink cambian de ubicación en esta corrida. Lo usa el
+        // bucle del vecindario para no llamar agujero a lo que es una espera.
+        let mut se_repunta: Vec<u8> = Vec::new();
 
         for n in [0u8, 1u8] {
             let e = bl.endpoint.get(n);
@@ -113,6 +179,7 @@ pub fn scan_fixeable(
             // Un fix que no mueve nada es un no-op.
             if to.id() == cap.id() { continue; }
 
+            se_repunta.push(n);
             fixes.push(PendingFix {
                 bilink_path: path.clone(),
                 uuid: uuid.to_string(),
@@ -125,16 +192,29 @@ pub fn scan_fixeable(
         // **Va aparte del bucle de arriba** porque no sale de un estado del capture:
         // el conjunto de vecinos puede haber cambiado con el fragmento intacto.
         for n in [0u8, 1u8] {
-            if let Some(fix) = neighbourhood_fix(layer, &bl, uuid, n, nb)? {
-                fixes.push(PendingFix {
+            match neighbourhood_fix(layer, &bl, uuid, n, nb)? {
+                Looked::Fix(fix) => fixes.push(PendingFix {
                     bilink_path: path.clone(),
                     uuid: uuid.to_string(),
                     n, what: fix, reason: "N1",
-                });
+                }),
+                Looked::Nada => {}
+                // **Un endpoint cuyo fragmento se está por repuntar no está sin mirar:
+                // está sin poder preguntarse todavía.** El vecindario se pregunta desde
+                // el rango del fragmento, y el rango que vale es el de la ubicación
+                // nueva — la que este mismo scan propone. Contarlo como agujero pondría
+                // un *"no se sabe"* en cada `MOVED`, que es ruido y encima al lado del
+                // renglón que dice que se arregló.
+                Looked::NoSePudo(_) if se_repunta.contains(&n) => {}
+                // El caso que el `.ok()?` se tragaba: acá se cuenta, y por eso el
+                // resumen deja de afirmar que no había nada.
+                Looked::NoSePudo(why) => unlooked.push(Unlooked {
+                    uuid: uuid.to_string(), n, why,
+                }),
             }
         }
     }
-    Ok(fixes)
+    Ok(Scan::Looked { fixes, unlooked })
 }
 
 /// El conjunto de vecinos que la firma menciona hoy, si difiere del declarado.
@@ -152,26 +232,48 @@ fn neighbourhood_fix(
     uuid: &str,
     n: u8,
     nb: crate::neighbours::Provider<'_>,
-) -> Result<Option<Fix>> {
-    let Some(p) = nb else { return Ok(None) };
+) -> Result<Looked> {
+    // Sin proveedor el eje entero queda sin mirar, y eso ya se reporta una vez para la
+    // corrida —no una por endpoint— porque es la degradación declarada del comando y no
+    // un accidente de este bilink.
+    let Some(p) = nb else { return Ok(Looked::Nada) };
     let e = bl.endpoint.get(n);
-    let Some(cap_id) = e.link.capture_id() else { return Ok(None) };
-    let Ok(cap) = Capture::load_in(layer, cap_id) else { return Ok(None) };
+    // Un endpoint que no es un capture —`path`, `issue`— no tiene vecindario. No es que
+    // no se haya podido: no lo tiene.
+    let Some(cap_id) = e.link.capture_id() else { return Ok(Looked::Nada) };
+    let Ok(cap) = Capture::load_in(layer, cap_id) else {
+        return Ok(Looked::NoSePudo("el capture del endpoint no se pudo leer"));
+    };
 
+    // **El rango es la puerta de todo lo de abajo**, y no tenerlo no es una respuesta
+    // sobre el vecindario: es no haber llegado a preguntar. Con la capa mirada sale de
+    // la cache; que igual se re-resuelva es lo que cubre al endpoint suelto cuyo capture
+    // no resolvió en el último `check`.
     let cache = Cache::load(layer);
-    let Some(range) = cache.capture_ranges(cap_id)
-        .or_else(|| crate::check::resolve_capture(layer, &cap, e.accepted.first(),
-                                                  cache.commit(uuid, n)).ok()?.1)
-        else { return Ok(None) };
+    let range = match cache.capture_ranges(cap_id) {
+        Some(r) => Some(r),
+        None => crate::check::resolve_capture(
+            layer, &cap, e.accepted.first(), cache.commit(uuid, n))?.1,
+    };
+    let Some(range) = range else {
+        return Ok(Looked::NoSePudo(
+            "el capture no resolvió — no hay rango desde donde preguntar por el vecindario"));
+    };
 
     // Que el fragmento **tenga** vecindario alcanzable se sabe con la gramática, sin
-    // proveedor. Sin eso no hay conjunto que declarar y no hay nada que arreglar.
+    // proveedor. Sin eso no hay conjunto que declarar y no hay nada que arreglar — las
+    // dos formas de eso son respuestas sobre el árbol, no ausencias de respuesta.
     let crate::neighbours::Reach::At(at) = crate::neighbours::reach(layer, &cap.file, &range)
-        else { return Ok(None) };
-    let Some(locs) = p.of(layer, &cap.file, &at)? else { return Ok(None) };
-    let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(None) };
+        else { return Ok(Looked::Nada) };
+    // Un `None` del proveedor es *"no pude mirar"* y no *"no hay vecinos"*: el daemon no
+    // contesta, o una posición no resolvió. Leerlo como vacío es el mismo error que
+    // `concepts/language-servers.md` describe del otro lado de la frontera.
+    let Some(locs) = p.of(layer, &cap.file, &at)? else {
+        return Ok(Looked::NoSePudo("el proveedor de vecindario no pudo contestar"));
+    };
+    let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(Looked::Nada) };
 
-    let Some(hoy) = f.n.link.captures() else { return Ok(None) };
+    let Some(hoy) = f.n.link.captures() else { return Ok(Looked::Nada) };
 
     // Tres declaraciones posibles, y cada una compara distinto contra lo de hoy.
     let hay_fix = match e.n.as_ref().and_then(|d| d.level(1)).map(|l| &l.link) {
@@ -186,8 +288,8 @@ fn neighbourhood_fix(
         // Sin nivel declarado, sólo un conjunto no vacío agrega algo.
         None => !hoy.is_empty(),
     };
-    if !hay_fix { return Ok(None); }
-    Ok(Some(Fix::Neighbourhood { to: hoy.clone(), captures: f.captures }))
+    if !hay_fix { return Ok(Looked::Nada); }
+    Ok(Looked::Fix(Fix::Neighbourhood { to: hoy.clone(), captures: f.captures }))
 }
 
 /// Acuña el capture nuevo y repunta el `link`. **No toca `accepted`.**
@@ -353,6 +455,18 @@ mod neighbourhood_fix_tests {
         (d, uuid, id)
     }
 
+    /// Los fixes de un scan que **miró** la capa.
+    ///
+    /// Un `Cold` acá es un fixture mal armado —`layer()` corre `check`— y por eso
+    /// revienta en vez de devolver una lista vacía: confundir las dos cosas es
+    /// exactamente el defecto que estos tests cuidan.
+    fn scan(layer_dir: &Path, nb: crate::neighbours::Provider<'_>) -> Vec<PendingFix> {
+        match scan_fixeable(layer_dir, nb).unwrap() {
+            Scan::Looked { fixes, .. } => fixes,
+            Scan::Cold { bilinks } => panic!("la capa quedó fría con {bilinks} bilink(s)"),
+        }
+    }
+
     /// **Sin proveedor no hay fix de vecindario, y no es una falla.**
     ///
     /// Es la degradación que el eje tiene en todos lados: `apply` arregla lo del
@@ -360,8 +474,47 @@ mod neighbourhood_fix_tests {
     #[test]
     fn without_a_provider_the_neighbourhood_is_left_alone() {
         let (d, ..) = layer();
-        let fixes = scan_fixeable(d.path(), None).unwrap();
+        let fixes = scan(d.path(), None);
         assert!(fixes.is_empty(), "sin proveedor, nada que proponer");
+    }
+
+    /// **Una capa fría no es una lista de fixes vacía.**
+    ///
+    /// Es la secuencia del que clona y corre `apply` de una: sin `check` previo no hay
+    /// rango desde donde preguntar, así que el comando no llega a mirar. Contestarle
+    /// *"no hay nada que arreglar"* es afirmar algo sobre un árbol que nadie leyó.
+    #[test]
+    fn a_cold_layer_is_not_an_empty_list_of_fixes() {
+        let (d, ..) = layer();
+        // Lo que `layer()` calentó con su `check`, deshecho: el estado de todo clon
+        // fresco, toda rama nueva y toda máquina nueva.
+        std::fs::remove_file(Cache::path_in(d.path())).unwrap();
+
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+        match scan_fixeable(d.path(), Some(&p)).unwrap() {
+            Scan::Cold { bilinks } => assert_eq!(bilinks, 1, "los bilinks que no se miraron"),
+            Scan::Looked { .. } => panic!("una capa sin estado calculado no se miró"),
+        }
+        assert_eq!(p.asked.get(), 0, "y no se le preguntó nada al proveedor");
+    }
+
+    /// **Y un endpoint que no se pudo mirar no se cuenta como revisado.**
+    ///
+    /// El proveedor que no contesta —el daemon caído, una posición sin resolver— devuelve
+    /// `None`, y leerlo como *"no hay vecinos"* es el mismo vacío en otro lugar.
+    #[test]
+    fn an_endpoint_that_could_not_be_looked_at_is_not_nothing() {
+        let (d, ..) = layer();
+        // `None` es *"no pude mirar"*; `Some(vec![])` sería *"miré y no hay"*.
+        let p = Fake { locs: None, asked: Cell::new(0) };
+        let Scan::Looked { fixes, unlooked } = scan_fixeable(d.path(), Some(&p)).unwrap()
+            else { panic!("la capa está mirada") };
+
+        assert!(!fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
+                "no hay nada que proponer");
+        assert!(!unlooked.is_empty(),
+                "y eso no es lo mismo que no haber encontrado nada");
     }
 
     /// **Con proveedor, propone el conjunto que la firma menciona hoy.**
@@ -371,7 +524,7 @@ mod neighbourhood_fix_tests {
         let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
         let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
 
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
             .expect("propone el vecindario");
         let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
@@ -395,7 +548,7 @@ mod neighbourhood_fix_tests {
 
         let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
         let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
             .expect("un `unknown` tiene fix: llenarlo");
         let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
@@ -424,7 +577,7 @@ mod neighbourhood_fix_tests {
 
         // El proveedor miró y no alcanzó nada de esta capa: `Some(vec![])`.
         let p = Fake { locs: Some(vec![]), asked: Cell::new(0) };
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         assert!(fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
                 "el vacío reemplaza al `unknown`: son dos respuestas distintas");
     }
@@ -435,7 +588,7 @@ mod neighbourhood_fix_tests {
     fn an_already_empty_declared_set_is_not_a_fix() {
         let (d, ..) = layer();
         let p = Fake { locs: Some(vec![]), asked: Cell::new(0) };
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         assert!(!fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
                 "sin nivel declarado y sin vecinos, no hay nada que proponer");
     }
@@ -447,7 +600,7 @@ mod neighbourhood_fix_tests {
         let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
         let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
 
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. })).unwrap();
         apply_fix(d.path(), fix).unwrap();
 
@@ -464,12 +617,12 @@ mod neighbourhood_fix_tests {
         let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
         let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
 
-        let fixes = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let fixes = scan(d.path(), Some(&p));
         let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. })).unwrap();
         apply_fix(d.path(), fix).unwrap();
         let _ = uuid;
 
-        let otra = scan_fixeable(d.path(), Some(&p)).unwrap();
+        let otra = scan(d.path(), Some(&p));
         assert!(!otra.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
                 "ya está declarado: no hay nada que repuntar");
     }

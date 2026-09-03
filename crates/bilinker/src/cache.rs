@@ -91,6 +91,22 @@ impl Cache {
             .unwrap_or_default()
     }
 
+    /// Si nadie miró esta capa todavía.
+    ///
+    /// **Fría no es un error, y para `apply` sí es un prerequisito.** Los dos enunciados
+    /// conviven porque son sobre cosas distintas: la cache no es fuente de verdad —de
+    /// ahí que `load` devuelva una vacía sin quejarse— pero el eje del vecindario
+    /// arranca del rango del fragmento, y sin rango no hay posición que pasarle al
+    /// proveedor. Un `apply` sobre una capa fría no encuentra nada porque no llegó a
+    /// preguntar, y eso no se puede reportar como *"no hay nada que arreglar"*.
+    ///
+    /// Se mira el contenido y no el archivo: una cache escrita y vaciada es tan fría
+    /// como una que nunca existió, y un `cache/state` de una rama ajena ya lo descarta
+    /// [`load_for`](Self::load_for) antes de llegar acá.
+    pub fn is_cold(&self) -> bool {
+        self.captures.is_empty() && self.endpoints.is_empty()
+    }
+
     /// El commit de `refs/bilink/<branch>` al que corresponde el `.bilink/` de esta
     /// capa, leído de [`head`](crate::bilink_ref).
     ///
