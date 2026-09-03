@@ -1212,16 +1212,46 @@ Eliminar? [y/N] ");
             // **`apply` recibe el puerto.** Sin proveedor arregla lo del fragmento con
             // git y no toca el vecindario: descubrir qué tipos menciona la firma hoy
             // es lo único que un language server puede contestar.
-            let mut fixes = bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))?;
+            // **El paso 0 sale acá**: una capa fría no da una lista de fixes vacía, da
+            // otra cosa, y por eso `Scan` es un enum y no un `Vec` con un flag al lado.
+            let (mut fixes, unlooked) =
+                match bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))? {
+                    bilinker::apply::Scan::Cold { bilinks } => {
+                        eprintln!("error: la capa no tiene estado calculado — {bilinks} bilinks sin mirar.");
+                        eprintln!("  El vecindario se pregunta desde el rango del fragmento, y ese rango");
+                        eprintln!("  todavía no se derivó.");
+                        eprintln!();
+                        eprintln!("  Correr primero:  bilinker check .");
+                        std::process::exit(3);
+                    }
+                    bilinker::apply::Scan::Looked { fixes, unlooked } => (fixes, unlooked),
+                };
 
             if let Some(ref state) = filter {
                 let state_up = state.to_uppercase();
                 fixes.retain(|f| f.reason == state_up);
             }
 
+            // **Se imprime aunque no haya un solo fix**, que es justamente el caso que
+            // mentía: sin esto, un endpoint que no se pudo mirar salía por el mismo
+            // camino que uno que no tenía nada que arreglar.
+            if !unlooked.is_empty() {
+                eprintln!("Sin mirar ({}):", unlooked.len());
+                for u in &unlooked {
+                    eprintln!("  {}…  link.{}  {}", u.short(), u.n, u.why);
+                }
+                eprintln!();
+            }
+
             if fixes.is_empty() {
-                eprintln!("no hay bilinks en estado auto-fixeable");
-                std::process::exit(2);
+                // El 2 es una afirmación sobre el árbol —*"no hay nada que arreglar"*—
+                // así que sólo sale cuando hubo con qué hacerla.
+                if unlooked.is_empty() {
+                    eprintln!("no hay bilinks en estado auto-fixeable");
+                    std::process::exit(2);
+                }
+                eprintln!("ningún fix propuesto sobre los bilinks que se pudieron mirar");
+                std::process::exit(1);
             }
 
             // Collect state names for commit message summary
@@ -1241,6 +1271,10 @@ Eliminar? [y/N] ");
             }
 
             if dry_run {
+                // Un `--dry-run` con agujeros tampoco sale con 0: el resumen que acaba
+                // de imprimir no cubre la capa entera, y el código de salida es lo único
+                // que se lo dice a un script.
+                if !unlooked.is_empty() { std::process::exit(1); }
                 return Ok(());
             }
 
@@ -1310,6 +1344,9 @@ Eliminar? [y/N] ");
                 eprintln!("{errors} fix(es) fallaron — ejecutar 'bilinker check .' para ver el estado actual");
                 std::process::exit(1);
             }
+            // Los fixes salieron bien y aun así la corrida no cubrió la capa: lo que
+            // quedó sin mirar no lo arregla haber aplicado los demás.
+            if !unlooked.is_empty() { std::process::exit(1); }
         }
 
         Command::RestoreN1 { path, recursive, dry_run, from } => {
