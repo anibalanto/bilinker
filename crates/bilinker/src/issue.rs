@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 /// Resuelve el id de un issue —un ítem del worklist— a su archivo, y devuelve la raíz
 /// del proyecto.
 ///
-/// Los ítems son archivos sueltos en la **capa de worklist del proyecto**, con
+/// Los ítems son archivos sueltos en el **panorama del worklist del proyecto**, con
 /// nombre `<id>.<tipo>.md`. El tipo no viaja en el endpoint, así que el archivo se
 /// busca por el prefijo `<id>.` en ese único directorio: sin recursión y sin índice.
 ///
@@ -15,32 +15,23 @@ use anyhow::{bail, Result};
 /// `Ok(None)` es "no hay ítem con ese id". Dos archivos con el mismo id son un error
 /// del worklist —los ids son únicos— y no una ambigüedad del formato, así que se
 /// reporta en vez de elegir uno.
-/// La capa de worklist de un proyecto: `.stratum/worklist*`.
+/// El panorama del worklist de un proyecto: `.worklist/insecure/all`.
 ///
-/// **Se busca, no se sabe su nombre.** El worklist de un proyecto es suyo y lleva su
-/// nombre —`worklist-accreta`—, igual que el daemon dejó de llamarse
-/// `lattice-daemon` cuando resultó que no era de lattice. Hardcodear un nombre acá
-/// le metería el de **un** proyecto a una herramienta que se usa en cualquiera.
+/// **No se busca: el nombre es de la spec, no del proyecto.** El worklist ya no es una
+/// capa que lleve el nombre de quien la usa —`worklist-accreta`— sino un contenedor de
+/// worktrees, y `insecure/all` se llama igual en todos porque lo nombra la spec de
+/// sincronización.
 ///
-/// El prefijo es la convención, como todo lo demás: nadie declara dónde está su
-/// `.bilink/` ni su capa `impl`. Con dos candidatas no se elige una — eso es una
-/// ambigüedad del proyecto y no del formato.
-pub fn worklist_layer(project_root: &Path) -> Option<PathBuf> {
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(project_root.join(".stratum"))
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("worklist"))
-            .unwrap_or(false))
-        .collect();
-    hits.sort();
-    match hits.len() {
-        1 => hits.pop(),
-        _ => None,
-    }
+/// **Y es el panorama, nunca una ventana.** Una ventana —`secure/sprint/<id>`— lleva
+/// el subárbol de su sprint y nada más, así que resolver contra la que está abierta
+/// haría que el mismo `issue 3a` resolviera o no según en qué rama esté el checkout, y
+/// un bilink válido pasaría a no-OK sin que nadie toque nada.
+///
+/// `None` es "este proyecto no tiene worklist", que no es un error: el worklist se
+/// clona aparte y un clon del proyecto no lo trae.
+pub fn worklist_panorama(project_root: &Path) -> Option<PathBuf> {
+    let dir = project_root.join(".worklist").join("insecure").join("all");
+    dir.is_dir().then_some(dir)
 }
 
 #[cfg(test)]
@@ -48,51 +39,70 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn layer(root: &Path, name: &str) {
-        std::fs::create_dir_all(root.join(".stratum").join(name)).unwrap();
+    fn worktree(root: &Path, branch: &str) {
+        std::fs::create_dir_all(root.join(".worklist").join(branch)).unwrap();
     }
 
-    /// Se encuentra por el prefijo, se llame como se llame: el worklist de un
-    /// proyecto lleva su nombre, y la herramienta no lo sabe de antemano.
-    #[test]
-    fn the_layer_is_found_by_prefix_whatever_the_project_calls_it() {
-        for name in ["worklist", "worklist-accreta", "worklist-otracosa"] {
-            let d = tempdir().unwrap();
-            layer(d.path(), name);
-            assert_eq!(worklist_layer(d.path()), Some(d.path().join(".stratum").join(name)));
-        }
+    fn item(root: &Path, branch: &str, name: &str) {
+        worktree(root, branch);
+        std::fs::write(root.join(".worklist").join(branch).join(name), "").unwrap();
     }
 
-    /// Sin capa no hay ítems, y eso no es un error: un proyecto puede no tener
-    /// worklist.
+    /// El panorama está donde lo pone la spec, y no hay nombre que adivinar.
     #[test]
-    fn a_project_without_a_worklist_layer_has_no_items() {
+    fn the_panorama_is_where_the_spec_says() {
         let d = tempdir().unwrap();
-        assert_eq!(worklist_layer(d.path()), None);
+        worktree(d.path(), "insecure/all");
+        assert_eq!(
+            worklist_panorama(d.path()),
+            Some(d.path().join(".worklist").join("insecure").join("all"))
+        );
+    }
+
+    /// Sin worklist no hay ítems, y eso no es un error: se clona aparte, así que un
+    /// clon del proyecto no lo trae.
+    #[test]
+    fn a_project_without_a_worklist_has_no_items() {
+        let d = tempdir().unwrap();
+        assert_eq!(worklist_panorama(d.path()), None);
         assert_eq!(resolve_issue_path(d.path(), "3a").unwrap().0, None);
     }
 
-    /// Con dos no se elige una: es una ambigüedad del proyecto, no del formato.
+    /// Una ventana no reemplaza al panorama. Si valiera, el mismo endpoint resolvería
+    /// o no según qué sprint esté abierto.
     #[test]
-    fn two_candidates_are_not_disambiguated() {
+    fn a_window_is_not_the_panorama() {
         let d = tempdir().unwrap();
-        layer(d.path(), "worklist-uno");
-        layer(d.path(), "worklist-dos");
-        assert_eq!(worklist_layer(d.path()), None);
+        item(d.path(), "secure/sprint/10", "3a.task.md");
+        assert_eq!(worklist_panorama(d.path()), None);
+        assert_eq!(resolve_issue_path(d.path(), "3a").unwrap().0, None);
     }
 
-    /// Y no se confunde con otra capa cualquiera.
+    /// El ítem se encuentra por prefijo, sin que el endpoint diga el tipo.
     #[test]
-    fn another_layer_is_not_the_worklist() {
+    fn the_item_is_found_by_prefix_without_its_type() {
         let d = tempdir().unwrap();
-        layer(d.path(), "impl");
-        assert_eq!(worklist_layer(d.path()), None);
+        item(d.path(), "insecure/all", "3a.user-story.md");
+        assert_eq!(
+            resolve_issue_path(d.path(), "3a").unwrap().0,
+            Some(d.path().join(".worklist/insecure/all/3a.user-story.md"))
+        );
+    }
+
+    /// Y estando el panorama, un ítem que sólo vive en una ventana no se ve — el
+    /// panorama los tiene todos, así que faltar ahí es no existir.
+    #[test]
+    fn an_item_only_in_a_window_does_not_resolve() {
+        let d = tempdir().unwrap();
+        worktree(d.path(), "insecure/all");
+        item(d.path(), "secure/sprint/10", "3a.task.md");
+        assert_eq!(resolve_issue_path(d.path(), "3a").unwrap().0, None);
     }
 }
 
 pub fn resolve_issue_path(layer_root: &Path, issue_id: &str) -> Result<(Option<PathBuf>, PathBuf)> {
     let project_root = project_root_of(layer_root);
-    let Some(dir) = worklist_layer(&project_root) else {
+    let Some(dir) = worklist_panorama(&project_root) else {
         return Ok((None, project_root));
     };
     let prefix = format!("{issue_id}.");
