@@ -1,14 +1,18 @@
 endpoint:
-  '0':
+  0:
     link: path <
     accepted:
     - link: capture 7b648a4d471686bfa721f55ece49ecc4
       hash: e84c55b01d2b43d18fadefdd085126efcfdb573a2bf5a19f172c59d76962c2e5
-  '1':
+  1:
     link: capture db0ba68a6df6b3212e649bec0f2d21ff
     accepted:
     - agree:
       - Anibal
       link: capture db0ba68a6df6b3212e649bec0f2d21ff
-      hash: d3b477daa2cb84a0123f40ee4be6f4d383eaa80dc19833394ffa5303468c0641
-      hash_ast: 6cf19d62f1f42670a1b4afe6fe9f71dc17c2220359b09bb7b94bc37e4439db3e
+      hash: 188a68c0d62961c52fb1bf62e3c2203c0a685cf0a2815a6e256e34061661c28b
+      hash_ast: 96107922af9949880a2579b978b7cde40bf08646e8417473f865f52ab9a50aaf
+      n:
+        1:
+          hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          hash_ast: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
