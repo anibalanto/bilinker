@@ -1,0 +1,5 @@
+file: crates/bilink-format/src/link.rs
+query: |-
+  (impl_item
+    trait: (type_identifier) @n0 (#eq? @n0 "FromStr")
+    type: (type_identifier) @n1 (#eq? @n1 "LinkEndpoint")) @target
