@@ -5480,3 +5480,35 @@ fn without_filters_the_listing_is_unchanged() {
     let (out, _, _) = run_in(&root, &["chain", "list"]);
     assert!(!out.contains(" de 2"), "sin filtro no hay conteo:\n{out}");
 }
+
+// ─── el alcance de `check <path>` ──────────────────────────────────────────
+//
+// Task `4i`. El síntoma, medido sobre `hsi`: pedir por un archivo con **un**
+// bilink recorre los 98 de la capa y hace 391 preguntas al proveedor — cinco
+// más que pedir por la capa entera. El path decide si hay algo que verificar,
+// nunca qué.
+
+/// `check-scopes-to-the-path` — pedir por un archivo verifica ese archivo.
+///
+/// Dos bilinks sobre dos archivos distintos: pedir por uno tiene que reportar
+/// uno. Hoy reporta los dos, porque `check_with` recorre `bilink_files` de la
+/// capa entera y el `path` sólo elige cuál capa es.
+#[test]
+fn check_on_one_file_verifies_only_that_file() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["chain", "new", "--tip", "src/Service.java:1:1", "--tip", "abstract"]);
+
+    // Cuantos endpoints reporta: una linea por bilink.
+    let reported = |args: &[&str]| -> usize {
+        let (out, _, _) = code_in(&root, args);
+        out.lines().filter(|l| l.contains('(') && l.contains(')')).count()
+    };
+
+    assert_eq!(reported(&["check", "."]), 2, "la capa entera son dos");
+    assert_eq!(
+        reported(&["check", "docs/spec.md"]),
+        1,
+        "pedir por un archivo tiene que verificar ese archivo, no la capa entera"
+    );
+}
