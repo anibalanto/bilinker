@@ -34,8 +34,18 @@ impl Neighbours for Lspd {
     /// **Las posiciones son identificadores de tipo**, no el primer byte de un campo
     /// de la firma. Es lo que hace que preguntar acá tenga sentido: sobre un `(` un
     /// language server que resuelve perfecto devuelve la función que lo contiene.
+    /// **Y tambien cuando el daemon que contesta es de otro workspace.**
+    ///
+    /// Medido el 2026-09-07: un `check` en la capa impl de worklist fallo con
+    /// `file not found` sobre un archivo que existe, porque el daemon vivo
+    /// estaba indexando otro proyecto. Un daemon ajeno **no contesta "no se":
+    /// contesta que el archivo no existe**, y eso llegaba como un error del
+    /// arbol.
+    ///
+    /// El `ping` solo dice que hay un daemon; nada dice de que workspace es.
     fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
         if !lspd_client::responds() { return Ok(None); }
+        if !sirve_este_workspace(layer) { return Ok(None); }
 
         let abs = layer.join(file);
         let source = std::fs::read_to_string(&abs)?;
@@ -141,4 +151,32 @@ mod tests {
         assert_eq!((l, c), (1, 0));
         assert_eq!(byte_of(src, l, c), Some(byte));
     }
+}
+
+/// Si el daemon vivo sirve **este** workspace.
+///
+/// Hay una sola puerta —el socket se deriva del `HOME`, sin nada que
+/// configurar— asi que hay un daemon a la vez y con un workspace. Preguntarle
+/// por archivos de otro devuelve una negacion, no un "no se".
+///
+/// **Se deduce del `cwd` del proceso, y eso es una costura.** El daemon no
+/// informa su workspace: sus metodos son `ping`, `status`, `definitions` y
+/// `shutdown`, y ninguno lo dice. La respuesta honesta la tiene que dar el, y
+/// hasta que la de, esto es lo que hay — con el costo de que `/proc` es de
+/// Linux, asi que en otro sistema no se puede verificar y se le cree.
+fn sirve_este_workspace(layer: &Path) -> bool {
+    let pid = lspd_client::pid();
+    if pid == 0 {
+        // Sin pid no hay a quien preguntarle. **Se le cree**, que es el
+        // comportamiento de antes: negarle el nivel 1 a un daemon sano porque
+        // no se pudo leer un archivo de `/proc` seria cambiar un falso negativo
+        // por otro.
+        return true;
+    }
+    let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else { return true };
+    // El workspace del daemon contiene a la capa, o la capa lo contiene: los
+    // dos casos son "el mismo proyecto". Lo que no sirve es que sean ramas
+    // distintas del arbol.
+    let Ok(layer) = layer.canonicalize() else { return true };
+    layer.starts_with(&cwd) || cwd.starts_with(&layer)
 }
