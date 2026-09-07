@@ -6,7 +6,7 @@ endpoint:
     - agree:
       - Anibal
       link: capture f5fc5981442309c40934b95997874fcd
-      hash: 89aa2bdcd03fb7060daf5ff91324a1ae55e0fe4bab6504f05f8438538a53da3f
+      hash: f52301e23a088f8938a33e08f1cbc5d91f9f022fd3391e80676f2ef8264f57d3
   1:
     link: capture 1cf61fdef81bbd01b0a34eb89ed2af52
     accepted:
