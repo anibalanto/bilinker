@@ -34,8 +34,20 @@ impl Neighbours for Lspd {
     /// **Las posiciones son identificadores de tipo**, no el primer byte de un campo
     /// de la firma. Es lo que hace que preguntar acá tenga sentido: sobre un `(` un
     /// language server que resuelve perfecto devuelve la función que lo contiene.
+    /// **Y se le pregunta a la puerta de esta capa, no a "la" del sistema.**
+    ///
+    /// Medido el 2026-09-07: un `check` en la capa impl de worklist fallo con
+    /// `file not found` sobre un archivo que existe, porque el daemon vivo
+    /// estaba indexando otro proyecto. Un daemon ajeno **no contesta "no se":
+    /// contesta que el archivo no existe**, y eso llegaba como un error del
+    /// arbol.
+    ///
+    /// El arreglo de entonces fue deducir su workspace del `cwd` del pid —una
+    /// costura, y de Linux—. **Con una puerta por workspace no hace falta**: el
+    /// que contesta en mi puerta es el mio por construccion, y el chequeo se
+    /// borro. Ver `concepts/transport.md` de lspd.
     fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
-        if !lspd_client::responds() { return Ok(None); }
+        if !lspd_client::responds(layer) { return Ok(None); }
 
         let abs = layer.join(file);
         let source = std::fs::read_to_string(&abs)?;
@@ -49,7 +61,7 @@ impl Neighbours for Lspd {
             // este lado: traducirla allá sería ponerle al daemon una convención que
             // no es suya.
             let (line, col) = line_col_of(&source, byte);
-            let val = match lspd_client::rpc("definitions", serde_json::json!({
+            let val = match lspd_client::rpc(layer, "definitions", serde_json::json!({
                 "file": abs.to_string_lossy(), "line": line, "col": col,
             })) {
                 Ok(v) => v,
@@ -142,3 +154,4 @@ mod tests {
         assert_eq!(byte_of(src, l, c), Some(byte));
     }
 }
+
