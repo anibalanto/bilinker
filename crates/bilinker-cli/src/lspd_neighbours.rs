@@ -47,7 +47,10 @@ impl Neighbours for Lspd {
     /// que contesta en mi puerta es el mio por construccion, y el chequeo se
     /// borro. Ver `concepts/transport.md` de lspd.
     fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
-        if !lspd_client::responds(layer) { return Ok(None); }
+        if !lspd_client::responds(layer) {
+            warn_about_foreign_doors(layer);
+            return Ok(None);
+        }
 
         let abs = layer.join(file);
         let source = std::fs::read_to_string(&abs)?;
@@ -80,6 +83,58 @@ impl Neighbours for Lspd {
         }
         Ok(Some(out))
     }
+}
+
+/// Ya se avisó del desfasaje en esta corrida.
+///
+/// **El aviso es por corrida y no por endpoint.** `check` es masivo: en la capa de
+/// worklist son treinta endpoints con vecindario, y treinta líneas iguales dicen lo
+/// mismo que una y tapan el resto de la salida.
+static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cuando mi puerta no contesta, avisa si hay **otras** que sí.
+///
+/// **"No hay daemon" y "hay uno y no lo veo" se ven igual, y no son lo mismo.** La
+/// ruta se deriva de una regla que vive en el codigo de las dos puntas, asi que
+/// versionarla mal las parte en dos: el daemon abre una puerta y el cliente calcula
+/// otra. Y no encontrarla es exactamente lo que pasa cuando no hay ninguno.
+///
+/// Medido el 2026-09-08: el nombre de la puerta cambio en lspd, el commit quedo sin
+/// publicar, y `bilinker` —que toma `lspd-client` del remoto de git— siguio buscando
+/// el nombre viejo. Treinta endpoints degradaron a *no verificado* sin una linea que
+/// dijera por que. Ver `concepts/transport.md` de lspd.
+///
+/// **Se pregunta con el mismo `ping`, no mirando procesos.** Un socket vivo contesta
+/// y uno stale falla en el acto; deducirlo del pid seria la costura de `/proc` que
+/// esto justamente vino a borrar.
+fn warn_about_foreign_doors(layer: &Path) {
+    use std::sync::atomic::Ordering;
+    if WARNED.swap(true, Ordering::Relaxed) { return }
+
+    let Some(mine) = lspd_client::endpoint(layer).path().map(|p| p.to_path_buf())
+    else { return };  // En Windows la puerta es un pipe y no hay directorio que mirar.
+
+    let Ok(entries) = std::fs::read_dir(lspd_client::dir()) else { return };
+    let foreign: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p != &mine && p.extension().and_then(|s| s.to_str()) == Some("sock"))
+        .filter(|p| {
+            let ep = lspd_client::Endpoint::Socket(p.clone());
+            lspd_client::rpc_at(&ep, "ping", serde_json::json!({})).is_ok()
+        })
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+
+    if foreign.is_empty() { return }
+    eprintln!(
+        "! el daemon de esta capa no contesta y hay {} puerta(s) viva(s) que este \
+         cliente no calcula: {}\n  \
+         el nivel 1 va a degradar a no verificado. Si `lspd` y `lspd-client` no son \
+         de la misma version, la regla del nombre de la puerta los partio en dos.",
+        foreign.len(),
+        foreign.join(", "),
+    );
 }
 
 /// Si el daemon contestó *"todavía no puedo"*.
