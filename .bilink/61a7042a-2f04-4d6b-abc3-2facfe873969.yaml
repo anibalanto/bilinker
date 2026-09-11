@@ -10,3 +10,8 @@ endpoint:
     name: track-en-un-repo-nuevo-1
   1:
     link: path <
+    accepted:
+    - agree:
+      - anibal
+      link: capture b6441a9655f1ad76c356e34f6eaae975
+      hash: ac630ca31bbc08ea1d8e1bbacafba3e5e282b8caa2effa32508097830d9e3b96
