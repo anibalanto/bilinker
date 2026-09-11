@@ -2024,6 +2024,36 @@ fn cut_over() -> (tempfile::TempDir, PathBuf, String, String) {
     (tmp, root, uuid, x)
 }
 
+/// Un repo nuevo corre `init` y `track` antes de tener un solo bilink: la ref nace
+/// con el árbol vacío. El primer bilink que se acepta después tiene que quedar en
+/// esa ref, como en una capa que nació del corte.
+#[test]
+fn accept_writes_on_a_ref_tracked_before_the_first_bilink() {
+    let (_t, root) = isolated_git_workspace();
+    let branch = branch_of(&root);
+    let (_, stderr, ok) = run_in(&root, &["init"]);
+    assert!(ok, "init falló:\n{stderr}");
+    let (_, stderr, ok) = run_in(&root, &["track", &branch]);
+    assert!(ok, "track falló:\n{stderr}");
+
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+
+    let (stdout, stderr, ok) = run_in(&root, &["accept", "--no-n1", &uuid]);
+
+    assert!(ok, "accept no escribió en la ref:\n{stdout}\n{stderr}");
+    let tree = git_out(&root, &["ls-tree", "-r", "--name-only", &format!("refs/bilink/{branch}")]);
+    assert!(tree.lines().any(|l| l == format!(".bilink/{uuid}.yaml")),
+            "el bilink aceptado no está en la ref:\n{tree}");
+}
+
 /// `init-does-not-touch-gitignore` + el refspec en `.git/config`.
 #[test]
 fn init_writes_exclude_and_refspec_without_touching_the_branch() {
