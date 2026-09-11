@@ -49,6 +49,15 @@ pub fn track(dir: &Path, branch: &str, from: Option<&str>) -> Result<TrackResult
         None => pick_inherit(&repo, branch)?,
     };
 
+    // Un corte sin un solo archivo de bilinks en el árbol de trabajo escribiría una
+    // ref sin `.bilink/`, y [`Repo::absorbed`] reconoce un commit de la ref justo
+    // por llevarlo: cada absorción parecería un commit del proyecto, y ninguna
+    // decisión podría escribirse después. La capa se sella antes, como la sella
+    // quien crea cualquier `.bilink/`.
+    if inherit.is_none() && repo.tracked_bilink_files()?.is_empty() {
+        bilink_format::ensure_layer(&repo.root)?;
+    }
+
     let (tree, parents, message) = match &inherit {
         Some(Candidate { commit, absorbed }) => (
             repo.build_tree_inheriting(&tip, commit)?,
