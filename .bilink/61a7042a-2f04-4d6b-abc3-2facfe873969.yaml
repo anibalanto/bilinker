@@ -1,0 +1,12 @@
+kind: governs
+endpoint:
+  0:
+    link: capture 7b59e776d560a829cfdbc62d5d42efa8
+    accepted:
+    - agree:
+      - anibal
+      link: capture 7b59e776d560a829cfdbc62d5d42efa8
+      hash: a93f8a99e1ba2418497b26ff5175f96716f3be697e85bda08f784bbe8f8a4248
+    name: track-en-un-repo-nuevo-1
+  1:
+    link: path <
