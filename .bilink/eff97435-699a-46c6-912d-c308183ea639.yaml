@@ -9,5 +9,8 @@ endpoint:
   1:
     link: capture cf9c3b4a90ea95b0ddbc2fea6f0fc762
     accepted:
-    - link: capture cf9c3b4a90ea95b0ddbc2fea6f0fc762
-      hash: 32fbf8c0ee6ecb6e4d1c379ed78f3f1527d26dc15168315b1f795d6ef219c55b
+    - agree:
+      - anibal
+      link: capture cf9c3b4a90ea95b0ddbc2fea6f0fc762
+      hash: e5a35f0c6009feda78d2bf53a046ef921256ad1ce20140a31243555eceffb5fa
+      n: declined
