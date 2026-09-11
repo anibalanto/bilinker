@@ -1,6 +1,8 @@
 # ADR-0005: bilinker — La frontera entre proyectos
 
-**Estado:** Propuesto **Fecha:** 2026-08-28 **Actualizado:** 2026-08-29
+**Estado:** Aceptado **Fecha:** 2026-08-28 **Actualizado:** 2026-09-11
+
+**Implementado en `3746f77`, y verificado entre dos repos locales el 2026-09-11:** publicar con `abstract`, traer con `fetch`, consumir con `chain new --from-repo`, y un cambio re-aceptado del lado del proveedor que llega como `CHAIN_DIRTY` después del `fetch`. Lo que decide vive hoy en la spec de bilinker: `concepts/frontier.md`, `concepts/configuration.md`, `commands/fetch.md` y `commands/abstracts.md`. Este ADR queda como el porqué.
 
 **Parte de** **la épica del MVP**, que lleva el caso `retinar` / `hsi` / `filasvirtuales` y la motivación de entrega. Depende de [ADR-0003](0003-formato-captures-y-aceptacion.md) —copia el `accepted` del vecino— y de [ADR-0004](0004-bilinks-en-ref-paralela.md) —lo que el consumidor trae del proveedor es esa ref—. Es el último de los tres por dependencia, no por bloqueo: **su desarrollo es enteramente propio y se verifica entre dos repos locales.** Lo que depende de gente fuera del proyecto es la adopción — que un proveedor real publique una abstracción— y eso vive en la épica, no acá.
 
