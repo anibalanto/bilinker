@@ -397,6 +397,16 @@ revisar con `bilinker get 430a5d51.0` y aceptar con `bilinker accept 430a5d51.0`
 
 El id del capture va a stdout para poder usarlo en pipes; el resto a stderr.
 
+### `--as` regenera la query con un generador, y el endpoint lo anota
+
+```
+bilinker recapture <uuid>.<N> <file> <pos> --as <modo>
+```
+
+La posición se resuelve igual que en [`chain new --as`](chain.md): el generador escribe la query de lo que se señaló, y el endpoint anota en `as` con qué se capturó. Un modo que no existe es un error que lista los que hay, y no repunta nada.
+
+Es cómo un capture escrito con otra regla pasa a la de hoy sin crear otro bilink. Un bilink nuevo tendría otro UUID, y un endpoint `abstract` es exactamente un UUID del que otro repo está colgado.
+
 ### `recapture` no acepta
 
 Corrige a dónde apunta el endpoint y nada más. Que el contenido del fragmento nuevo sea el correcto lo decide un humano con `accept`.
