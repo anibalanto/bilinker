@@ -70,6 +70,7 @@ pub fn check_with(
     root: &Path, path: &Path, nb: crate::neighbours::Provider<'_>,
 ) -> Result<Checked> {
     let layer = if path.join(".bilink").is_dir() { path.to_path_buf() } else { root.to_path_buf() };
+    let scope = Scope::of(&layer, path)?;
 
     // **La versión de la capa se compara antes de abrir un bilink.** Un archivo de
     // formato viejo puede parsear bien y significar otra cosa, así que deducirlo del
@@ -99,6 +100,9 @@ pub fn check_with(
     let mut resolved: HashMap<String, (CaptureState, Option<Ranges>)> = HashMap::new();
 
     for path in bilink_files(&layer.join(".bilink")) {
+        if let Scope::Bilink(only) = &scope {
+            if path.file_stem() != Some(only.as_os_str()) { continue; }
+        }
         // Se saltea para no abortar el recorrido de los demás —igual que un
         // directorio que no se puede leer— pero **se cuenta y se nombra**: un archivo
         // roto no es razón para dejar de decir lo que se sabe del resto, ni para
@@ -114,6 +118,9 @@ pub fn check_with(
             }
         };
         let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if let Scope::Under(dir) = &scope {
+            if !scope_covers(&layer, &bl, dir) { continue; }
+        }
 
         let mut states = [EndpointState::Pending; 2];
         for n in [0u8, 1u8] {
@@ -134,6 +141,47 @@ pub fn check_with(
     cache.save(&layer)?;
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
     Ok(Checked { results: out, unreadable })
+}
+
+/// Qué parte de la capa verifica un `check <path>`.
+enum Scope {
+    Layer,
+    /// Un bilink, por su UUID.
+    Bilink(std::ffi::OsString),
+    /// Los bilinks con un endpoint cuyo capture cae bajo este path, relativo a la capa.
+    Under(PathBuf),
+}
+
+impl Scope {
+    fn of(layer: &Path, path: &Path) -> Result<Scope> {
+        if path.join(".bilink").is_dir() { return Ok(Scope::Layer); }
+        // **Un path que no existe es un error, no un alcance vacío.** Con un typo,
+        // "no hay nada no-OK" se leería como que todo está bien.
+        let Ok(abs) = path.canonicalize() else {
+            anyhow::bail!("{} no existe", path.display());
+        };
+        let layer = layer.canonicalize()?;
+        let Ok(rel) = abs.strip_prefix(&layer) else {
+            anyhow::bail!("{} no está adentro de la capa {}", path.display(), layer.display());
+        };
+        if rel.as_os_str().is_empty() { return Ok(Scope::Layer); }
+        if rel.parent() == Some(Path::new(".bilink")) && rel.extension().is_some_and(|e| e == "yaml") {
+            return Ok(Scope::Bilink(rel.file_stem().unwrap_or_default().to_os_string()));
+        }
+        Ok(Scope::Under(rel.to_path_buf()))
+    }
+}
+
+/// ¿Algún endpoint de `bl` apunta a un capture bajo `dir`?
+///
+/// Cuenta el `link`, la ubicación vigente: un vecino del vecindario no mete a su
+/// bilink en el alcance, porque el archivo de un DTO no es el fragmento de nadie.
+fn scope_covers(layer: &Path, bl: &BiLink, dir: &Path) -> bool {
+    [0u8, 1u8].iter().any(|&n| {
+        bl.endpoint.get(n).link.capture_id()
+            .and_then(|id| Capture::load_in(layer, id).ok())
+            .is_some_and(|cap| Path::new(&cap.file).starts_with(dir))
+    })
 }
 
 /// Cómo se llama este endpoint, si su generador sabe nombrarlo.

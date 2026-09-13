@@ -1502,8 +1502,8 @@ fn capture_refuses_an_anchor_it_cannot_identify() {
 #[test]
 fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
     let (_tmp, root) = isolated_git_workspace();
-    fs::create_dir_all(root.join(".stratum/worklist-demo")).unwrap();
-    write_and_commit(&root, ".stratum/worklist-demo/3a.user-story.md",
+    fs::create_dir_all(root.join(".worklist/insecure/all")).unwrap();
+    write_and_commit(&root, ".worklist/insecure/all/3a.user-story.md",
         "---\ntitle: una story\nstatus: open\n---\n\nCuerpo.\n");
 
     let (stdout, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
@@ -1526,7 +1526,11 @@ fn an_issue_endpoint_resolves_by_id_whatever_the_item_type() {
 #[test]
 fn an_unknown_issue_id_is_todo() {
     let (_tmp, root) = isolated_git_workspace();
-    fs::create_dir_all(root.join(".stratum/worklist-demo")).unwrap();
+    // Con el panorama presente y otro ítem adentro: sin eso el TODO saldría de que
+    // no hay worklist, y no de que el id no existe.
+    fs::create_dir_all(root.join(".worklist/insecure/all")).unwrap();
+    write_and_commit(&root, ".worklist/insecure/all/3a.user-story.md",
+        "---\ntitle: una story\nstatus: open\n---\n\nCuerpo.\n");
 
     let (stdout, stderr, ok) = run_in(&root, &["capture", "docs/spec.md", "1:1", "1:1"]);
     assert!(ok, "capture failed:\n{stderr}");
@@ -5697,4 +5701,56 @@ fn check_on_one_file_verifies_only_that_file() {
         1,
         "pedir por un archivo tiene que verificar ese archivo, no la capa entera"
     );
+}
+
+/// Un directorio es todo lo que cae adentro, y un bilink es ese bilink.
+#[test]
+fn check_on_a_directory_or_a_bilink_verifies_only_that() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["chain", "new", "--tip", "src/Service.java:1:1", "--tip", "abstract"]);
+
+    let reported = |args: &[&str]| -> Vec<String> {
+        let (out, _, _) = code_in(&root, args);
+        out.lines().filter(|l| l.contains('(') && l.contains(')'))
+            .map(|l| l[..8].to_string()).collect()
+    };
+
+    let docs = reported(&["check", "docs"]);
+    let src  = reported(&["check", "src"]);
+    assert_eq!(docs.len(), 1, "un directorio es lo que cae adentro: {docs:?}");
+    assert_eq!(src.len(), 1, "{src:?}");
+    assert_ne!(docs, src);
+
+    let bilink = fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&docs[0]))
+        .unwrap();
+    assert_eq!(reported(&["check", bilink.to_str().unwrap()]), docs, "un bilink es ese bilink");
+}
+
+/// Un check parcial no borra lo que la cache sabe del resto.
+#[test]
+fn a_partial_check_keeps_the_rest_of_the_cache() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["chain", "new", "--tip", "src/Service.java:1:1", "--tip", "abstract"]);
+    run_in(&root, &["check", "."]);
+    let (before, _, _) = run_in(&root, &["status"]);
+
+    run_in(&root, &["check", "docs/spec.md"]);
+    let (after, _, _) = run_in(&root, &["status"]);
+    assert!(after.contains("Service.java"), "el estado del otro sigue en la cache:\n{after}");
+    assert_eq!(before, after);
+}
+
+/// Un path que no existe es un error, no una capa vacía: con un typo, *"0 bilinks"*
+/// se leería como que todo está bien.
+#[test]
+fn check_on_a_path_that_does_not_exist_is_an_error() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    let (_, stderr, code) = code_in(&root, &["check", "docs/spek.md"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("docs/spek.md"), "{stderr}");
 }
