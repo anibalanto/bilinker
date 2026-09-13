@@ -9,3 +9,10 @@ endpoint:
       hash: 1d39fa3aa9d12d5bf14f1145294c2302fb7f58a3f621c0ba96bd4b72951e2fdb
   1:
     link: capture edb17dc2bc331146d44bd12dd760d800
+    accepted:
+    - agree:
+      - Anibal
+      link: capture edb17dc2bc331146d44bd12dd760d800
+      hash: 4739c06e001d1ab9fcb23f04d5739779b19f44eb13dc9cfb3a5091969887dd47
+      hash_ast: 7684466153df31b2ea5e5c1dd601ad2a359b0d90bf9852a29af60294510860fe
+      n: declined
