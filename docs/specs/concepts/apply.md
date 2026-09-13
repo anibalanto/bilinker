@@ -12,7 +12,7 @@ El fragmento nuevo puede no ser el que la spec describe, y una decisión sin apr
 
 Requiere git como dependencia dura.
 
-### Firma
+### `apply` toma `--dry-run`, `--filter` y `-y`
 
 ```
 bilinker apply [--dry-run] [--filter <estado>] [-y]
@@ -24,7 +24,7 @@ bilinker apply [--dry-run] [--filter <estado>] [-y]
 | `--filter <estado>` | Aplica sólo fixes de un estado específico (e.g. `--filter MOVED`). |
 | `-y` | Omite la confirmación interactiva. |
 
-### Flujo
+### `apply` re-deriva cada estado con fix, acuña el capture nuevo y repunta el `link`
 
 0. Comprobar que la capa tenga estado calculado. Si no, fallar con 3 y nombrar `check` (ver "La capa tiene que estar mirada").
 1. Escanear los bilinks de la capa actual.
@@ -172,7 +172,7 @@ Que no haya auto-fix está bien: dónde quedó el fragmento adentro del archivo 
 
 Es la invariante que separa proponer de aprobar, y con el bloque aparte es casi imposible de violar por accidente.
 
-### Salida
+### La salida de `apply` lista los fixes y lo que no pudo mirar
 
 ```
 $ bilinker apply
@@ -199,7 +199,7 @@ Ningún fix cierra solo. Por eso el resumen dice qué falta antes de listar los 
 
 El bloque de "sin mirar" va arriba, entre los fixes y la confirmación, y no al final con los commits: es lo que la persona necesita para decidir si el resumen le alcanza, y un renglón después de la lista de commits ya no se lee. Cada línea dice el motivo por endpoint, porque *"no se pudo"* sin decir qué falló es la misma respuesta vacía en otro lugar.
 
-### Código de salida
+### Código de salida de `apply`
 
 | Código | Condición |
 |---|---|

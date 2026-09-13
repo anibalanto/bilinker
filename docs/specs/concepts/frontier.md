@@ -254,7 +254,7 @@ error: el proveedor 'hsi' no declara versión de formato: es anterior a la front
   No se puede interpretar lo que publica.
 ```
 
-### Salida de `fetch`
+### `fetch` imprime una línea por proveedor
 
 Una línea por proveedor. Medido el 2026-09-11, entre dos repos locales:
 

@@ -4,7 +4,7 @@ Un bilink es una declaración y dos decisiones: qué dos cosas están vinculadas
 
 ## El archivo
 
-### Ubicación y nomenclatura
+### El bilink vive en `.bilink/<uuid>.yaml`, y el UUID es el id de la cadena
 
 Los bilinks viven en carpetas `.bilink/` dentro de cada capa del proyecto. El nombre del archivo es un UUID v4: es a la vez el identificador de la cadena y el mecanismo de localización entre capas.
 
@@ -24,7 +24,7 @@ La extensión es `.yaml`. El tipo lo dice la carpeta que lo contiene; repetirlo 
 
 Esas carpetas están en el árbol de trabajo y no en ninguna rama del proyecto: viven en `refs/bilink/<branch>`, una ref por rama, y el árbol las lleva materializadas y excluidas del índice del proyecto ([ref.md](ref.md)).
 
-### Estructura del archivo
+### La estructura del archivo: dos endpoints, y en cada uno `link`, `n` y `accepted`
 
 ```yaml
 endpoint:

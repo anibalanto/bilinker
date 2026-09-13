@@ -417,7 +417,7 @@ Cada uno cambia por una sola razón y por ninguna otra: `hash` cuando cambia el 
 
 ## El comando `accept`
 
-### Uso
+### `accept` toma un endpoint, un bilink entero, una capa o un path
 
 ```
 bilinker accept <uuid>.<N>
@@ -440,7 +440,7 @@ bilinker accept <path>
 
 Sin flags, aprueba las dos dimensiones.
 
-### Comportamiento
+### `accept` absorbe la rama, escribe `accepted` y cierra con un commit de un solo padre
 
 1. Resolver el bilink y, para endpoints estructurales, el capture que su `link` referencia.
 2. Si el capture no resuelve, fallar: no se puede aprobar contenido que no se pudo localizar.

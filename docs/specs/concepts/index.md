@@ -8,7 +8,7 @@ Encontrar todos los bilinks que referencian un archivo dado requiere escanear to
 
 Si no existe o está desactualizado, los comandos que lo usan caen al scan O(N). Nunca es fuente de verdad: siempre puede reconstruirse a partir de los bilinks.
 
-### Formato
+### El índice es una entrada por línea: archivo, endpoint y capture, separados por tabulador
 
 ```
 docs/api-spec.md	7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.0	c1a2b3c4-…
@@ -24,7 +24,7 @@ src/Service.java	7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.0	d5e6f7a8-…
 
 La ruta del archivo es relativa a la raíz de la capa que contiene el `.bilink/`. El resto de la información se lee de donde vive: `file` y `query` en el capture, `accepted` en el bilink, y `range` y `state.N` en [la cache](cache.md).
 
-### Ubicación
+### Cada capa tiene su propio índice, en `.bilink/index/index`
 
 ```
 <layer-root>/
@@ -37,7 +37,7 @@ La ruta del archivo es relativa a la raíz de la capa que contiene el `.bilink/`
 
 Cada capa tiene su propio índice. El índice solo cubre los endpoints estructurales de los bilinks que viven en esa capa: no endpoints `path` ni bilinks de otras capas.
 
-### Detección de obsolescencia
+### El índice vale si su mtime no es anterior al del bilink más reciente
 
 El índice se considera válido si su mtime es mayor o igual al mtime del bilink más reciente en el mismo directorio. Si algún bilink es más nuevo que el índice, el índice está desactualizado.
 
@@ -101,7 +101,7 @@ $ bilinker index status --recursive
 .stratum/impl/.bilink/index/index  MISSING
 ```
 
-### Códigos de salida
+### Código de salida de `index`
 
 | Código | Condición |
 |---|---|

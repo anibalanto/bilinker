@@ -204,7 +204,7 @@ Y la mitad que importa se conserva entera: perder el plugin cuesta lo que el plu
 
 ### Y pasa la misma verificación que una query escrita a mano
 
-Que el capture resultante sea una query normal es lo que lo somete a la misma unicidad de la referencia que cualquier otra ([capture.md](capture.md), "Propiedades garantizadas"). Un generador que produce una query que matchea más de un nodo no escribe, igual que `capture` sobre un ancla sin discriminante.
+Que el capture resultante sea una query normal es lo que lo somete a la misma unicidad de la referencia que cualquier otra ([capture.md](capture.md), "Propiedades garantizadas de `capture`"). Un generador que produce una query que matchea más de un nodo no escribe, igual que `capture` sobre un ancla sin discriminante.
 
 No es una regla nueva para generadores: es que no hay excepción. Un capture mal anclado reporta OK sobre una correspondencia que no existe, y eso no cambia porque lo haya escrito un plugin; cambia a peor, porque quien lo pidió no vio la query.
 

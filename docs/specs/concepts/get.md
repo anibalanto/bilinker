@@ -285,7 +285,7 @@ La tercera fila es la que `apply` no puede explicar: sin rename detectado el cap
 
 ## Código de salida y propiedades
 
-### Código de salida
+### Código de salida de `get`
 
 | Código | Condición |
 |---|---|
@@ -294,7 +294,7 @@ La tercera fila es la que `apply` no puede explicar: sin rename detectado el cap
 
 Un vecino que no resuelve no entra en esa lista. El fragmento pedido salió, y lo que no resolvió se imprimió con su referencia.
 
-### Propiedades garantizadas
+### Propiedades garantizadas de `get`
 
 - Independencia de git: `get` sin `--diff` no requiere control de versiones.
 - Sin efectos secundarios: `get` no escribe ningún archivo.
