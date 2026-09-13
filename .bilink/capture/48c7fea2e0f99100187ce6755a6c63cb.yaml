@@ -1,0 +1,6 @@
+file: docs/decisions/2026-09-13.ancla-del-endpoint.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "4. Los captures escritos con la regla vieja se regeneran con `recapture --as`, y conservan su bilink"))) @target)
