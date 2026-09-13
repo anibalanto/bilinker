@@ -147,11 +147,7 @@ impl CaptureGenerator for SpringController {
             if let Some(child) = node.child_by_field_name(field) { targets.push(child); }
         }
 
-        // **El ancla es la ruta, no el nombre del método.** Un refactor renombra el
-        // método y no la ruta, y lo que el bilink describe es el contrato. Es el
-        // reverso de que una ruta compuesta no sirva de ancla: el pedazo que aporta
-        // el método sí existe como literal.
-        let query = spring_pattern(ctx, class, node, class_mapping, route);
+        let query = spring_pattern(ctx, class, node, class_mapping);
 
         Ok(Generated { query, targets })
     }
@@ -273,80 +269,59 @@ fn enclosing_class<'t>(node: Node<'t>) -> Option<Node<'t>> {
     None
 }
 
-/// El patrón de un endpoint, anclado por el literal de su ruta.
+/// El patrón de un endpoint, anclado por el nombre de su método.
 ///
 /// Las capturas se numeran `@nK` de afuera hacia adentro, como las que escribe el
-/// núcleo: así el **último** predicado es el de la ruta, y es el que `recapture` y
-/// la búsqueda de anclas renombradas van a mirar. El ancla de un endpoint es su
-/// ruta, así que eso es exactamente lo que corresponde.
+/// núcleo: así el **último** predicado es el del nombre, y es el que `recapture` y
+/// la búsqueda de anclas renombradas van a mirar.
 fn spring_pattern(
     ctx:           &GenCtx<'_>,
     class:         Option<Node>,
     method:        Node,
     class_mapping: Option<Node>,
-    route:         Node,
 ) -> String {
     let source = ctx.source;
-    let esc = query::escape_query_string;
     let mut k = 0usize;
     let mut cap = || { let c = format!("@n{k}"); k += 1; c };
 
-    // La anotación de la clase: aporta el prefijo de la ruta.
-    let class_pat = class_mapping.map(|m| {
-        let c = cap();
-        let name = m.child_by_field_name("name")
-            .map(|n| &source[n.byte_range()]).unwrap_or(CLASS_MAPPING);
-        format!("(modifiers\n    ({kind}\n      name: (identifier) {c} (#eq? {c} \"{name}\")) @target)",
-                kind = m.kind(), name = esc(name))
+    // **Una anotación de ruta se reconoce por clase, no por nombre.** Con `#eq?`
+    // cambiar `@GetMapping` por `@PostMapping` dejaba de matchear, y el verbo es
+    // contenido. Y `#match?` no es `#eq?`: el último `#eq?` sigue siendo el ancla, y
+    // la búsqueda de un ancla renombrada, que saca los `#eq?`, no los saca.
+    //
+    // **Y sin kind**: `annotation` y `marker_annotation` son la misma anotación con
+    // y sin literal, y sacarle el literal es cambiar la ruta.
+    let annotation_pat = |c: String, names: &[&str]| format!(
+        "(_\n          name: (identifier) {c} (#match? {c} \"^({})$\")) @target",
+        names.join("|"));
+
+    let class_pat = class_mapping.map(|_| {
+        format!("(modifiers\n    {})", annotation_pat(cap(), &[CLASS_MAPPING]))
     });
 
-    // La anotación del método: aporta el resto de la ruta, y es el ancla.
-    let route_name = route.child_by_field_name("name")
-        .map(|n| &source[n.byte_range()]).unwrap_or("RequestMapping");
-    let cn = cap();
-    let route_pat = match route.child_by_field_name("arguments") {
-        Some(args) => {
-            let ca = cap();
-            let fields = format!(
-                "name: (identifier) {cn} (#eq? {cn} \"{name}\")\n          \
-                 arguments: ({akind}) {ca} (#eq? {ca} \"{lit}\")",
-                name  = esc(route_name),
-                akind = args.kind(),
-                lit   = esc(&source[args.byte_range()]));
-            format!("({kind}\n          {fields}) @target", kind = route.kind())
-        }
-        None => format!("({kind}\n          name: (identifier) {cn} (#eq? {cn} \"{name}\")) @target",
-                        kind = route.kind(), name = esc(route_name)),
-    };
+    let mut method_parts = vec![format!("(modifiers\n        {})", annotation_pat(cap(), MAPPINGS))];
 
-    let mut method_parts = vec![format!("(modifiers\n        {route_pat})")];
-
-    // **Cuando la anotación del método no lleva literal, el ancla es su nombre.**
+    // **El ancla es el nombre del método, y sólo el ancla.** Entra como predicado y
+    // no lleva `@target`, que es el reparto inverso al de `interface`: el contrato de
+    // un endpoint no incluye cómo se llama el método que lo sirve, así que
+    // renombrarlo es una relocalización. Y la ruta, que era el ancla cuando la
+    // anotación llevaba literal, es lo que el fragmento captura: siendo ancla, al
+    // cambiar se perdía el puntero en vez de verse el diff.
     //
-    // `@GetMapping` a secas es la mitad de los endpoints de una api real: la ruta la
-    // aporta entera el `@RequestMapping` de la clase, y el método no agrega ningún
-    // literal. Sin esto el único predicado sería el nombre de la anotación, que
-    // matchea cualquier hermano con la misma anotación pelada — un capture que
-    // depende de que hoy haya uno solo, y que se muda al vecino en cuanto aparece
-    // otro. `verify_query_identifies` no lo agarra: pregunta si es única *ahora*.
+    // Los `@target` van con `(_)`: el kind del tipo de retorno es parte de lo
+    // capturado, y `List<Dto>` → `Dto` es un cambio de contenido.
     //
-    // **Entra como predicado y no lleva `@target`**, que es el reparto inverso al de
-    // `interface`. Los dos salen del mismo criterio —qué describe el fragmento—: el
-    // contrato de un endpoint no incluye cómo se llama el método que lo sirve, así
-    // que renombrarlo tiene que ser una relocalización y no un cambio de contenido.
     // Las partes salen en el orden de la gramática, que en Java es
     // `modifiers, type, name, parameters`. El nombre va en el medio, no al final.
-    let anclar_por_nombre = route.child_by_field_name("arguments").is_none();
     for field in ["type", "name", "parameters"] {
         let Some(child) = method.child_by_field_name(field) else { continue };
         if field == "name" {
-            if !anclar_por_nombre { continue }
             let c = cap();
             method_parts.push(format!(
                 "name: ({kind}) {c} (#eq? {c} \"{n}\")",
-                kind = child.kind(), n = esc(&source[child.byte_range()])));
+                kind = child.kind(), n = query::escape_query_string(&source[child.byte_range()])));
         } else {
-            method_parts.push(format!("{field}: ({}) @target", child.kind()));
+            method_parts.push(format!("{field}: (_) @target"));
         }
     }
     let method_pat = format!("(method_declaration\n      {})", method_parts.join("\n      "));

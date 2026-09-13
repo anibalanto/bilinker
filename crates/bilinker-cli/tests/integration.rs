@@ -480,18 +480,18 @@ fn as_spring_controller_composes_the_route_from_two_annotations() {
 
     let cap = capture_file_of(&root);
     assert_eq!(cap.matches("@target").count(), 4, "{cap}");
-    assert!(cap.contains(r#"(#eq? @n0 "RequestMapping")"#), "el prefijo de la clase:\n{cap}");
-    assert!(cap.contains(r#"(#eq? @n1 "GetMapping")"#),     "la ruta del método:\n{cap}");
-    assert!(cap.contains(r#"/permissions/from-token"#),     "el ancla es la ruta:\n{cap}");
-    assert!(!cap.contains("getPermissions"),
-            "el nombre del método no ancla ni se captura:\n{cap}");
+    assert!(cap.contains(r#"(#match? @n0 "^(RequestMapping)$")"#), "el prefijo de la clase:\n{cap}");
+    assert!(cap.contains("GetMapping|PostMapping"), "la anotación de ruta, por clase:\n{cap}");
+    assert!(!cap.contains("/permissions/from-token"), "la ruta no es ancla:\n{cap}");
+    assert_eq!(cap.matches("#eq?").count(), 1, "un solo ancla:\n{cap}");
+    assert!(cap.contains(r#"(#eq? @n2 "getPermissions")"#), "y es el nombre del método:\n{cap}");
     assert!(!cap.contains("(block)"), "el cuerpo no entra:\n{cap}");
 }
 
-/// El contrato es la ruta y la forma: renombrar el método no es un cambio, y el
-/// tipo de retorno sí.
+/// El contrato es la ruta y la forma: renombrar el método es mover el ancla, y ni el
+/// cuerpo ni el nombre cambian el contenido.
 #[test]
-fn a_spring_endpoint_survives_a_rename_and_sees_the_shape() {
+fn a_spring_endpoint_relocates_on_a_rename_and_sees_the_shape() {
     let (_tmp, root) = workspace_with_a_controller();
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new", "--yes",
@@ -509,13 +509,28 @@ fn a_spring_endpoint_survives_a_rename_and_sees_the_shape() {
         fs::write(&java, src.replace(from, to)).unwrap();
     };
 
-    edit("getPermissions", "permisosDelToken");
-    let (out, _, ok) = run_in(&root, &["check", "."]);
-    assert!(ok, "renombrar el método no cambia el contrato:\n{out}");
-
     edit("svc.permissionsOf(token)", "svc.otra(token)");
     let (out, _, ok) = run_in(&root, &["check", "."]);
-    assert!(ok, "el cuerpo tampoco:\n{out}");
+    assert!(ok, "el cuerpo no cambia el contrato:\n{out}");
+
+    edit("getPermissions", "permisosDelToken");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "renombrar mueve el ancla, y eso se reporta:\n{out}");
+    let (out, _, _) = run_in(&root, &["apply", "--dry-run"]);
+    assert!(out.contains("REANCHORED"), "como un ancla renombrada:\n{out}");
+    let (_, stderr, ok) = run_in(&root, &["apply", "-y"]);
+    assert!(ok, "{stderr}");
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("RELOCATED"), "repuntado, y sin aceptar:\n{out}");
+    assert!(!out.contains("ALTERED"), "el nombre no es contenido:\n{out}");
+    // Aceptar fija un contenido que tiene que estar en la historia.
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "rename"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "la ubicación nueva, aceptada:\n{out}");
 
     edit("List<PublicAuthorityDto>", "List<HSIRoleInfoDto>");
     let (out, _, _) = run_in(&root, &["check", "."]);
@@ -540,6 +555,88 @@ fn a_spring_endpoint_sees_the_class_prefix() {
     fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
     let (out, _, _) = run_in(&root, &["check", "."]);
     assert!(out.contains("ALTERED"), "la ruta compuesta entra en el fragmento:\n{out}");
+}
+
+/// Crea la cadena sobre el controller y la acepta, para editar el Java después.
+fn accepted_spring_endpoint() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+    (tmp, root)
+}
+
+fn edit_java(root: &std::path::Path, from: &str, to: &str) {
+    let java = root.join("src/Service.java");
+    let src = fs::read_to_string(&java).unwrap();
+    assert!(src.contains(from), "el fixture no tiene `{from}`");
+    fs::write(&java, src.replace(from, to)).unwrap();
+}
+
+/// **Cambiar la ruta del método es un cambio de contrato, y se reporta como tal.**
+///
+/// Es el cambio más importante que un bilink sobre un endpoint tiene que atrapar, y
+/// hoy es el que peor sale: el literal es a la vez ancla y contenido, así que al
+/// cambiar no queda `ALTERED` con un diff sino `UNRESOLVED` con el puntero perdido y
+/// un `recapture` a mano. Medido sobre 98 endpoints reales el 2026-09-13.
+#[test]
+fn changing_the_method_route_is_altered_not_unresolved() {
+    let (_tmp, root) = accepted_spring_endpoint();
+
+    edit_java(&root, "/permissions/from-token", "/permissions/from-token-v2");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "la ruta cambió, y eso se reporta:\n{out}");
+    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
+}
+
+/// **Cambiar el verbo también es contenido.** `@GetMapping` → `@PostMapping` es otro
+/// endpoint sobre la misma ruta; el nombre de la anotación entra hoy como predicado y
+/// el patrón deja de matchear.
+#[test]
+fn changing_the_verb_is_altered_not_unresolved() {
+    let (_tmp, root) = accepted_spring_endpoint();
+
+    edit_java(&root, "@GetMapping", "@PostMapping");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "el verbo cambió, y eso se reporta:\n{out}");
+    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
+}
+
+/// **La forma del tipo de retorno no es ancla.** El generador escribe el *kind* del
+/// nodo que hay hoy —`type: (generic_type)`—, así que pasar de `List<Dto>` a `Dto`
+/// cambia el kind y el patrón deja de matchear. El tipo de retorno es lo que el
+/// fragmento captura: su cambio es `ALTERED`, sea del kind que sea.
+#[test]
+fn changing_the_kind_of_the_return_type_is_altered_not_unresolved() {
+    let (_tmp, root) = accepted_spring_endpoint();
+
+    edit_java(&root, "List<PublicAuthorityDto>", "PublicAuthorityDto");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "el tipo de retorno cambió, y eso se reporta:\n{out}");
+    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
+}
+
+/// **Sacarle el literal a la anotación tampoco pierde el ancla.** `@GetMapping("/x")`
+/// es un `annotation` con `arguments`; `@GetMapping` pelado es un `marker_annotation`
+/// sin ellos. Es el mismo endpoint, con la ruta de la clase sola: la ruta cambió.
+#[test]
+fn dropping_the_route_literal_is_altered_not_unresolved() {
+    let (_tmp, root) = accepted_spring_endpoint();
+
+    edit_java(&root, "@GetMapping(\"/permissions/from-token\")", "@GetMapping");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "la ruta cambió, y eso se reporta:\n{out}");
+    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
 }
 
 /// Un controller donde la anotación de verbo no lleva literal: la ruta la aporta
