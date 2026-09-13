@@ -5702,3 +5702,55 @@ fn check_on_one_file_verifies_only_that_file() {
         "pedir por un archivo tiene que verificar ese archivo, no la capa entera"
     );
 }
+
+/// Un directorio es todo lo que cae adentro, y un bilink es ese bilink.
+#[test]
+fn check_on_a_directory_or_a_bilink_verifies_only_that() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["chain", "new", "--tip", "src/Service.java:1:1", "--tip", "abstract"]);
+
+    let reported = |args: &[&str]| -> Vec<String> {
+        let (out, _, _) = code_in(&root, args);
+        out.lines().filter(|l| l.contains('(') && l.contains(')'))
+            .map(|l| l[..8].to_string()).collect()
+    };
+
+    let docs = reported(&["check", "docs"]);
+    let src  = reported(&["check", "src"]);
+    assert_eq!(docs.len(), 1, "un directorio es lo que cae adentro: {docs:?}");
+    assert_eq!(src.len(), 1, "{src:?}");
+    assert_ne!(docs, src);
+
+    let bilink = fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&docs[0]))
+        .unwrap();
+    assert_eq!(reported(&["check", bilink.to_str().unwrap()]), docs, "un bilink es ese bilink");
+}
+
+/// Un check parcial no borra lo que la cache sabe del resto.
+#[test]
+fn a_partial_check_keeps_the_rest_of_the_cache() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    run_in(&root, &["chain", "new", "--tip", "src/Service.java:1:1", "--tip", "abstract"]);
+    run_in(&root, &["check", "."]);
+    let (before, _, _) = run_in(&root, &["status"]);
+
+    run_in(&root, &["check", "docs/spec.md"]);
+    let (after, _, _) = run_in(&root, &["status"]);
+    assert!(after.contains("Service.java"), "el estado del otro sigue en la cache:\n{after}");
+    assert_eq!(before, after);
+}
+
+/// Un path que no existe es un error, no una capa vacía: con un typo, *"0 bilinks"*
+/// se leería como que todo está bien.
+#[test]
+fn check_on_a_path_that_does_not_exist_is_an_error() {
+    let (_tmp, root) = isolated_git_workspace();
+    run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    let (_, stderr, code) = code_in(&root, &["check", "docs/spek.md"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("docs/spek.md"), "{stderr}");
+}
