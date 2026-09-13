@@ -263,43 +263,35 @@ bilinker chain new \
 
 Cuatro fragmentos de una sola posición. Y con eso entra la ruta compuesta: sale de un `@RequestMapping` de clase más un `@GetMapping` de método, y el literal completo no aparece en ningún lado del archivo.
 
-### El ancla es la ruta, no el nombre del método
+### El ancla es el nombre del método, y la ruta y el verbo son contenido
 
-El generador elige qué predicado escribe, y para un controller ancla por el literal de la anotación de ruta:
+Una query generada tiene dos clases de cosas: lo que ancla —los predicados y la forma, que deciden si el fragmento se encuentra— y lo que se captura —los `@target`, cuyo texto entra en `hash`—. Un nodo en los dos roles hace que cambiarlo pierda el puntero en vez de mostrar el diff, y para un endpoint lo que tiene que poder cambiar y verse es la ruta, el verbo y la forma.
 
-```
-arguments: (annotation_argument_list) @n1 (#eq? @n1 "(\"/permissions/from-token\")")
-```
-
-Es más fiel que anclar por `getPermissions`: un refactor renombra el método y no la ruta, y lo que el bilink describe es el contrato.
-
-Por lo mismo el nombre del método no se captura: renombrarlo no cambia el contrato del endpoint, y meterlo en el fragmento haría que un refactor interno disparara drift.
-
-### Cuando la anotación del método no lleva literal
-
-`@GetMapping` a secas es la mitad de los endpoints de una api real: la ruta la aporta entera el `@RequestMapping` de la clase, y el método no agrega ningún literal. Ahí no hay ruta que anclar: el predicado quedaría en el nombre de la anotación, que no distingue un método de sus hermanos:
+Así que el único predicado de nombre es el del método, y no lleva `@target`:
 
 ```
-(marker_annotation name: (identifier) @n1 (#eq? @n1 "GetMapping")) @target
-```
-
-Eso matchea cualquier método de la clase con la misma anotación pelada, y es exactamente el capture mal anclado que la unicidad prohíbe.
-
-Ahí el ancla es el nombre del método, y sólo el ancla. Entra como predicado y no lleva `@target`:
-
-```
-(method_declaration
+(class_declaration
   (modifiers
-    (marker_annotation
-      name: (identifier) @n1 (#eq? @n1 "GetMapping")) @target)
-  name: (identifier) @n2 (#eq? @n2 "getBookingList")
-  type: (generic_type) @target
-  parameters: (formal_parameters) @target)
+    (_
+      name: (identifier) @n0 (#match? @n0 "^RequestMapping$")) @target)
+  body: (class_body
+    (method_declaration
+      (modifiers
+        (_
+          name: (identifier) @n1 (#match? @n1 "^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)$")) @target)
+      name: (identifier) @n2 (#eq? @n2 "getPermissions")
+      type: (_) @target
+      parameters: (_) @target)))
 ```
 
-Es un reparto que ningún otro generador usa. `--as interface` pone el nombre en los dos roles porque sin el `@target` renombrar el método no sería un cambio de contenido sino una relocalización. Para un endpoint eso es justamente lo que se quiere: renombrar el método no cambia el contrato, así que debe ser una relocalización. Las dos reglas salen del mismo criterio —qué describe el fragmento— y por eso dan distinto.
+Cambiar el literal de la ruta, el verbo o el prefijo de la clase deja el endpoint `ALTERED`, con su diff. Lo mismo sacarle el literal a la anotación o cambiar un `List<Dto>` por un `Dto`.
 
-Lo que cuesta es que renombrar deja el capture `UNRESOLVED` y hay que repuntarlo. No hay salida sin ese costo: en un endpoint sin literal propio no hay nada más que distinga un método de sus hermanos, y el precio de no anclar es un vínculo que apunta a otro endpoint y contesta OK.
+- **Las anotaciones se reconocen por clase, no por nombre.** `#match?` contra el conjunto de anotaciones de ruta dice *"la anotación de ruta del método"*, sea `@GetMapping` o `@PostMapping`; `#eq?` queda para el ancla. Por eso el último `#eq?` de la query es el nombre del método, que es lo que `check` muestra cuando un capture no resuelve y lo que `recapture` reescribe.
+- **Los `@target` de contenido no fijan el kind.** `(_)` y no `(generic_type)`: el kind es parte de lo capturado, y un `annotation` que pasa a `marker_annotation` es la ruta que cambió, no un fragmento que desapareció.
+
+Es el reparto inverso al de `--as interface`, que pone el nombre en los dos roles. Las dos reglas salen del mismo criterio —qué describe el fragmento—: una firma se describe por cómo se llama, y el contrato de un endpoint no incluye cómo se llama el método que lo sirve.
+
+Lo que cuesta es que renombrar el método deja el capture sin ancla, y el endpoint `UNRESOLVED`. Cuando la similitud lo encuentra sin ambigüedad el capture es `REANCHORED`: `apply` lo repunta y el endpoint queda `RELOCATED` hasta que alguien acepte. Entre hermanos parecidos la similitud no alcanza, el capture es `UNANCHORED`, y la salida es `recapture`. No hay ancla más barata: en un endpoint cuya anotación no lleva literal no hay otra cosa que lo distinga de sus hermanos, y anclar por algo que el fragmento captura convierte el cambio que importa en un puntero perdido.
 
 ### El alias: el verbo y la ruta, compuestos del fragmento
 
