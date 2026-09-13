@@ -26,8 +26,28 @@ bilinker check [<path>] [--against <ref>]
 
 | Argumento | Descripción |
 |---|---|
-| `path` | Path a un bilink individual, o a una capa. Default: la capa actual. |
+| `path` | Path a una capa, a un bilink individual, o a un archivo o directorio de la capa. Default: la capa actual. |
 | `--against <ref>` | Toma los `accepted` de otro lado en vez de los del árbol, y no escribe cache. |
+
+### Un path que no es una capa ni un bilink verifica lo que cae bajo él
+
+El alcance sale del path, en este orden:
+
+| El path | Qué se verifica |
+|---|---|
+| tiene `.bilink/` adentro | la capa entera |
+| es un `.yaml` de `.bilink/` | ese bilink |
+| cualquier otro archivo o directorio | los bilinks con algún endpoint cuyo capture tiene su `file` bajo ese path |
+
+Es la pregunta de quien está tocando un archivo: *"¿qué dice lo que está atado a esto?"*. Con la capa entera la respuesta llega mezclada con todo lo demás, y en una capa con cientos de bilinks eso es no contestarla.
+
+Lo que cuenta es el `link` de cada endpoint, la ubicación vigente. Un vecino del [vecindario](accept.md) no mete a su bilink en el alcance: el archivo de un DTO no es el fragmento de nadie, y un bilink se verifica igual entero cuando entra.
+
+Un path que no existe es un error y no un alcance vacío. Con un typo, *"no hay nada no-OK"* se leería como que todo está bien.
+
+### Un check parcial sólo escribe en la cache lo que verificó
+
+Los estados del resto de la capa quedan como estaban. Borrarlos haría que `status`, que lee la cache sin verificar, dejara de mostrar bilinks que nadie tocó sólo porque se preguntó por otro archivo.
 
 ### `--against` compara contra las aceptaciones de otra parte
 
