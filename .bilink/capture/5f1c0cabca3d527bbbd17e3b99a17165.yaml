@@ -1,0 +1,6 @@
+file: docs/specs/concepts/cache.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Que no esté versionado hay que declararlo"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "La regla vive en `.bilink/.gitignore`"))) @target)

@@ -1,0 +1,6 @@
+file: docs/specs/concepts/frontier.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La versión del proveedor se verifica"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El consumidor se niega si no entiende el formato del proveedor"))) @target)

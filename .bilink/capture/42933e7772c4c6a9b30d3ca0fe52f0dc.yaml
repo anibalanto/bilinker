@@ -1,0 +1,6 @@
+file: docs/specs/concepts/lsp.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Transporte y capacidades"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Declara exactamente dos capacidades, `hover` y `codeLens`"))) @target)

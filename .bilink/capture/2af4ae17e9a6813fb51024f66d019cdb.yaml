@@ -1,0 +1,6 @@
+file: docs/specs/concepts/migration.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Salida y código de salida"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El reporte se agrupa por repo, porque cada uno tiene su propio ledger"))) @target)

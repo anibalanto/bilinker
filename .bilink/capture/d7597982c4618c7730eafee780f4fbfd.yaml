@@ -1,0 +1,6 @@
+file: docs/specs/concepts/capture.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El archivo"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Un capture tiene dos campos, `file` y `query`"))) @target)

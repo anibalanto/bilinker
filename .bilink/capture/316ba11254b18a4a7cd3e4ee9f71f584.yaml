@@ -1,0 +1,6 @@
+file: docs/specs/concepts/frontier.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker fetch`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Trae el repo de un proveedor declarado"))) @target)

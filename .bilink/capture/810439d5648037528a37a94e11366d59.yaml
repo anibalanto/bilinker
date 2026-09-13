@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker init`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Pone a punto el clon, y sin él ningún otro comando corre"))) @target)

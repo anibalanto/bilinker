@@ -1,0 +1,6 @@
+file: docs/specs/concepts/chain.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La vista previa"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "La salida deja ver qué se capturó, y qué no"))) @target)

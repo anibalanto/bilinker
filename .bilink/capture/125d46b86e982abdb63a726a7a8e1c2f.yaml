@@ -1,0 +1,6 @@
+file: docs/specs/concepts/check.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker status`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Muestra la cache agrupada por archivo, sin re-verificar"))) @target)

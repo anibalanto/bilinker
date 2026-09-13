@@ -1,0 +1,6 @@
+file: docs/specs/concepts/index.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El comando `index`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`bilinker index status` reporta si el índice de cada capa está al día"))) @target)

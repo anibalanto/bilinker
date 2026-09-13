@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La invariante de fidelidad"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Dos enunciados, verificables sin tree-sitter"))) @target)

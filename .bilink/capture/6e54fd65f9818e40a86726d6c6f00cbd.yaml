@@ -1,0 +1,6 @@
+file: docs/specs/concepts/format-version.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Qué tiene que aparecer en el esquema"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Lo que discrimina al parsear es visible en el esquema"))) @target)

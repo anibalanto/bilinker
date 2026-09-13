@@ -1,0 +1,6 @@
+file: docs/specs/concepts/format-version.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Se verifica, no se declara"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Un formato que ya no se escribe todavía se lee"))) @target)

@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El cierre de firma"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El fold, y por qué el orden es por identidad"))) @target)

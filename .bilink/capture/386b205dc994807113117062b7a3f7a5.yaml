@@ -1,0 +1,6 @@
+file: docs/specs/concepts/frontier.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker abstracts`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Qué abstracciones hay para consumir, con su código"))) @target)

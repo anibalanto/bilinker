@@ -1,0 +1,6 @@
+file: docs/specs/concepts/cache.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Estar fría es normal"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Cómo se re-deriva"))) @target)

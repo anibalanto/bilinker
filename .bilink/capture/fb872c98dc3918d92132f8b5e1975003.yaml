@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker sync`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Alinea la ref con la rama, absorbiéndola, y no verifica nada"))) @target)

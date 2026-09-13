@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Los valores son deterministas; la lista se une"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`commit` es del contenido, no de quien acepta"))) @target)

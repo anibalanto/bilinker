@@ -1,0 +1,6 @@
+file: docs/specs/concepts/format-version.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El esquema publicado"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Para qué se publica"))) @target)

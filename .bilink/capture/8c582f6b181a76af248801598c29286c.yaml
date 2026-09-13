@@ -1,0 +1,6 @@
+file: docs/specs/concepts/frontier.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La comparación, sin abrir el clon"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El consumidor copia los dos valores aceptados y los compara por separado"))) @target)

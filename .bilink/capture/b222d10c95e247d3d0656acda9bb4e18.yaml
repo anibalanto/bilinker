@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker pull`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Trae las decisiones que otro aceptó en la misma rama y las une con las propias"))) @target)

@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El comando `accept`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`accept` toma un endpoint, un bilink entero, una capa o un path"))) @target)

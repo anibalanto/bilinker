@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker log` y `bilinker diff`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`bilinker diff` compara `.bilink/` contra el commit de la ref del que salió"))) @target)

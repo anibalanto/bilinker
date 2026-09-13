@@ -1,0 +1,6 @@
+file: docs/specs/concepts/get.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Forma 3: archivo → todos los endpoints que lo referencian"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`get <file>` lista todo endpoint que referencia el archivo"))) @target)

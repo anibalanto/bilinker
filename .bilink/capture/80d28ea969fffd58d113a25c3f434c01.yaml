@@ -1,0 +1,6 @@
+file: docs/specs/concepts/apply.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`apply` propone, `accept` dispone"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`apply` re-deriva cada estado con fix, acuña el capture nuevo y repunta el `link`"))) @target)

@@ -1,0 +1,6 @@
+file: docs/specs/concepts/capture.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La referencia y el ciclo de vida"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Referencia desde un bilink"))) @target)

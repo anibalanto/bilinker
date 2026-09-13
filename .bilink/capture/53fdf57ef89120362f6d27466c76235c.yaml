@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Las dos dimensiones"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Ubicación y contenido se aprueban por separado"))) @target)

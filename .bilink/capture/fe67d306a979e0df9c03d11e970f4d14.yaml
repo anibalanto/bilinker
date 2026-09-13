@@ -1,0 +1,6 @@
+file: docs/specs/concepts/capture.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El comando `capture`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`capture` sube en el AST hasta el primer ancestro estable y verifica que la query identifique el fragmento"))) @target)

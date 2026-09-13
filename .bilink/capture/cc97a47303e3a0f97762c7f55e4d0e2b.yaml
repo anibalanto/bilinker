@@ -1,0 +1,6 @@
+file: docs/specs/concepts/apply.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Cálculo del fix por estado"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El estado se re-deriva; la cache no decide"))) @target)

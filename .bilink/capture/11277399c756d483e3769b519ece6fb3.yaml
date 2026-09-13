@@ -1,0 +1,6 @@
+file: docs/specs/concepts/frontier.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El clon: `check` nunca hace red"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El sparse se calcula, no se declara"))) @target)

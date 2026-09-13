@@ -1,0 +1,6 @@
+file: docs/specs/concepts/get.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Forma 2: endpoint → contenido del fragmento referenciado"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`get <UUID>.<N>` devuelve el texto del fragmento que el endpoint referencia"))) @target)

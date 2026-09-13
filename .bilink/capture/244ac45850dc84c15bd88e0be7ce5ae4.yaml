@@ -1,0 +1,6 @@
+file: docs/specs/concepts/get.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Forma 1: posición → endpoints que la cubren"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`get <file>:<line>:<col>` lista los endpoints cuyo capture cubre la posición"))) @target)
