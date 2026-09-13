@@ -438,11 +438,27 @@ fn last_name_capture(query: &Query) -> Option<u32> {
 /// Es el par de [`rewrite_name_predicate`] —el mismo predicado, leído en vez de
 /// reescrito— y es lo que hay que ir a mirar cuando un capture no resuelve.
 pub fn anchor_name(query_str: &str) -> Option<String> {
+    let (start, end) = last_predicate_value(query_str)?;
+    Some(unescape_query_string(&query_str[start..end]))
+}
+
+/// El rango, sin las comillas, del valor del último predicado `(#eq? @nK "...")`.
+///
+/// El valor está escapado con las reglas de [`escape_query_string`], así que una `"`
+/// precedida de `\` no cierra el string: el literal de una anotación de ruta,
+/// `("/report")`, lleva dos adentro.
+fn last_predicate_value(query_str: &str) -> Option<(usize, usize)> {
     let at = query_str.rfind("(#eq? @n")?;
-    let rest = &query_str[at..];
-    let open = rest.find('"')?;
-    let close = rest[open + 1..].find('"')? + open + 1;
-    Some(unescape_query_string(&rest[open + 1..close]))
+    let start = at + query_str[at..].find('"')? + 1;
+    let mut escaped = false;
+    for (i, c) in query_str[start..].char_indices() {
+        match c {
+            '\\' if !escaped => escaped = true,
+            '"' if !escaped  => return Some((start, start + i)),
+            _                => escaped = false,
+        }
+    }
+    None
 }
 
 /// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
@@ -453,13 +469,9 @@ pub fn anchor_name(query_str: &str) -> Option<String> {
 /// (inline) @n1 (#eq? @n1 "Sección"))) @target)` el anchor es `@n1`, y tocar
 /// `@n0` reescribiría el título del documento — que no cambió.
 pub fn rewrite_name_predicate(query_str: &str, new_name: &str) -> Option<String> {
-    let at = query_str.rfind("(#eq? @n")?;
-    let rest = &query_str[at..];
-    let open = rest.find('"')?;
-    let close = rest[open + 1..].find('"')? + open + 1;
-    let escaped = escape_query_string(new_name);
+    let (start, end) = last_predicate_value(query_str)?;
     Some(format!("{}{}{}",
-        &query_str[..at + open + 1], escaped, &query_str[at + close..]))
+        &query_str[..start], escape_query_string(new_name), &query_str[end..]))
 }
 
 #[cfg(test)]
@@ -497,6 +509,23 @@ mod rewrite_tests {
     #[test]
     fn returns_none_without_a_name_predicate() {
         assert!(rewrite_name_predicate("(source_file) @target", "x").is_none());
+    }
+
+    /// El valor de un predicado puede llevar comillas escapadas —el literal de una
+    /// anotación de ruta es `("/report")`—, y la primera `"` que aparece después de
+    /// la de apertura no es la de cierre. Cortar ahí devolvía `(\`, que es lo que
+    /// `check` mostraba como anchor de un endpoint sin resolver.
+    #[test]
+    fn reads_an_anchor_whose_value_has_escaped_quotes() {
+        let q = "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/report\\\")\")) @target";
+        assert_eq!(anchor_name(q).as_deref(), Some("(\"/report\")"));
+    }
+
+    #[test]
+    fn rewrites_an_anchor_whose_value_has_escaped_quotes() {
+        let q = "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/report\\\")\")) @target";
+        let r = rewrite_name_predicate(q, "(\"/informe\")").unwrap();
+        assert_eq!(r, "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/informe\\\")\")) @target");
     }
 
     fn fingerprint(src: &str) -> String {
