@@ -24,7 +24,7 @@ El id sale de la ubicación y sólo de la ubicación. Si entrara el hash del fra
 
 Por el mismo motivo tampoco entra `commit`: la procedencia de una decisión no es parte de dónde está un fragmento.
 
-### Ubicación
+### Los captures viven en `.bilink/capture/<id>.yaml`, al lado de los bilinks
 
 ```
 <layer-root>/
@@ -44,7 +44,7 @@ Un capture vive en la capa cuyo archivo referencia; su `file` es relativo a la r
 
 La extensión es `.yaml` y nada más. El tipo lo dice la carpeta que lo contiene, así que repetirlo en el nombre sería redundante.
 
-### Formato
+### Un capture tiene dos campos, `file` y `query`
 
 ```yaml
 # .bilink/capture/<id>.yaml
@@ -239,7 +239,7 @@ La selección cubría media línea del párrafo; el capture es el párrafo. Para
 
 ### Sin selección, el capture es el archivo entero
 
-Sale sin `query`, que es lo que "Formato" define como el archivo completo. No hay nodo AST que encontrar, así que tampoco hay ancla que verificar ni lenguaje que soportar: un archivo entero se captura aunque no haya gramática para él.
+Sale sin `query`, que es lo que "Un capture tiene dos campos, `file` y `query`" define como el archivo completo. No hay nodo AST que encontrar, así que tampoco hay ancla que verificar ni lenguaje que soportar: un archivo entero se captura aunque no haya gramática para él.
 
 ### Lenguajes soportados
 
@@ -267,7 +267,7 @@ Qué nodo conviene capturar, por tipo de documento:
 
 El criterio es que el ancla se nombre a sí misma. Un nodo sin nombre propio produce una query que matchea el primero de su tipo en el archivo, y un capture así apunta a otra cosa sin fallar. `bilinker capture` lo verifica antes de escribir y falla si no puede identificar el fragmento unívocamente.
 
-### Flujo interno
+### `capture` sube en el AST hasta el primer ancestro estable y verifica que la query identifique el fragmento
 
 1. Leer el archivo y parsearlo con la gramática tree-sitter del lenguaje detectado por extensión.
 2. Encontrar el nodo AST más pequeño que contiene la selección completa (`named_descendant_for_point_range`). Con varias selecciones, una vez por cada una.
@@ -285,7 +285,7 @@ Un predicado es un string adentro de una query, así que `\` y `"` no se pueden 
 
 Ningún nombre queda afuera por cómo se escribe: un ancla con `\` o con `"` en el nombre se captura igual. Lo que el predicado guarda es el nombre, no una versión suya que se pueda escribir sin escapar.
 
-### Salida
+### stdout lleva el id del capture; stderr, la metadata
 
 stdout lleva el id del capture, para referenciar desde un `link`:
 
@@ -309,14 +309,14 @@ El id va solo a stdout para poder usarlo en pipes:
 id=$(bilinker capture src/lib.rs 10:1 24:2)
 ```
 
-### Código de salida
+### Código de salida de `capture`
 
 | Código | Condición |
 |---|---|
 | 0 | Capture creado (o `prune` completado). |
 | 1 | Error: archivo no existe, selección fuera de rango, lenguaje sin gramática. |
 
-### Propiedades garantizadas
+### Propiedades garantizadas de `capture`
 
 - Unicidad de la referencia: la `query` resuelve a los nodos que se señalaron, y a ninguno otro. Un ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`— produce una query que matchea el primer nodo de ese tipo del archivo: un capture que apunta a otra cosa y no falla. `capture` verifica antes de escribir y falla si no puede identificar el fragmento unívocamente. Un capture mal anclado es peor que uno roto, porque reporta OK sobre una correspondencia que no existe.
 - Determinismo de la referencia: dos ejecuciones sobre el mismo archivo y selección sin modificaciones intermedias producen la misma `query` y los mismos rangos. El orden en que se pasan las posiciones no cambia nada: las partes van en orden de archivo.

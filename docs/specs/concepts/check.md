@@ -18,7 +18,7 @@ El vecindario se pregunta si hay a quién. `check` pregunta una vez si hay prove
 
 Es de `check` y no de toda la herramienta. Es masivo: corre sobre todos los bilinks de una capa, así que no puede clonar ni fetchear como efecto colateral. Un repo ajeno que no está clonado se reporta `REMOTE_UNREACHABLE` y se sigue. Las operaciones de red viven en otros comandos y son explícitas: el clon de un proveedor, el fetch de su ref, y la profundización de [`get --diff`](get.md).
 
-### Firma
+### `check` toma un bilink o una capa, y con `--against` una ref
 
 ```
 bilinker check [<path>] [--against <ref>]
@@ -450,7 +450,7 @@ f1e2d3c4  (EXPANDED, OK)
   → fix disponible: bilinker apply
 ```
 
-### Código de salida
+### Código de salida de `check`
 
 | Código | Condición |
 |---|---|
