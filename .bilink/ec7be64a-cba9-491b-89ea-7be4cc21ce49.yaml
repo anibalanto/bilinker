@@ -1,5 +1,10 @@
 endpoint:
   0:
     link: capture 96b55160567ac167143f22eced04bb39
+    accepted:
+    - agree:
+      - Anibal
+      link: capture 96b55160567ac167143f22eced04bb39
+      hash: 6599a678e2b7cf05353c4cd3e6e5beba89e56e76bf5a3d4b0f1a0887e4f85369
   1:
     link: capture d1d2531f30f34048aeebb5f214ffa903
