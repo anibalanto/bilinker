@@ -108,7 +108,7 @@ fn write_gap(text: &str, out: &mut String) {
 /// Se queda con el **primer match** del patrón, igual que antes: la query lleva
 /// predicados que la hacen única, y varios matches significan que no los tiene.
 pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Result<Option<Fragment>> {
-    Ok(fragments(language, source, query_str, true)?.into_iter().next())
+    Ok(fragments(language, source, query_str, true)?.into_iter().next().map(|m| m.fragment))
 }
 
 /// Todos los matches del patrón, cada uno con **todas** sus partes.
@@ -116,10 +116,28 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
 /// Es lo que usa la verificación al generar una query: un patrón que matchea dos
 /// veces no identifica nada, y hay que poder decirlo antes de escribir el capture.
 pub fn find_all_fragments(language: Language, source: &str, query_str: &str) -> Result<Vec<Fragment>> {
+    Ok(fragments(language, source, query_str, false)?.into_iter().map(|m| m.fragment).collect())
+}
+
+/// Un match de la query: el fragmento entero, y el texto del último predicado de
+/// nombre si la query lo tiene.
+pub struct TargetMatch {
+    pub fragment: Fragment,
+    pub name:     Option<String>,
+}
+
+/// Todos los matches de la query, no solo el primero.
+///
+/// [`find_fragment`] corta en el primero porque la query lleva predicados que la
+/// hacen única. Esta versión existe para las queries relajadas: al quitar los
+/// `#eq?` hay varios candidatos y hay que recorrerlos. Cada candidato es el
+/// fragmento con todas sus partes, que es contra lo que se compara el texto
+/// aceptado.
+pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Result<Vec<TargetMatch>> {
     fragments(language, source, query_str, false)
 }
 
-fn fragments(language: Language, source: &str, query_str: &str, first_only: bool) -> Result<Vec<Fragment>> {
+fn fragments(language: Language, source: &str, query_str: &str, first_only: bool) -> Result<Vec<TargetMatch>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(source, None).context("parse failed")?;
@@ -129,6 +147,11 @@ fn fragments(language: Language, source: &str, query_str: &str, first_only: bool
 
     let target_idx = query.capture_index_for_name("target")
         .context("query has no @target capture")?;
+    // El anchor del fragmento es el **último** predicado de nombre, no el
+    // primero: en una query anidada `@n0` identifica al ancestro más externo
+    // —el título de un documento, la clase que contiene al método— y quien
+    // nombra al fragmento es el más profundo.
+    let name_idx = last_name_capture(&query);
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -141,6 +164,10 @@ fn fragments(language: Language, source: &str, query_str: &str, first_only: bool
             .map(|cap| cap.node)
             .collect();
         if nodes.is_empty() { continue; }
+
+        let name = m.captures.iter()
+            .find(|cap| Some(cap.index) == name_idx)
+            .map(|cap| source[cap.node.byte_range()].to_string());
 
         nodes.sort_by_key(|n| (n.start_byte(), n.end_byte()));
         nodes.dedup_by_key(|n| (n.start_byte(), n.end_byte()));
@@ -157,68 +184,14 @@ fn fragments(language: Language, source: &str, query_str: &str, first_only: bool
             })
             .collect();
 
-        out.push(Fragment {
-            ranges: Ranges::new(parts).expect("hay al menos un @target"),
-            sexp,
+        out.push(TargetMatch {
+            fragment: Fragment {
+                ranges: Ranges::new(parts).expect("hay al menos un @target"),
+                sexp,
+            },
+            name,
         });
         if first_only { break; }
-    }
-    Ok(out)
-}
-
-/// Un match de la query: rango del `@target`, su S-expression, y el texto del
-/// primer predicado de nombre (`@n0`) si la query lo tiene.
-pub struct TargetMatch {
-    pub start: usize,
-    pub end:   usize,
-    pub sexp:  String,
-    pub name:  Option<String>,
-}
-
-/// Todos los matches de `@target`, no solo el primero.
-///
-/// `find_target_with_sexp` corta en el primero porque la query lleva predicados
-/// que la hacen única. Esta versión existe para las queries relajadas: al quitar
-/// los `#eq?` hay varios candidatos y hay que recorrerlos.
-pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Result<Vec<TargetMatch>> {
-    let mut parser = Parser::new();
-    parser.set_language(&language).context("set language")?;
-    let tree = parser.parse(source, None).context("parse failed")?;
-
-    let query = Query::new(&language, query_str)
-        .with_context(|| format!("invalid query:\n{query_str}"))?;
-
-    let target_idx = query.capture_index_for_name("target")
-        .context("query has no @target capture")?;
-    // El anchor del fragmento es el **último** predicado de nombre, no el
-    // primero: en una query anidada `@n0` identifica al ancestro más externo
-    // —el título de un documento, la clase que contiene al método— y quien
-    // nombra al fragmento es el más profundo.
-    let name_idx = last_name_capture(&query);
-
-    let mut cursor  = QueryCursor::new();
-    let root        = tree.root_node();
-    let mut matches = cursor.matches(&query, root, source.as_bytes());
-    let mut out     = Vec::new();
-
-    while let Some(m) = matches.next() {
-        let mut target: Option<&tree_sitter::QueryCapture> = None;
-        let mut name:   Option<String> = None;
-        for cap in m.captures {
-            if cap.index == target_idx {
-                target = Some(cap);
-            } else if Some(cap.index) == name_idx {
-                name = Some(source[cap.node.byte_range()].to_string());
-            }
-        }
-        if let Some(t) = target {
-            out.push(TargetMatch {
-                start: t.node.start_byte(),
-                end:   t.node.end_byte(),
-                sexp:  shape_and_tokens(t.node, source),
-                name,
-            });
-        }
     }
     Ok(out)
 }
@@ -309,6 +282,22 @@ mod fragment_tests {
         let f = rust(SRC, q);
         assert_eq!(f.ranges.parts().len(), 2);
         assert_eq!(f.ranges.text(SRC), "f\nu8");
+    }
+
+    /// Un candidato de la búsqueda de un ancla renombrada es el fragmento entero, y
+    /// no la última de sus partes: la similitud se mide contra el texto aceptado, que
+    /// es la concatenación de todas.
+    #[test]
+    fn a_relaxed_candidate_carries_every_part() {
+        let language = crate::grammar::for_language("rust").unwrap();
+        let q = r#"(function_item
+                      name: (identifier) @n0
+                      parameters: (parameters) @target
+                      return_type: (primitive_type) @target)"#;
+        let all = find_all_targets(language, SRC, q).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].fragment.ranges.text(SRC), "(a: u8)\nu8");
+        assert_eq!(all[0].name.as_deref(), Some("f"));
     }
 
     /// El separador es `\n`, y entra en el hash. Cambiarlo movería el de todos los
@@ -438,11 +427,27 @@ fn last_name_capture(query: &Query) -> Option<u32> {
 /// Es el par de [`rewrite_name_predicate`] —el mismo predicado, leído en vez de
 /// reescrito— y es lo que hay que ir a mirar cuando un capture no resuelve.
 pub fn anchor_name(query_str: &str) -> Option<String> {
+    let (start, end) = last_predicate_value(query_str)?;
+    Some(unescape_query_string(&query_str[start..end]))
+}
+
+/// El rango, sin las comillas, del valor del último predicado `(#eq? @nK "...")`.
+///
+/// El valor está escapado con las reglas de [`escape_query_string`], así que una `"`
+/// precedida de `\` no cierra el string: el literal de una anotación de ruta,
+/// `("/report")`, lleva dos adentro.
+fn last_predicate_value(query_str: &str) -> Option<(usize, usize)> {
     let at = query_str.rfind("(#eq? @n")?;
-    let rest = &query_str[at..];
-    let open = rest.find('"')?;
-    let close = rest[open + 1..].find('"')? + open + 1;
-    Some(unescape_query_string(&rest[open + 1..close]))
+    let start = at + query_str[at..].find('"')? + 1;
+    let mut escaped = false;
+    for (i, c) in query_str[start..].char_indices() {
+        match c {
+            '\\' if !escaped => escaped = true,
+            '"' if !escaped  => return Some((start, start + i)),
+            _                => escaped = false,
+        }
+    }
+    None
 }
 
 /// Reemplaza el valor del predicado de nombre del anchor por `new_name`.
@@ -453,13 +458,9 @@ pub fn anchor_name(query_str: &str) -> Option<String> {
 /// (inline) @n1 (#eq? @n1 "Sección"))) @target)` el anchor es `@n1`, y tocar
 /// `@n0` reescribiría el título del documento — que no cambió.
 pub fn rewrite_name_predicate(query_str: &str, new_name: &str) -> Option<String> {
-    let at = query_str.rfind("(#eq? @n")?;
-    let rest = &query_str[at..];
-    let open = rest.find('"')?;
-    let close = rest[open + 1..].find('"')? + open + 1;
-    let escaped = escape_query_string(new_name);
+    let (start, end) = last_predicate_value(query_str)?;
     Some(format!("{}{}{}",
-        &query_str[..at + open + 1], escaped, &query_str[at + close..]))
+        &query_str[..start], escape_query_string(new_name), &query_str[end..]))
 }
 
 #[cfg(test)]
@@ -497,6 +498,23 @@ mod rewrite_tests {
     #[test]
     fn returns_none_without_a_name_predicate() {
         assert!(rewrite_name_predicate("(source_file) @target", "x").is_none());
+    }
+
+    /// El valor de un predicado puede llevar comillas escapadas —el literal de una
+    /// anotación de ruta es `("/report")`—, y la primera `"` que aparece después de
+    /// la de apertura no es la de cierre. Cortar ahí devolvía `(\`, que es lo que
+    /// `check` mostraba como anchor de un endpoint sin resolver.
+    #[test]
+    fn reads_an_anchor_whose_value_has_escaped_quotes() {
+        let q = "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/report\\\")\")) @target";
+        assert_eq!(anchor_name(q).as_deref(), Some("(\"/report\")"));
+    }
+
+    #[test]
+    fn rewrites_an_anchor_whose_value_has_escaped_quotes() {
+        let q = "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/report\\\")\")) @target";
+        let r = rewrite_name_predicate(q, "(\"/informe\")").unwrap();
+        assert_eq!(r, "(annotation arguments: (annotation_argument_list) @n0 (#eq? @n0 \"(\\\"/informe\\\")\")) @target");
     }
 
     fn fingerprint(src: &str) -> String {

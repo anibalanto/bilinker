@@ -686,8 +686,8 @@ pub(crate) fn find_renamed_anchor(
     let mut scored: Vec<(String, f64)> = Vec::new();
     for m in matches {
         let Some(name) = m.name.clone() else { continue };
-        if m.start > m.end || m.end > source.len() { continue; }
-        scored.push((name, hash::similarity(&old_text, &source[m.start..m.end])));
+        if m.fragment.ranges.end() > source.len() { continue; }
+        scored.push((name, hash::similarity(&old_text, &m.fragment.ranges.text(source))));
     }
 
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
