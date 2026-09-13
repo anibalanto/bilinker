@@ -966,6 +966,7 @@ pub fn recapture(
     n:      u8,
     file:   &str,
     pos:    Option<((usize, usize), (usize, usize))>,
+    generator: Option<&dyn CaptureGenerator>,
 ) -> Result<Recaptured> {
     use bilink_format::BiLink;
     let mut bl = BiLink::load(bilink)?;
@@ -975,15 +976,21 @@ pub fn recapture(
         bail!("el endpoint {n} no es estructural (es {}) — no tiene capture que repuntar", e.link);
     };
 
-    let (new_id, _, reused) = match pos {
-        Some((start, end)) => capture_to_file(layer, file, start, end)?,
-        None               => capture_file_whole(layer, file)?,
+    let (new_id, _, reused) = match (pos, generator) {
+        (Some(sel), Some(g)) => compute(layer, file, &[sel], Some(g))?.0.write_in(layer)?,
+        (None, Some(g))      => bail!("`--as {}` necesita una posición: genera la query de lo que se señaló", g.name()),
+        (Some((start, end)), None) => capture_to_file(layer, file, start, end)?,
+        (None, None)         => capture_file_whole(layer, file)?,
     };
     if old_id == new_id {
         bail!("el endpoint {n} ya apunta a ese capture — nada que repuntar");
     }
 
-    bl.endpoint.get_mut(n).link = format!("capture {new_id}").parse()?;
+    let endpoint = bl.endpoint.get_mut(n);
+    endpoint.link = format!("capture {new_id}").parse()?;
+    if let Some(g) = generator {
+        endpoint.r#as = Some(g.name().to_string());
+    }
     bl.write(bilink)?;
 
     // El estado cacheado describía el capture viejo: dejarlo mentiría.
