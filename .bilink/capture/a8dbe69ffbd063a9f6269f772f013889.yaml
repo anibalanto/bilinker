@@ -1,0 +1,6 @@
+file: docs/specs/concepts/root.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Dónde empieza una capa"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "La raíz se resuelve caminando hacia arriba, hasta `.bilink/` o `.git/`"))) @target)
