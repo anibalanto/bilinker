@@ -8,3 +8,10 @@ endpoint:
       hash: 98d58c42f20947a68a575350cf395ceadbb2096a7de891f8df3397b11b353f2b
   1:
     link: capture 52abcabd1d2339db91625463a7a7abd7
+    accepted:
+    - agree:
+      - Anibal
+      link: capture 52abcabd1d2339db91625463a7a7abd7
+      hash: 878f6af8d2a55278651373028d5ed86a689226c8eeb4a4b07d50ffeeb2b0e819
+      hash_ast: d5e91a1c9d49733402efd9b056eab06d4ae16535069c5763742107e3788fcab2
+      n: declined
