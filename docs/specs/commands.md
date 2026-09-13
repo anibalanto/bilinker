@@ -7,7 +7,7 @@ Una fila por comando. El detalle de cada uno está en el concepto al que remite:
 | `bilinker capture <file> [<l>:<c> <l>:<c>]` | Crea un capture a partir de una selección: sube en el AST hasta el primer ancestro estable y escribe la ubicación. Sin selección, el archivo entero. | [capture](concepts/capture.md) |
 | `bilinker capture prune` | Borra los captures que ningún bilink referencia, ni como `link` ni como vecino. | [capture](concepts/capture.md) |
 | `bilinker capture remove <id>` | Borra un capture sin referentes; se niega si alguno lo referencia. | [capture](concepts/capture.md) |
-| `bilinker recapture <uuid>.<N> <file> [<l>:<c> <l>:<c>]` | Repunta un endpoint estructural a otro fragmento, a mano. No acepta. | [capture](concepts/capture.md) |
+| `bilinker recapture <uuid>.<N> <file> [<l>:<c> <l>:<c>] [--as <modo>]` | Repunta un endpoint estructural a otro fragmento, a mano o regenerando la query con un generador. No acepta. | [capture](concepts/capture.md) |
 | `bilinker get <file>[:<l>:<c>]` · `get <uuid>.<N> [--diff] [--raw]` | Navega: qué endpoints cubren una posición o un archivo, y qué texto referencia un endpoint, con su vecindario. | [get](concepts/get.md) |
 | `bilinker check [<path>] [--against <ref>]` | Verifica la capa: resuelve captures, compara contra `accepted` y escribe la cache. No escribe nada versionado. | [check](concepts/check.md) |
 | `bilinker status` | Muestra la cache agrupada por archivo, sin re-verificar. | [check](concepts/check.md) |

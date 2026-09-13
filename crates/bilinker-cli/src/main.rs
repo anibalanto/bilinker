@@ -66,6 +66,9 @@ enum Command {
         pos: Option<String>,
         /// Fin de la selección línea:col. Default: igual que pos
         end: Option<String>,
+        /// Regenerar la query con un generador: `interface`, `spring-controller`
+        #[arg(long = "as", value_name = "MODO")]
+        r#as: Option<String>,
     },
 
     /// Verify bilinks in a .bilink file or directory
@@ -1165,7 +1168,7 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Recapture { target, file, pos, end } => {
+        Command::Recapture { target, file, pos, end, r#as } => {
             let (uuid, n) = target.rsplit_once('.')
                 .and_then(|(u, n)| n.parse::<u8>().ok().map(|n| (u, n)))
                 .ok_or_else(|| anyhow::anyhow!("el target debe ser UUID.N, se recibió '{target}'"))?;
@@ -1179,7 +1182,8 @@ Eliminar? [y/N] ");
                 (Some(p), None)    => { let p = parse_pos(p)?; Some((p, p)) }
                 (Some(p), Some(e)) => Some((parse_pos(p)?, parse_pos(e)?)),
             };
-            let r = bilinker::capture::recapture(&cwd, &bilink_path, n, &file, range)?;
+            let generator = r#as.as_deref().map(bilinker::capture::generator_named).transpose()?;
+            let r = bilinker::capture::recapture(&cwd, &bilink_path, n, &file, range, generator.as_deref())?;
 
             println!("{}", r.new_uuid);
             eprintln!("link.{n} → capture {}{}",

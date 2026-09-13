@@ -639,6 +639,65 @@ fn dropping_the_route_literal_is_altered_not_unresolved() {
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
 }
 
+/// El único bilink de un workspace de prueba, y su UUID.
+fn only_bilink(root: &std::path::Path) -> (std::path::PathBuf, String) {
+    let bilinks: Vec<_> = fs::read_dir(root.join(".bilink")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .collect();
+    assert_eq!(bilinks.len(), 1, "{bilinks:?}");
+    let uuid = bilinks[0].file_stem().unwrap().to_string_lossy().into_owned();
+    (bilinks[0].clone(), uuid)
+}
+
+/// **`recapture --as` regenera la query con un generador, y conserva el bilink.**
+///
+/// Es cómo un capture escrito con otra regla —o sin generador— pasa a la de hoy sin
+/// cambiar de UUID, que es lo que otro repo tiene colgado de una punta `abstract`.
+#[test]
+fn recapture_as_regenerates_the_query_and_keeps_the_bilink() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let (bl_path, uuid) = only_bilink(&root);
+
+    let target = format!("{uuid}.1");
+    let (stdout, stderr, ok) = run_in(&root, &[
+        "recapture", &target, "src/Service.java", "6:5", "--as", "spring-controller",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let cap = fs::read_to_string(
+        root.join(".bilink/capture").join(format!("{}.yaml", stdout.trim()))).unwrap();
+    assert_eq!(cap.matches("@target").count(), 4, "la query es la del generador:\n{cap}");
+    assert!(cap.contains(r#"(#eq? @n2 "getPermissions")"#), "{cap}");
+
+    let bl = fs::read_to_string(&bl_path).unwrap();
+    assert!(bl.contains("as: spring-controller"), "el endpoint anota con qué se capturó:\n{bl}");
+    assert_eq!(only_bilink(&root).1, uuid, "el mismo bilink");
+}
+
+/// Un modo que no existe se dice también en `recapture`, y no repunta nada.
+#[test]
+fn recapture_as_an_unknown_mode_changes_nothing() {
+    let (_tmp, root) = workspace_with_a_controller();
+    run_in(&root, &["chain", "new", "--yes", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5"]);
+    let (bl_path, uuid) = only_bilink(&root);
+    let before = fs::read_to_string(&bl_path).unwrap();
+
+    let target = format!("{uuid}.1");
+    let (_, stderr, ok) = run_in(&root, &[
+        "recapture", &target, "src/Service.java", "6:5", "--as", "django-view",
+    ]);
+    assert!(!ok);
+    assert!(stderr.contains("no hay un modo `django-view`"), "{stderr}");
+    assert_eq!(fs::read_to_string(&bl_path).unwrap(), before, "no repuntó");
+}
+
 /// Un controller donde la anotación de verbo no lleva literal: la ruta la aporta
 /// entera la clase, y dos hermanos comparten la misma anotación pelada. Es la mitad
 /// de la superficie de una api real.
