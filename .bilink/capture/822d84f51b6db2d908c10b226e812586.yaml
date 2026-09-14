@@ -1,0 +1,4 @@
+file: crates/bilinker/src/verify.rs
+query: |-
+  (struct_item
+    name: (type_identifier) @n0 (#eq? @n0 "Report")) @target
