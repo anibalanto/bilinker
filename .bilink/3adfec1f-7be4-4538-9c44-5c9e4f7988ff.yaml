@@ -9,3 +9,8 @@ endpoint:
       hash: e593786d668e73749fdf2476a1701711f3c1151b1f1172107e963498f9c5d036
   1:
     link: capture 582686f96dfcec8f0a24a5377677f066
+    accepted:
+    - agree:
+      - Anibal
+      link: capture 582686f96dfcec8f0a24a5377677f066
+      hash: e83d2b5cd0a0e6eadf1e92be9731926453ab1762f0a68b8571c6c795824303a8
