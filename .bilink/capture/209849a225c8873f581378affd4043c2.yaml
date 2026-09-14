@@ -1,0 +1,4 @@
+file: crates/bilinker/src/track.rs
+query: |-
+  (struct_item
+    name: (type_identifier) @n0 (#eq? @n0 "TrackResult")) @target
