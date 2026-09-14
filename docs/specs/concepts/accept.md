@@ -227,7 +227,7 @@ Lo que se fija es que no se le cree al que no sirve, que es lo que hace honesto 
 
 Con una puerta por workspace la pregunta se borra: desde que la ruta del socket de `lspd` se deriva del workspace, el que contesta en mi puerta es el mío por construcción. El chequeo se borra, y no porque se haya arreglado: porque el caso no se puede representar.
 
-Y ahí sí bilinker levanta el suyo. Con una puerta por sistema, arrancar era desalojar a quien estuviera trabajando en otro proyecto; con una puerta propia, levantar no le cuesta nada a nadie. Cómo lo levanta y cuánto lo espera son las dos reglas que siguen.
+Y ahí sí bilinker levanta el suyo. Cómo lo levanta y cuánto lo espera son las dos reglas que siguen.
 
 ### El proveedor levanta el daemon que no contesta, una vez por corrida
 

@@ -14,8 +14,6 @@ Sin ese proveedor `check` corre igual y el eje del vecindario degrada a `CONTRAC
 
 El vecindario se pregunta si hay a quién. Cuando el daemon de la capa no contesta, el proveedor lo levanta, una vez por corrida y no una por endpoint, y espera sólo lo que indexa el daemon que levantó: es la regla de [la aceptación](accept.md), y `check` la hereda por preguntarle al mismo proveedor. Si no arranca, los endpoints con vecindario aceptado quedan `CONTRACT_UNVERIFIED` y el resto se evalúa igual.
 
-Levantarlo no es clonar. Que `check` sea masivo no aplica, porque el arranque se paga una vez por corrida; y levantar un proceso no escribe nada en la capa ni en los bilinks. Con una puerta por workspace, tampoco desaloja al daemon de otro proyecto.
-
 ### `check` opera completamente offline
 
 Es de `check` y no de toda la herramienta. Es masivo: corre sobre todos los bilinks de una capa, así que no puede clonar ni fetchear como efecto colateral. Un repo ajeno que no está clonado se reporta `REMOTE_UNREACHABLE` y se sigue. Las operaciones de red viven en otros comandos y son explícitas: el clon de un proveedor, el fetch de su ref, y la profundización de [`get --diff`](get.md).
