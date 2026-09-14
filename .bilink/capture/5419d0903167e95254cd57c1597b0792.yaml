@@ -1,0 +1,4 @@
+file: crates/bilinker-cli/src/lspd_neighbours.rs
+query: |-
+  (struct_item
+    name: (type_identifier) @n0 (#eq? @n0 "Pace")) @target
