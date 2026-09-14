@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El cierre de firma"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Espera sólo lo que indexa el daemon que levantó, y Ctrl-C la corta"))) @target)

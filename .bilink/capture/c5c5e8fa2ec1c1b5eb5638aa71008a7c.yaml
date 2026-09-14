@@ -1,0 +1,4 @@
+file: crates/bilinker-cli/src/lspd_neighbours.rs
+query: |-
+  (function_item
+    name: (identifier) @n0 (#eq? @n0 "ensure_daemon")) @target
