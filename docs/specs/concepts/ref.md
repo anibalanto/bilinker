@@ -1121,6 +1121,10 @@ De cada commit:
 
 Es la fila que convierte `agree` de atribución en atestación, y la que hace que no haga falta ningún mapeo de nombres a claves. La firma ata el commit a una clave de la allowlist, y con ella al autor que el commit declara; el hook exige que los nombres que ese commit agregó a algún `agree` sean exactamente el autor del commit. Sacar un nombre está permitido y no necesita ser el propio: lo que se protege es agregar.
 
+### Una sincronización trae aprobaciones del otro padre, y eso no es agregar
+
+Un commit de `adopt` o de `pull` tiene dos padres de la ref. Un nombre que está en el `agree` de un endpoint en el segundo padre ya lo agregó un commit de ese lado, verificado con su propio autor. En una sincronización, un nombre está agregado sólo si no está en ninguno de los dos padres para ese endpoint, y ése es el que tiene que ser el autor.
+
 ### La gramática no se aplica hacia atrás, y tampoco se puede volver
 
 Un commit sin `Bilinker-Version` es anterior a la gramática, y su forma no se verifica. Pero eso deja una puerta, y se cierra con la regla de orden de "Y el prefijo anterior a la gramática pasa una vez": un recorrido del rango, oldest-first, que deja el prefijo viejo pasar exactamente una vez. De la misma regla sale que la firma tampoco se le exige al prefijo.

@@ -3121,6 +3121,25 @@ fn after_a_no_ff_merge_the_base_is_still_a_ref_commit() {
     assert!(ok, "y todo queda OK:\n{out}");
 }
 
+/// `verify-agree-in-a-synchronization` — lo que `adopt` trae del otro padre no es
+/// una aprobación que agrega quien sincroniza.
+#[test]
+fn verify_ref_accepts_the_approvals_a_synchronization_brings() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+
+    git(&root, &["config", "user.name", "luis"]);
+    decide_on(&root, "feature/x", "public class Service {\n    public void run() { int y = 2; }\n}\n");
+    git(&root, &["config", "user.name", "t"]);
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+
+    let (out, ok) = verify(&root, &[&format!("refs/bilink/{main}")]);
+    assert!(ok, "luis aprobó del otro lado, y t sólo lo trajo:\n{out}");
+}
+
 /// Dos declaraciones distintas del mismo endpoint son un conflicto, y no se escribe
 /// nada.
 #[test]
