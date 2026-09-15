@@ -297,7 +297,14 @@ impl Repo {
             );
         }
 
-        let tree = self.build_tree(&absorbed)?;
+        // Una decisión sobre un endpoint escribe su bilink y nada más del `.bilink/`.
+        // Un conjunto —`relayer`, `restore-n1`— se lleva el árbol entero.
+        let tree = match &message.command {
+            RefCommand::Accept { uuid, .. } | RefCommand::Apply { uuid, .. } => {
+                self.build_tree_scoped(&absorbed, &ref_tip, uuid)?
+            }
+            _ => self.build_tree(&absorbed)?,
+        };
         self.verify_faithful(&tree, &absorbed)?;
 
         let previous_tree = self.git(&["rev-parse", &format!("{ref_tip}^{{tree}}")])?;
@@ -551,6 +558,60 @@ impl Repo {
             self.git_indexed_owned(&index, &args)?;
         }
 
+        Ok(self.git_indexed(&index, &["write-tree"])?.trim().to_string())
+    }
+
+    /// El árbol de una decisión sobre un endpoint: los `.bilink/` del tip de la ref,
+    /// más del árbol de trabajo el bilink `uuid`, los captures que referencia y
+    /// los archivos de la capa —`version`, `.gitignore`— que la ref no tiene.
+    ///
+    /// **Nada más del árbol de trabajo entra.** Un bilink borrado a mano, un
+    /// capture suelto o una edición de otro bilink quedan pendientes, y `diff` los
+    /// sigue mostrando: el comando más el árbol del padre determinan el resultado.
+    pub fn build_tree_scoped(&self, base: &str, ref_tip: &str, uuid: &str) -> Result<String> {
+        let index = self.fresh_index(base)?;
+        let in_ref = self.bilink_entries(ref_tip)?;
+        let known: BTreeSet<&str> = in_ref.iter().map(|(_, _, p)| p.as_str()).collect();
+
+        let mut take: BTreeSet<String> = BTreeSet::new();
+        let mut ids: BTreeSet<String> = BTreeSet::new();
+        let working = self.tracked_bilink_files()?;
+        for path in &working {
+            let Some((dir, file)) = path.rsplit_once('/') else { continue };
+            if dir.ends_with(".bilink") && file.ends_with(".yaml") && file.starts_with(uuid) {
+                let text = std::fs::read_to_string(self.root.join(path)).unwrap_or_default();
+                ids.extend(
+                    text.split(|c: char| !c.is_ascii_hexdigit())
+                        .filter(|w| w.len() == 32)
+                        .map(|w| format!("{dir}/capture/{w}.yaml")),
+                );
+                take.insert(path.clone());
+            }
+        }
+        for path in &working {
+            let new = !known.contains(path.as_str());
+            let capture = path.contains("/capture/");
+            let layer_file = !capture && !path.ends_with(".yaml");
+            if new && ((capture && ids.contains(path)) || layer_file) {
+                take.insert(path.clone());
+            }
+        }
+
+        for (mode, oid, path) in &in_ref {
+            if take.contains(path) {
+                continue;
+            }
+            self.git_indexed(
+                &index,
+                &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{path}")],
+            )?;
+        }
+        let files: Vec<String> = take.into_iter().collect();
+        for chunk in files.chunks(500) {
+            let mut args = vec!["add".to_string(), "-f".into(), "--".into()];
+            args.extend(chunk.iter().cloned());
+            self.git_indexed_owned(&index, &args)?;
+        }
         Ok(self.git_indexed(&index, &["write-tree"])?.trim().to_string())
     }
 
@@ -1340,7 +1401,7 @@ mod tests {
     #[test]
     fn a_decision_is_classified_as_one() {
         let (_t, repo, branch, _x, _cut) = cut_repo();
-        std::fs::write(repo.root.join(".bilink/a.yaml"), "endpoint: {b: 1}\n").unwrap();
+        std::fs::write(repo.root.join(".bilink/00000000-0000-4000-8000-000000000000.yaml"), "endpoint: {b: 1}\n").unwrap();
 
         let c = repo.decide(&branch, &decision()).unwrap();
         assert!(c.wrote);
@@ -1360,9 +1421,13 @@ mod tests {
         let e = git_in(&root, &["rev-parse", "HEAD"]);
 
         // A mano, la forma vieja: un merge que trae `e` **y** escribe una decisión.
-        std::fs::write(root.join(".bilink/a.yaml"), "endpoint: {b: 1}\n").unwrap();
-        let blob = git_in(&root, &["hash-object", "-w", ".bilink/a.yaml"]);
-        let tree = tree_with(&root, &e, &[(".bilink/a.yaml", &blob)]);
+        std::fs::write(root.join(".bilink/00000000-0000-4000-8000-000000000000.yaml"), "endpoint: {b: 1}\n").unwrap();
+        let blob = git_in(&root, &["hash-object", "-w", ".bilink/00000000-0000-4000-8000-000000000000.yaml"]);
+        let heredado = git_in(&root, &["rev-parse", &format!("{cut}:.bilink/a.yaml")]);
+        let tree = tree_with(&root, &e, &[
+            (".bilink/a.yaml", &heredado),
+            (".bilink/00000000-0000-4000-8000-000000000000.yaml", &blob),
+        ]);
         let sha = git_in(&root, &["commit-tree", &tree, "-p", &cut, "-p", &e,
                                   "-m", "accept 0000.0"]);
 
