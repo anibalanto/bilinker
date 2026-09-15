@@ -163,6 +163,12 @@ c7e0d92  Ana     absorb d0b7a12: el rename ya commiteado
 
 La granularidad sigue al objeto y no al acto, por tres razones. Atribución por decisión: la responsabilidad vive en el commit que escribió el valor, no en el valor, y una firma sobre un commit que aprueba veinte fragmentos dice mucho menos que veinte firmas sobre uno cada una. Varias personas, varios caminos: un mismo capture puede tener N bilinks, y aceptarlos es trabajo de gente distinta en momentos distintos; con el commit como unidad de decisión, cada aprobación es un objeto propio que se lee, se firma y se audita sola. Y hace caro esconder una aprobación masiva: un commit disimula cien decisiones; cien commits firmados las denuncian.
 
+### Una decisión escribe su bilink y sus captures, y nada más del `.bilink/`
+
+El árbol del commit de `accept` y de `apply` es el del commit anterior de la ref, más el `.bilink/<uuid>.yaml` del endpoint que nombra su mensaje, más los captures que ese archivo referencia y la ref todavía no tiene, y los archivos de la capa —`version`, `.gitignore`— que la ref tampoco tiene. Otro cambio del `.bilink/` —un bilink borrado, un capture suelto, una edición en curso— no entra: queda en el árbol de trabajo, y `bilinker diff` lo sigue mostrando.
+
+Un borrado se publica con `remove` ([chain.md](chain.md)). `relayer` y `restore-n1` escriben el `.bilink/` entero, porque su comando nombra un conjunto y no un endpoint.
+
 Deshacer una aceptación no necesita `git revert`: es reescribir su `accepted` con los valores anteriores, un commit nuevo, leídos de `refs/bilink/<branch>~n`. La unidad de movimiento es el contenido del archivo, no el commit.
 
 ## El mensaje es el comando
@@ -1341,7 +1347,7 @@ Muestra qué hay en el `.bilink/` del árbol de trabajo que la ref todavía no t
 5. Una aceptación es un commit de tipo decisión por endpoint aceptado, y las de una misma invocación son hijas de la misma absorción.
 6. La ref no se rebasea ni se cherry-pickea nunca. Es append-only, todo fetch es fast-forward, y sus únicos escritores son los comandos de bilinker.
 7. La ref es protegida: en el servidor, todo push que no sea fast-forward y todo delete se rechazan. Localmente la violación no se impide, se detecta.
-8. El árbol del commit de un commit sobre la ref se construye con `read-tree` del absorbido más `update-index` de `.bilink/`. Nada del árbol de trabajo fuera de `.bilink/` entra.
+8. El árbol del commit de un commit sobre la ref se construye con `read-tree` del absorbido más `update-index` de `.bilink/`. Nada del árbol de trabajo fuera de `.bilink/` entra. Una decisión sobre un endpoint —`accept`, `apply`, `remove`— toma del árbol de trabajo sólo su bilink y los captures nuevos que referencia.
 9. La ref es por repo: cubre todas las capas de ese repo y ninguna de un repo anidado.
 10. `.bilink/head` dice a qué rama y a qué commit de la ref corresponde el `.bilink/` del árbol, lo escriben tanto la materialización como todo commit sobre la ref, y ningún comando opera sobre un `.bilink/` que no corresponde a la rama actual.
 11. La puesta a punto de un clon —exclusión, refspec y materialización— es `init`, es explícita, y sin ella ningún comando corre.
