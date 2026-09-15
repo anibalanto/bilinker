@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use bilink_format::bilink::bilink_files;
 use bilink_format::{BiLink, Capture};
@@ -58,6 +58,23 @@ impl PendingFix {
                 format!("query → {}", to.query.as_deref().unwrap_or("(archivo entero)")),
             Fix::Neighbourhood { to, .. } =>
                 format!("n1 → {} vecino(s): {to}", to.len()),
+        }
+    }
+
+    /// El id de capture que nombra el mensaje de la ref: `apply <uuid>.<N> <capture>`.
+    ///
+    /// Un fix de fragmento nombra el capture nuevo. Uno de vecindario no tiene uno
+    /// nuevo —repunta un conjunto—, así que nombra el del fragmento cuyo vecindario
+    /// se repuntó, y los vecinos van en la prosa.
+    pub fn message_capture(&self) -> Result<String> {
+        match &self.what {
+            Fix::Fragment { to, .. } => Ok(to.id()),
+            Fix::Neighbourhood { .. } => {
+                let bl = BiLink::load(&self.bilink_path)?;
+                bl.endpoint.get(self.n).link.capture_id().map(str::to_string).with_context(|| {
+                    format!("{}.{}: el endpoint de un vecindario no es un capture", self.short(), self.n)
+                })
+            }
         }
     }
 }
@@ -530,6 +547,24 @@ mod neighbourhood_fix_tests {
         let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
         assert_eq!(to.len(), 1, "un vecino: {to}");
         assert_eq!(captures.len(), 1, "y su capture, para poder escribirlo");
+    }
+
+    /// **El mensaje nombra el capture del fragmento**, y parsea contra la gramática.
+    #[test]
+    fn a_neighbourhood_fix_names_the_fragment_capture_in_its_message() {
+        let (d, _uuid, id) = layer();
+        let dto = Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 };
+        let p = Fake { locs: Some(vec![dto]), asked: Cell::new(0) };
+
+        let fixes = scan(d.path(), Some(&p));
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
+            .expect("propone el vecindario");
+        assert_eq!(fix.message_capture().unwrap(), id, "el capture del fragmento");
+
+        let line = crate::refmsg::RefMessage::new(crate::refmsg::RefCommand::Apply {
+            uuid: fix.uuid.clone(), n: fix.n, capture: fix.message_capture().unwrap(),
+        }).render();
+        crate::refmsg::parse(&line).expect("el mensaje parsea");
     }
 
     /// **Un `unknown` declarado se llena**, que es lo que la `003` dejó pendiente en 139

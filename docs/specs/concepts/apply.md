@@ -244,6 +244,14 @@ Y `apply` sólo llena la declaración. El `accepted` sigue con su `unknown` y su
 
 El orden con el que se llena no es preferencia. Los captures salen de las posiciones que el recorrido de la firma le pasa al proveedor, así que llenar con esas posiciones mal calculadas escribe un capture que apunta al propio fragmento, y un `accept` encima lo vuelve permanente. `unknown` es un estado seguro y el verde equivocado no.
 
+### El mensaje de un fix de vecindario nombra el capture del fragmento
+
+La gramática de la ref es `apply <uuid>.<N> <capture>`, con un id de capture. Un fix de vecindario no tiene un capture nuevo: repunta un conjunto. El que va en el mensaje es el del fragmento cuyo vecindario se repuntó, el `link` del endpoint, y los vecinos van en la prosa:
+
+```
+apply 7f3d8e9a-….1 3ca90f81…: N1 n1 → 2 vecino(s): capture 38512d9f… c88409d6…
+```
+
 ### Y sigue sin aprobar nada
 
 Proponer un miembro nuevo del vecindario es una propuesta como cualquier otra: deja el endpoint en `RELOCATED` y no escribe ningún `accepted`. `apply --dry-run` con proveedor lo dice antes de tocar nada:
