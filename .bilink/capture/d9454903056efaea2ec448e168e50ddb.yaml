@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker verify-ref`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Una sincronización trae aprobaciones del otro padre, y eso no es agregar"))) @target)
