@@ -37,7 +37,7 @@ impl PullResult {
         self.changes.iter().filter(|c| c.row == Row::Conflict).count()
     }
     pub fn brought(&self) -> usize {
-        self.changes.iter().filter(|c| c.row == Row::Clean).count()
+        self.changes.iter().filter(|c| matches!(c.row, Row::Clean | Row::New)).count()
     }
 }
 
@@ -137,7 +137,7 @@ fn fetch_theirs(repo: &Repo, remote: &str, branch: &str) -> Result<String> {
 fn brought_endpoints(changes: &[Change]) -> usize {
     let mut vistos: Vec<(&str, u8)> = changes
         .iter()
-        .filter(|c| c.row == Row::Clean)
+        .filter(|c| matches!(c.row, Row::Clean | Row::New))
         .map(|c| (c.uuid.as_str(), c.n))
         .collect();
     vistos.sort_unstable();

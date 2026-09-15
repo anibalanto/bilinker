@@ -18,7 +18,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
-use bilink_format::{Accepted, BiLink};
+use bilink_format::{Accepted, BiLink, Endpoint};
 
 use crate::bilink_ref::Repo;
 
@@ -34,6 +34,11 @@ pub enum Row {
     Converged,
     /// Los dos lo cambiaron, a valores distintos.
     Conflict,
+    /// Un bilink que no está en la base ni acá, y sí en el vecino: entra entero.
+    New,
+    /// Un bilink que está en la base y no en el vecino. **Se reporta y se queda**:
+    /// `adopt` no decide nada, y borrar se lleva la última aceptación de la ref.
+    DeletedThere,
 }
 
 pub struct Change {
@@ -61,7 +66,7 @@ impl AdoptResult {
         self.changes.iter().filter(|c| c.row == Row::Conflict).count()
     }
     pub fn adopted(&self) -> usize {
-        self.changes.iter().filter(|c| c.row == Row::Clean).count()
+        self.changes.iter().filter(|c| matches!(c.row, Row::Clean | Row::New)).count()
     }
 }
 
@@ -94,7 +99,7 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
     // absorción. Un `accepted` en conflicto son dos decisiones humanas incompatibles
     // sobre el mismo fragmento, y resolverlo es `accept`, con una persona mirando.
     let conflicts = changes.iter().filter(|c| c.row == Row::Conflict).count();
-    let nothing_to_bring = !changes.iter().any(|c| c.row == Row::Clean);
+    let nothing_to_bring = !changes.iter().any(|c| matches!(c.row, Row::Clean | Row::New));
     if conflicts > 0 || dry_run || nothing_to_bring {
         return Ok(AdoptResult {
             branch, neighbour: neighbour_branch, base, changes,
@@ -120,7 +125,7 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
         })
         .with_prose(format!(
             "{} endpoint(s)",
-            changes.iter().filter(|c| c.row == Row::Clean).count()
+            changes.iter().filter(|c| matches!(c.row, Row::Clean | Row::New)).count()
         ))
         .render(),
     )?;
@@ -146,10 +151,30 @@ pub(crate) fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -
     let theirs_bl = read_bilinks(repo, theirs)?;
 
     let mut out = Vec::new();
+
+    // Lo que el vecino borró se reporta, y nada más: `adopt` sólo agrega.
+    for path in base_bl.keys() {
+        if mine_bl.contains_key(path) && !theirs_bl.contains_key(path) {
+            out.push(Change {
+                path: path.clone(), uuid: uuid_of(path), n: 0, dimension: "bilink",
+                row: Row::DeletedThere, mine: None, theirs: None,
+            });
+        }
+    }
+
     for (path, theirs_one) in &theirs_bl {
-        let Some(mine_one) = mine_bl.get(path) else { continue };
         let base_one = base_bl.get(path);
         let uuid = uuid_of(path);
+        let Some(mine_one) = mine_bl.get(path) else {
+            // Sólo el vecino lo tiene. Si estaba en la base, lo borré yo, y no vuelve.
+            if base_one.is_none() {
+                out.push(Change {
+                    path: path.clone(), uuid, n: 0, dimension: "bilink",
+                    row: Row::New, mine: None, theirs: None,
+                });
+            }
+            continue;
+        };
 
         for n in [0u8, 1u8] {
             let t = theirs_one.endpoint.get(n).accepted.first();
@@ -163,8 +188,21 @@ pub(crate) fn diff3(repo: &Repo, base: Option<&str>, mine: &str, theirs: &str) -
                 out.push(c);
             }
 
-            for (dimension, get) in DIMENSIONS {
-                let (tv, mv, bv) = (t.map(get).flatten(), m.map(get).flatten(), b.map(get).flatten());
+            // La declaración primero y la decisión después: una decisión se toma
+            // sobre una declaración, y las dos se comparan con las mismas filas.
+            let declared = DECLARATION.iter().map(|(dimension, get)| {
+                let (tv, mv, bv) = (
+                    Some(get(theirs_one.endpoint.get(n))),
+                    Some(get(mine_one.endpoint.get(n))),
+                    base_one.map(|x| get(x.endpoint.get(n))),
+                );
+                (*dimension, tv, mv, bv)
+            });
+            let decided = DIMENSIONS.iter().map(|(dimension, get)| {
+                (*dimension, t.and_then(get), m.and_then(get), b.and_then(get))
+            });
+
+            for (dimension, tv, mv, bv) in declared.chain(decided) {
                 if tv == mv {
                     if tv.is_some() && bv != tv {
                         // Los dos escribieron el mismo valor: ya coincidía.
@@ -204,6 +242,19 @@ const DIMENSIONS: [(&str, fn(&Accepted) -> Option<String>); 2] = [
     ("contenido", |a| Some(a.hash.clone())),
 ];
 
+/// La declaración de un endpoint, que escribe `apply`: el fragmento y su vecindario.
+///
+/// **Se compara igual que la decisión.** Sin ella, una aceptación del vecino llega
+/// sobre la declaración de acá, y el endpoint queda `RELOCATED` por una ubicación
+/// que el vecino ya había aprobado. A diferencia de `accepted`, un conflicto acá no
+/// se puede unir: un endpoint tiene un solo `link` y un solo `n`.
+const DECLARATION: [(&str, fn(&Endpoint) -> String); 2] = [
+    ("declaración", |e| e.link.to_string()),
+    ("vecindario",  |e| e.n.as_ref()
+        .map(|n| serde_yaml_ng::to_string(n).unwrap_or_default().trim().to_string())
+        .unwrap_or_default()),
+];
+
 /// La fila que el vecino aporta sobre **quiénes aprobaron**, si aporta alguna.
 ///
 /// **Nunca es conflicto.** Es la diferencia con `commit`, el campo que no está en
@@ -227,19 +278,40 @@ fn agree_to_bring(mine: Option<&Accepted>, theirs: Option<&Accepted>) -> Option<
     })
 }
 
-/// Escribe los campos que entran limpios, tomando el `accepted` entero del vecino
-/// para ese endpoint: las dos dimensiones que cambiaron llegan juntas y coherentes.
+/// Escribe lo que entra: los bilinks nuevos enteros, los captures del vecino por
+/// unión, y en cada endpoint tocado, la declaración y el `accepted` del vecino.
 pub(crate) fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Result<()> {
-    let theirs_bl = read_bilinks(repo, theirs)?;
-    let mut touched: BTreeMap<&String, Vec<u8>> = BTreeMap::new();
-    for c in changes.iter().filter(|c| c.row == Row::Clean) {
-        touched.entry(&c.path).or_default().push(c.n);
+    // **Los captures, por unión.** Son inmutables y su nombre es el hash de su
+    // ubicación: uno que ya está acá es el mismo archivo, y nunca hay conflicto.
+    for path in repo.bilink_paths_in(theirs)? {
+        if path.contains(".bilink/capture/") && !repo.root.join(&path).exists() {
+            write_blob(repo, theirs, &path)?;
+        }
     }
 
-    for (path, ns) in touched {
+    for c in changes.iter().filter(|c| c.row == Row::New) {
+        write_blob(repo, theirs, &c.path)?;
+    }
+
+    let theirs_bl = read_bilinks(repo, theirs)?;
+    let mut touched: BTreeMap<&String, Vec<(u8, &str)>> = BTreeMap::new();
+    for c in changes.iter().filter(|c| c.row == Row::Clean) {
+        touched.entry(&c.path).or_default().push((c.n, c.dimension));
+    }
+
+    for (path, entries) in touched {
         let full = repo.root.join(path);
         let mut bl = BiLink::load(&full)?;
         let theirs_one = &theirs_bl[path];
+
+        let mut ns: Vec<u8> = Vec::new();
+        for (n, dimension) in entries {
+            match dimension {
+                "declaración" => bl.endpoint.get_mut(n).link = theirs_one.endpoint.get(n).link.clone(),
+                "vecindario"  => bl.endpoint.get_mut(n).n = theirs_one.endpoint.get(n).n.clone(),
+                _ => if !ns.contains(&n) { ns.push(n) },
+            }
+        }
         for n in ns {
             // **Los mismos valores se unen; valores distintos viajan enteros.**
             //
@@ -263,6 +335,16 @@ pub(crate) fn apply_changes(repo: &Repo, changes: &[Change], theirs: &str) -> Re
         }
         bl.write(&full)?;
     }
+    Ok(())
+}
+
+/// Copia un archivo de `.bilink/` de un commit de la ref al árbol, tal cual.
+fn write_blob(repo: &Repo, commit: &str, path: &str) -> Result<()> {
+    let full = repo.root.join(path);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&full, repo.git(&["show", &format!("{commit}:{path}")])?)?;
     Ok(())
 }
 

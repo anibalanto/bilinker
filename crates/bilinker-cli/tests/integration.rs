@@ -2910,6 +2910,142 @@ fn adopt_never_overwrites_a_decision_only_this_branch_made() {
                "ninguna decisión propia se pisa");
 }
 
+/// Crea una cadena en `branch` y la acepta sobre su ref. Devuelve el uuid.
+fn new_chain_on(root: &Path, branch: &str, tip0: &str, tip1: &str) -> String {
+    git(root, &["checkout", "-q", branch]);
+    run_in(root, &["init"]);
+    let (stdout, stderr, ok) = run_in(root, &["chain", "new", "--tip", tip0, "--tip", tip1]);
+    assert!(ok, "chain new falló en {branch}:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    run_in(root, &["check", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "--no-n1", &uuid]);
+    assert!(ok, "accept falló en {branch}:\n{stderr}");
+    uuid
+}
+
+/// Los captures de un commit de la ref, por nombre de archivo.
+fn captures_in_ref(root: &Path, r: &str) -> Vec<String> {
+    git_out(root, &["ls-tree", "-r", "--name-only", r])
+        .lines()
+        .filter(|l| l.starts_with(".bilink/capture/"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `adopt-brings-new-bilinks` — un bilink que sólo tiene el vecino entra entero, con
+/// sus captures.
+#[test]
+fn adopt_brings_a_bilink_only_the_neighbour_has_with_its_captures() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+    let nuevo = new_chain_on(&root, "feature/x", "docs/spec.md", "src/Service.java");
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("entra nuevo"), "el bilink nuevo se reporta:\n{stdout}");
+
+    let path = format!(".bilink/{nuevo}.yaml");
+    assert_eq!(
+        git_out(&root, &["show", &format!("refs/bilink/{main}:{path}")]).trim(),
+        git_out(&root, &["show", &format!("refs/bilink/feature/x:{path}")]).trim(),
+        "el bilink llegó entero a la ref"
+    );
+    let en_main = captures_in_ref(&root, &format!("refs/bilink/{main}"));
+    for c in captures_in_ref(&root, "refs/bilink/feature/x") {
+        assert!(en_main.contains(&c), "falta {c} en la ref de {main}");
+    }
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "y todo queda OK:\n{out}");
+}
+
+/// `adopt-brings-the-declaration` — un `link` repuntado en el vecino viaja con la
+/// aceptación que se tomó sobre él.
+#[test]
+fn adopt_brings_the_declaration_with_the_decision() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    fs::write(root.join("src/Service.java"),
+        "public class Service {\n    public void run() {}\n    public void stop() {}\n}\n").unwrap();
+    commit(&root, "stop");
+    let (_, stderr, ok) = run_in(&root, &["recapture", &format!("{uuid}.1"), "src/Service.java", "3:5"]);
+    assert!(ok, "recapture falló:\n{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    // main avanza a la rama, como un fast-forward.
+    git(&root, &["checkout", "-q", &main]);
+    git(&root, &["merge", "-q", "--ff-only", "feature/x"]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("declaración"), "la declaración se reporta:\n{stdout}");
+
+    let path = format!(".bilink/{uuid}.yaml");
+    assert_eq!(
+        fs::read_to_string(root.join(&path)).unwrap().trim(),
+        git_out(&root, &["show", &format!("refs/bilink/feature/x:{path}")]).trim(),
+        "declaración y decisión llegan juntas"
+    );
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "sin RELOCATED:\n{out}");
+}
+
+/// `adopt-never-deletes` — lo que el vecino borró se reporta y se queda.
+#[test]
+fn adopt_reports_what_the_neighbour_deleted_and_keeps_it() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    let (_, stderr, ok) = run_in(&root, &["remove", &uuid]);
+    assert!(ok, "remove falló:\n{stderr}");
+    // `remove` no escribe la ref: el borrado viaja con la próxima aceptación.
+    new_chain_on(&root, "feature/x", "docs/spec.md", "src/Service.java");
+    let tree = git_out(&root, &["ls-tree", "-r", "--name-only", "refs/bilink/feature/x"]);
+    assert!(!tree.contains(&uuid), "el borrado está en la ref del vecino:\n{tree}");
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("borrado allá"), "el borrado se reporta:\n{stdout}");
+    assert!(root.join(format!(".bilink/{uuid}.yaml")).exists(), "y el bilink se queda");
+}
+
+/// Dos declaraciones distintas del mismo endpoint son un conflicto, y no se escribe
+/// nada.
+#[test]
+fn two_declarations_of_the_same_endpoint_are_a_conflict() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+    let code = "public class Service {\n    public void run() {}\n    public void stop() {}\n    public void halt() {}\n}\n";
+
+    for (branch, pos) in [(main.as_str(), "3:5"), ("feature/x", "4:5")] {
+        git(&root, &["checkout", "-q", branch]);
+        run_in(&root, &["init"]);
+        fs::write(root.join("src/Service.java"), code).unwrap();
+        commit(&root, "tres métodos");
+        let (_, stderr, ok) = run_in(&root, &["recapture", &format!("{uuid}.1"), "src/Service.java", pos]);
+        assert!(ok, "recapture falló en {branch}:\n{stderr}");
+        run_in(&root, &["check", "."]);
+        let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
+        assert!(ok, "accept falló en {branch}:\n{stderr}");
+    }
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let before = rev(&root, &format!("refs/bilink/{main}"));
+    let (stdout, _, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(!ok, "con conflicto el comando falla:\n{stdout}");
+    assert!(stdout.contains("declaración"), "y nombra la declaración:\n{stdout}");
+    assert_eq!(before, rev(&root, &format!("refs/bilink/{main}")), "todo o nada");
+}
+
 /// Adoptar de la rama actual no tiene sentido y se dice.
 #[test]
 fn adopt_refuses_the_current_branch() {
