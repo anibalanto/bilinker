@@ -84,7 +84,7 @@ pub fn adopt(dir: &Path, neighbour: &str, dry_run: bool) -> Result<AdoptResult> 
 
     // La base sale gratis: es la base de merge real, porque `track` puso el commit
     // heredado como **primer padre** en vez de copiar archivos.
-    let base = repo.merge_base(&mine, &theirs)?;
+    let base = repo.ref_merge_base(&mine, &theirs)?;
 
     if base.as_deref() == Some(theirs.as_str()) {
         return Ok(AdoptResult {
