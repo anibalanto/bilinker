@@ -24,6 +24,9 @@ chrono      = "0.4"
 notify      = "6"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+# Ctrl-C corta la espera de un language server sin matar la corrida. Es el handler
+# portable más chico: en unix trae `nix` con la feature `signal`, y nada más.
+ctrlc       = "3.5"
 
 [dev-dependencies]
 bilinker = { path = "../bilinker" }
