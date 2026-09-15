@@ -773,6 +773,12 @@ Quien sólo quiere ponerse al día sin traer nada del vecino corre `sync`, que e
 
 Es `●2`, sin que nadie la calcule: es la base de merge real entre `●a` y `●3`, porque `track` puso `●2` como primer padre de `●a` en vez de copiar archivos. Ésa es la razón de fondo de la forma que `track` tiene, y recién acá se cobra.
 
+### La base es el ancestro común más nuevo que es de la ref
+
+Entre dos tips de la ref, el ancestro común más nuevo puede ser un commit del proyecto. Pasa después de un `merge --no-ff`: la rama absorbió su tip, `main` absorbió el merge que lo contiene, y `git merge-base` devuelve ese tip. Un commit del proyecto no tiene `.bilink/`, y contra una base vacía todo campo que difiere sería conflicto.
+
+La base es el ancestro común más nuevo que lleva `.bilink/` en su árbol, el mismo freno de la absorción y de `bilinker log`. Vale igual para `pull`.
+
 ### Qué compara `adopt`
 
 `accepted` son campos con nombre, por endpoint, así que el merge a tres puntas los compara de a uno:
