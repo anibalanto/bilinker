@@ -1,0 +1,4 @@
+file: crates/bilinker/src/bilink_ref.rs
+query: |-
+  (struct_item
+    name: (type_identifier) @n0 (#eq? @n0 "Commit")) @target
