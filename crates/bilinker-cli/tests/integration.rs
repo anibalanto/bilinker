@@ -1983,6 +1983,43 @@ fn ref_tree(root: &Path, branch: &str) -> String {
     git_out(root, &["ls-tree", "-r", "--name-only", &format!("refs/bilink/{branch}")])
 }
 
+/// `decision-writes-its-bilink` — el commit de `accept` lleva su bilink y sus
+/// captures nuevos, y nada más: un borrado pendiente y un capture suelto no viajan.
+#[test]
+fn accept_commits_its_bilink_and_nothing_else_pending() {
+    let (_t, root, uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+
+    fs::write(root.join("docs/otro.md"), "# Otro\n\nAlgo.\n").unwrap();
+    commit(&root, "otro");
+    run_in(&root, &["sync"]);
+
+    // Pendiente y ajeno: un borrado a mano y un capture suelto.
+    fs::remove_file(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    let (suelto, stderr, ok) = run_in(&root, &["capture", "docs/otro.md"]);
+    assert!(ok, "capture falló:\n{stderr}");
+    let suelto = suelto.lines().last().unwrap_or("").trim().to_string();
+
+    let (stdout, stderr, ok) = run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java"]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let nuevo = stdout.lines().find_map(|l| l.strip_prefix("Created chain: ")).unwrap().trim().to_string();
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &nuevo]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    let tree = ref_tree(&root, &branch);
+    assert!(tree.contains(&format!(".bilink/{nuevo}.yaml")), "su bilink entra:\n{tree}");
+    let bl = fs::read_to_string(root.join(format!(".bilink/{nuevo}.yaml"))).unwrap();
+    for id in bl.split(|c: char| !c.is_ascii_hexdigit()).filter(|w| w.len() == 32) {
+        assert!(tree.contains(&format!(".bilink/capture/{id}.yaml")), "y sus captures: falta {id}");
+    }
+    assert!(tree.contains(&format!(".bilink/{uuid}.yaml")), "el borrado ajeno no viaja:\n{tree}");
+    assert!(suelto.len() == 32 && !tree.contains(&suelto), "el capture suelto tampoco ({suelto}):\n{tree}");
+
+    let (out, _, _) = run_in(&root, &["diff"]);
+    assert!(out.contains(&uuid), "el borrado sigue pendiente:\n{out}");
+}
+
 /// `remove-commits-on-the-ref` — el borrado es un commit `remove <uuid>` en la ref,
 /// y `diff` queda vacío.
 #[test]
