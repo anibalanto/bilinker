@@ -71,7 +71,7 @@ pub fn pull(dir: &Path, remote: Option<&str>, dry_run: bool) -> Result<PullResul
 
     // Divergieron. La base es el commit donde los dos se separaron, y existe siempre
     // que nadie haya reescrito: es lo que distingue este caso de una reescritura.
-    let base = repo.merge_base(&mine, &theirs)?;
+    let base = repo.ref_merge_base(&mine, &theirs)?;
     let changes = diff3(&repo, base.as_deref(), &mine, &theirs)?;
 
     // **Todo o nada.** Un `accepted` en conflicto son dos decisiones humanas

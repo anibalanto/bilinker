@@ -801,6 +801,50 @@ impl Repo {
         Ok(self.git(&["merge-base", a, b]).ok().map(|s| s.trim().to_string()))
     }
 
+    /// La base de merge entre dos commits de la ref: el ancestro común más nuevo que
+    /// **es de la ref**.
+    ///
+    /// `git merge-base` no alcanza. Después de un `merge --no-ff` en el proyecto, la
+    /// rama absorbió su tip y `main` absorbió el merge que lo contiene: el ancestro
+    /// común más nuevo es ese tip, un commit del proyecto, sin `.bilink/`, y contra
+    /// una base vacía todo campo que difiere sería conflicto. El freno es el mismo
+    /// de [`Self::absorbed`]: los commits de la ref llevan `.bilink/` y los del
+    /// proyecto no.
+    ///
+    /// El orden topológico pone a cada descendiente antes que sus ancestros, así que
+    /// el primer commit de la ref común a los dos no tiene otro común más nuevo.
+    pub fn ref_merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
+        let Some(plain) = self.merge_base(a, b)? else { return Ok(None) };
+        if self.tree_has_bilink(&plain)? {
+            return Ok(Some(plain));
+        }
+
+        // La historia del proyecto no aporta candidatos: se corta en lo absorbido.
+        let mut not = Vec::new();
+        for tip in [a, b] {
+            // `absorbed` sigue segundos padres, y el de un `pull` o un `adopt` es de
+            // la ref: excluirlo se llevaría la base con él.
+            if let Some(p) = self.absorbed(tip)? {
+                if !self.tree_has_bilink(&p)? {
+                    not.push(format!("^{p}"));
+                }
+            }
+        }
+        let of_a: std::collections::HashSet<String> = {
+            let mut args = vec!["rev-list".to_string(), a.to_string()];
+            args.extend(not.iter().cloned());
+            self.git_owned(&args)?.lines().map(str::to_string).collect()
+        };
+        let mut args = vec!["rev-list".to_string(), "--topo-order".into(), b.to_string()];
+        args.extend(not);
+        for commit in self.git_owned(&args)?.lines() {
+            if of_a.contains(commit) && self.tree_has_bilink(commit)? {
+                return Ok(Some(commit.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Los paths de `.bilink/` de un commit.
     pub fn bilink_paths_in(&self, commit: &str) -> Result<Vec<String>> {
         Ok(self.bilink_blobs(commit)?.into_iter().map(|(p, _)| p).collect())
