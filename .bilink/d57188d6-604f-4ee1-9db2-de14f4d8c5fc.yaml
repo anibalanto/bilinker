@@ -2,8 +2,10 @@ endpoint:
   0:
     link: path <
     accepted:
-    - link: capture a88b38fdbf0d3ed4e79ff66fde8c9c8d
-      hash: 7e787ebdb235ac099dda599010f34237ad441fbd5c69beb79a8630e6bd637697
+    - agree:
+      - anibal
+      link: capture a88b38fdbf0d3ed4e79ff66fde8c9c8d
+      hash: f8c9e070150f44546e99112369baf712914d451baf39a26c7e4bd667106b479b
   1:
     link: capture 8012171a288a17ca030f7f5d40aa6a00
     n:
