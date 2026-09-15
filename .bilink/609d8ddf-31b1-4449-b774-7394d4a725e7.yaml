@@ -11,8 +11,8 @@ endpoint:
     link: capture aa38bf026a558f586ec7c87e8959fd0e
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture aa38bf026a558f586ec7c87e8959fd0e
-      hash: 29a94ae297ceaeef2adc80b5e2e37dbf08d5e19129f489d9d804effb3d926010
+      hash: faa57ac25cbf128c110461f90d79e952f9cbf9b2eace80b34f38ed219a19b9f0
       n: declined
     name: el-verificador
