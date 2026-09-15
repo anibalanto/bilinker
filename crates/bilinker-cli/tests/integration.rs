@@ -1983,6 +1983,42 @@ fn ref_tree(root: &Path, branch: &str) -> String {
     git_out(root, &["ls-tree", "-r", "--name-only", &format!("refs/bilink/{branch}")])
 }
 
+/// stdout y stderr juntos: `apply` lista sus fixes por stderr.
+fn both((out, err, _): (String, String, bool)) -> String {
+    format!("{out}{err}")
+}
+
+/// `apply-scoped-to-an-endpoint` — con un uuid, `apply` propone y escribe sólo los
+/// fixes de ese bilink.
+#[test]
+fn apply_with_an_endpoint_fixes_only_that_bilink() {
+    let (_t, root, uuid, _x) = cut_over();
+    let (stdout, stderr, ok) = run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java"]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let otro = stdout.lines().find_map(|l| l.strip_prefix("Created chain: ")).unwrap().trim().to_string();
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &otro]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    // El archivo se muda: los dos bilinks quedan MOVED. El rename se deja en el
+    // índice, que es de donde lo lee `git diff -M`.
+    git(&root, &["mv", "src/Service.java", "src/Svc.java"]);
+    run_in(&root, &["check", "."]);
+    let out = both(run_in(&root, &["apply", "--dry-run"]));
+    assert!(!out.contains("Sin mirar") && out.contains("MOVED"), "fixes de verdad, no bilinks sin mirar:\n{out}");
+    assert!(out.contains(&uuid[..8]) && out.contains(&otro[..8]), "sin argumento, los dos:\n{out}");
+
+    let r = run_in(&root, &["apply", &uuid[..8], "--dry-run"]);
+    assert!(r.2, "apply con un uuid falló:\n{}", r.1);
+    let out = both(r);
+    assert!(out.contains(&uuid[..8]) && !out.contains(&otro[..8]), "con uno, sólo ése:\n{out}");
+
+    let (_, stderr, ok) = run_in(&root, &["apply", &format!("{}.1", &uuid[..8]), "-y"]);
+    assert!(ok, "apply falló:\n{stderr}");
+    let out = both(run_in(&root, &["apply", "--dry-run"]));
+    assert!(!out.contains(&uuid[..8]) && out.contains(&otro[..8]), "el otro sigue pendiente:\n{out}");
+}
+
 /// `decision-writes-its-bilink` — el commit de `accept` lleva su bilink y sus
 /// captures nuevos, y nada más: un borrado pendiente y un capture suelto no viajan.
 #[test]
