@@ -83,6 +83,9 @@ enum Command {
 
     /// Apply auto-fixes for bilinks in MOVED/DISPLACED/EXPANDED/REANCHORED state
     Apply {
+        /// Only this bilink's fixes, or this endpoint's: `<uuid>` or `<uuid>.<N>`
+        #[arg(value_name = "UUID[.N]")]
+        target: Option<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(short = 'y')]
@@ -1262,14 +1265,14 @@ Eliminar? [y/N] ");
             watch(&root)?;
         }
 
-        Command::Apply { dry_run, yes, filter } => {
+        Command::Apply { target, dry_run, yes, filter } => {
             let root   = project_root(&cwd)?;
             // **`apply` recibe el puerto.** Sin proveedor arregla lo del fragmento con
             // git y no toca el vecindario: descubrir qué tipos menciona la firma hoy
             // es lo único que un language server puede contestar.
             // **El paso 0 sale acá**: una capa fría no da una lista de fixes vacía, da
             // otra cosa, y por eso `Scan` es un enum y no un `Vec` con un flag al lado.
-            let (mut fixes, unlooked) =
+            let (mut fixes, mut unlooked) =
                 match bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))? {
                     bilinker::apply::Scan::Cold { bilinks } => {
                         eprintln!("error: la capa no tiene estado calculado — {bilinks} bilinks sin mirar.");
@@ -1281,6 +1284,17 @@ Eliminar? [y/N] ");
                     }
                     bilinker::apply::Scan::Looked { fixes, unlooked } => (fixes, unlooked),
                 };
+
+            // Un endpoint acota los fixes a ese bilink, o a ese endpoint.
+            if let Some(ref t) = target {
+                let (prefix, n) = match t.rsplit_once('.') {
+                    Some((u, "0")) => (u, Some(0u8)),
+                    Some((u, "1")) => (u, Some(1u8)),
+                    _ => (t.as_str(), None),
+                };
+                fixes.retain(|f| f.uuid.starts_with(prefix) && n.map_or(true, |n| f.n == n));
+                unlooked.retain(|u| u.uuid.starts_with(prefix) && n.map_or(true, |n| u.n == n));
+            }
 
             if let Some(ref state) = filter {
                 let state_up = state.to_uppercase();
