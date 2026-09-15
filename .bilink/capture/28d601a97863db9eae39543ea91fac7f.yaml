@@ -1,0 +1,6 @@
+file: docs/specs/concepts/chain.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker remove`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Un borrado que sólo está en el árbol se publica con el mismo `remove`"))) @target)
