@@ -3194,6 +3194,30 @@ fn after_a_no_ff_merge_the_base_is_still_a_ref_commit() {
     assert!(ok, "y todo queda OK:\n{out}");
 }
 
+/// `verify-range-follows-synchronizations` — lo que un `adopt` trae como segundo
+/// padre se verifica, aunque la ref de donde vino nunca se haya empujado.
+#[test]
+fn verify_ref_looks_at_what_a_synchronization_brings() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+    decide_on(&root, "feature/x", "public class Service {\n    public void run() { int y = 2; }\n}\n");
+
+    // Un commit que no respeta la gramática, arriba de la ref de la rama.
+    let tip = rev(&root, "refs/bilink/feature/x");
+    let tree = git_out(&root, &["rev-parse", &format!("{tip}^{{tree}}")]);
+    let malo = git_out(&root, &["commit-tree", tree.trim(), "-p", &tip, "-m",
+                                "hace algo\n\nBilinker-Version: 1.0.0"]);
+    git(&root, &["update-ref", "refs/bilink/feature/x", malo.trim()]);
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+
+    let (out, ok) = verify(&root, &[&format!("refs/bilink/{main}")]);
+    assert!(!ok, "el commit malo entró por el segundo padre y se ve:\n{out}");
+    assert!(out.contains(&malo.trim()[..7]), "y se nombra:\n{out}");
+}
+
 /// `verify-agree-in-a-synchronization` — lo que `adopt` trae del otro padre no es
 /// una aprobación que agrega quien sincroniza.
 #[test]

@@ -1366,9 +1366,13 @@ Eliminar? [y/N] ");
                 // El id que el mensaje de la ref nombra. Para un fix de vecindario
                 // no hay **uno**: son N, y el que identifica el acto es el fragmento
                 // cuyo vecindario se repuntó.
-                let capture = match &f.what {
-                    bilinker::apply::Fix::Fragment { to, .. } => to.id(),
-                    bilinker::apply::Fix::Neighbourhood { to, .. } => to.to_string(),
+                let capture = match f.message_capture() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("error en {}.{}: {e}", f.short(), f.n);
+                        errors += 1;
+                        continue;
+                    }
                 };
                 match bilinker::apply::apply_fix(&cwd, f) {
                     Ok(paths) => {
