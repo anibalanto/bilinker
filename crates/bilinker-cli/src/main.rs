@@ -2160,8 +2160,9 @@ fn print_adopt(r: &bilinker::adopt::AdoptResult, dry_run: bool) {
     }
 
     let mut last = None;
-    for (row, label) in [(Row::Clean, "entra limpio"), (Row::Converged, "ya coincidía"),
-                         (Row::Conflict, "conflicto   ")] {
+    for (row, label) in [(Row::New, "entra nuevo "), (Row::Clean, "entra limpio"),
+                         (Row::Converged, "ya coincidía"), (Row::Conflict, "conflicto   "),
+                         (Row::DeletedThere, "borrado allá")] {
         for c in r.changes.iter().filter(|c| c.row == row) {
             let head = if last == Some(row) { "            " } else { label };
             last = Some(row);
@@ -2178,6 +2179,11 @@ fn print_adopt(r: &bilinker::adopt::AdoptResult, dry_run: bool) {
                 Row::Clean => println!(
                     "{head}     {}.{}   {}",
                     &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension
+                ),
+                Row::New => println!("{head}     {}", &c.uuid[..8.min(c.uuid.len())]),
+                Row::DeletedThere => println!(
+                    "{head}     {}    se queda: `bilinker remove {}` para sacarlo",
+                    &c.uuid[..8.min(c.uuid.len())], &c.uuid[..8.min(c.uuid.len())]
                 ),
             }
         }
@@ -2478,10 +2484,18 @@ fn print_pull(r: &bilinker::pull::PullResult, dry_run: bool) {
         None => println!("sin base de merge con {} — toda diferencia es conflicto\n", r.remote),
     }
 
-    for (row, label) in [(Row::Clean, "entra limpio"), (Row::Converged, "ya coincidía"),
-                         (Row::Conflict, "conflicto   ")] {
+    for (row, label) in [(Row::New, "entra nuevo "), (Row::Clean, "entra limpio"),
+                         (Row::Converged, "ya coincidía"), (Row::Conflict, "conflicto   "),
+                         (Row::DeletedThere, "borrado allá")] {
         for c in r.changes.iter().filter(|c| c.row == row) {
-            println!("  {label}  {}.{}  {}", &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension);
+            match row {
+                Row::New => println!("  {label}  {}", &c.uuid[..8.min(c.uuid.len())]),
+                Row::DeletedThere => println!(
+                    "  {label}  {}  se queda: `bilinker remove {}` para sacarlo",
+                    &c.uuid[..8.min(c.uuid.len())], &c.uuid[..8.min(c.uuid.len())]
+                ),
+                _ => println!("  {label}  {}.{}  {}", &c.uuid[..8.min(c.uuid.len())], c.n, c.dimension),
+            }
             if row == Row::Conflict {
                 println!("                  acá:   {}", c.mine.as_deref().unwrap_or("—"));
                 println!("                  allá:  {}", c.theirs.as_deref().unwrap_or("—"));
