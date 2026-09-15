@@ -3018,6 +3018,31 @@ fn adopt_reports_what_the_neighbour_deleted_and_keeps_it() {
     assert!(root.join(format!(".bilink/{uuid}.yaml")).exists(), "y el bilink se queda");
 }
 
+/// `adopt-base-is-a-ref-commit` — después de un `merge --no-ff`, el ancestro común
+/// más nuevo de las dos refs es un commit del proyecto, sin `.bilink/`. La base es
+/// el más nuevo que sí es de la ref.
+#[test]
+fn after_a_no_ff_merge_the_base_is_still_a_ref_commit() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+
+    // La rama cambia el fragmento, lo acepta y absorbe su tip.
+    decide_on(&root, "feature/x", "public class Service {\n    public void run() { int y = 2; }\n}\n");
+
+    // main mergea la rama y absorbe el merge, que contiene el tip de la rama.
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    git(&root, &["merge", "-q", "--no-ff", "feature/x", "-m", "merge"]);
+    let (_, stderr, ok) = run_in(&root, &["sync"]);
+    assert!(ok, "sync falló:\n{stderr}");
+
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(!stdout.contains("conflicto"), "sólo la rama decidió:\n{stdout}");
+    assert!(stdout.contains("entra limpio"), "y su decisión entra:\n{stdout}");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "y todo queda OK:\n{out}");
+}
+
 /// Dos declaraciones distintas del mismo endpoint son un conflicto, y no se escribe
 /// nada.
 #[test]
