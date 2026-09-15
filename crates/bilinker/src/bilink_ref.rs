@@ -311,6 +311,70 @@ impl Repo {
         Ok(Commit { sha, absorbed: None, wrote: true })
     }
 
+    /// El commit de un `remove`: el árbol del tip de la ref menos un bilink.
+    ///
+    /// **No sale del árbol de trabajo**, a diferencia de [`Self::decide`]. El comando
+    /// más el árbol del padre determinan el resultado: otro cambio sin commitear en
+    /// `.bilink/` no entra, y sigue en `bilinker diff`. Por eso también publica un
+    /// borrado que ya no está en el árbol.
+    ///
+    /// `path` es relativo a la raíz del repo. Si la ref no lo tiene, no escribe nada.
+    pub fn decide_removal(&self, branch: &str, path: &str, message: &RefMessage) -> Result<Commit> {
+        let ref_tip = self.require_ref_tip(branch)?;
+        let project_tip = self.branch_tip(branch)?;
+        let absorbed = self.absorbed(&ref_tip)?.unwrap_or_else(|| ref_tip.clone());
+        if absorbed != project_tip {
+            bail!(
+                "{} no está absorbido; la ref está en {}.\n  \
+                 Absorber primero — `bilinker sync`. No se escribió nada.",
+                short(&project_tip),
+                short(&absorbed)
+            );
+        }
+
+        let index = self.fresh_index(&absorbed)?;
+        let mut found = false;
+        for (mode, oid, p) in self.bilink_entries(&ref_tip)? {
+            if p == path {
+                found = true;
+                continue;
+            }
+            self.git_indexed(
+                &index,
+                &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{p}")],
+            )?;
+        }
+        if !found {
+            return Ok(Commit { sha: ref_tip, absorbed: None, wrote: false });
+        }
+        let tree = self.git_indexed(&index, &["write-tree"])?.trim().to_string();
+        self.verify_faithful(&tree, &absorbed)?;
+
+        let sha = self.write_ref_commit(branch, &tree, &[ref_tip], &message.render())?;
+        self.write_head(branch, &sha)?;
+        Ok(Commit { sha, absorbed: None, wrote: true })
+    }
+
+    /// El path de un bilink de la capa `layer` en el tip de la ref, por prefijo de
+    /// uuid: lo que `remove` busca cuando el archivo ya no está en el árbol.
+    pub fn bilink_in_ref(&self, branch: &str, layer: &Path, prefix: &str) -> Result<Option<String>> {
+        let Some(tip) = self.ref_tip(branch) else { return Ok(None) };
+        let rel = layer.strip_prefix(&self.root).unwrap_or(Path::new(""));
+        let dir = rel.join(".bilink");
+        let dir = dir.to_string_lossy();
+        let hits: Vec<String> = self.bilink_paths_in(&tip)?.into_iter()
+            .filter(|p| {
+                let Some((d, file)) = p.rsplit_once('/') else { return false };
+                d == dir && file.ends_with(".yaml") && file.starts_with(prefix)
+            })
+            .collect();
+        match hits.len() {
+            0 => Ok(None),
+            1 => Ok(hits.into_iter().next()),
+            n => bail!("'{prefix}' es ambiguo: {n} bilinks coinciden en la ref"),
+        }
+    }
+
     // ─── Un commit hace una cosa ─────────────────────────────────────────────
 
     /// Qué hizo un commit de la ref, leído **con git a secas**.
@@ -957,6 +1021,19 @@ pub fn absorb_act(dir: &Path) -> Result<Option<Commit>> {
 pub fn decide_act(dir: &Path, message: &RefMessage) -> Result<Option<Commit>> {
     let Some((repo, branch)) = committable(dir)? else { return Ok(None) };
     Ok(Some(repo.decide(&branch, message)?))
+}
+
+/// El commit de un `remove`, sobre la ref. `None` si la rama no tiene ref.
+pub fn remove_act(dir: &Path, path: &str, message: &RefMessage) -> Result<Option<Commit>> {
+    let Some((repo, branch)) = committable(dir)? else { return Ok(None) };
+    Ok(Some(repo.decide_removal(&branch, path, message)?))
+}
+
+/// El path de un bilink en la ref de la rama actual, para `remove`. `None` si la
+/// rama no tiene ref o la ref no lo tiene.
+pub fn find_in_ref(layer: &Path, prefix: &str) -> Result<Option<(PathBuf, String)>> {
+    let Some((repo, branch)) = committable(layer)? else { return Ok(None) };
+    Ok(repo.bilink_in_ref(&branch, layer, prefix)?.map(|p| (repo.root.clone(), p)))
 }
 
 /// El repo y la rama sobre la que se commitea, o `None` si no hay dónde.

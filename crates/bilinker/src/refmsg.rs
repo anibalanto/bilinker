@@ -73,6 +73,10 @@ pub enum RefCommand {
     /// de una sola vez, igual que [`Adopt`](Self::Adopt). Cuántos y cuáles no se
     /// pudieron va en la prosa, que es lo que se lee.
     RestoreN1,
+    /// Tipo 2 — **borrar un bilink.** Decidir que el vínculo ya no vale es una
+    /// decisión como aprobarlo, y lleva su commit: el árbol del padre menos ese
+    /// archivo, y nada más.
+    Remove { uuid: String },
 }
 
 impl RefCommand {
@@ -94,6 +98,7 @@ impl RefCommand {
             Self::Pull { remote } => format!("pull {remote}"),
             Self::Relayer { layer } => format!("relayer {layer}"),
             Self::RestoreN1 => "restore-n1".to_string(),
+            Self::Remove { uuid } => format!("remove {uuid}"),
         }
     }
 }
@@ -190,6 +195,7 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // restricciones de un nombre de rama: es el otro argumento no hexadecimal.
         ("relayer", [l]) => RefCommand::Relayer { layer: branch(l)? },
         ("restore-n1", []) => RefCommand::RestoreN1,
+        ("remove", [u]) => RefCommand::Remove { uuid: uuid(u)? },
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
@@ -213,12 +219,12 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         // Un verbo del vocabulario con la cantidad de argumentos equivocada, y un
         // verbo que no está en el vocabulario, son el mismo error: el mensaje no
         // describe ningún acto reproducible.
-        ("absorb" | "track" | "adopt" | "pull" | "relayer" | "accept" | "apply", _) => bail!(
+        ("absorb" | "track" | "adopt" | "pull" | "relayer" | "accept" | "apply" | "remove", _) => bail!(
             "`{verb}` no lleva los argumentos '{}'", args.join(" ")
         ),
         _ => bail!(
             "'{verb}' no es un verbo del vocabulario de la ref \
-             (absorb, track, accept, apply, adopt, pull, relayer)"
+             (absorb, track, accept, apply, adopt, pull, relayer, remove)"
         ),
     };
 
@@ -347,6 +353,7 @@ mod tests {
             RefCommand::Adopt { branch: "main".into() },
             RefCommand::Pull { remote: "origin".into() },
             RefCommand::Relayer { layer: "subsystems/stratum".into() },
+            RefCommand::Remove { uuid: UUID.into() },
             RefCommand::Track { branch: "rc-2.35".into() },
         ] {
             let back = round(cmd.clone());
