@@ -1,0 +1,6 @@
+file: docs/specs/concepts/ref.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Evolución: merge, y en una sola dirección"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Una decisión escribe su bilink y sus captures, y nada más del `.bilink/`"))) @target)
