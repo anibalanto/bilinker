@@ -227,7 +227,32 @@ Lo que se fija es que no se le cree al que no sirve, que es lo que hace honesto 
 
 Con una puerta por workspace la pregunta se borra: desde que la ruta del socket de `lspd` se deriva del workspace, el que contesta en mi puerta es el mío por construcción. El chequeo se borra, y no porque se haya arreglado: porque el caso no se puede representar.
 
-Y ahí sí bilinker levanta el suyo. Con una puerta por sistema, arrancar era desalojar a quien estuviera trabajando en otro proyecto; con una puerta propia, levantar no le cuesta nada a nadie. Lo que no cambia es el tercer valor: si el daemon no arranca, sigue siendo `None`. Levantarlo es una comodidad, no una garantía, y un `check` que fracasara porque un daemon no arrancó estaría convirtiendo una falla de infraestructura en una reducción de cobertura.
+Y ahí sí bilinker levanta el suyo. Cómo lo levanta y cuánto lo espera son las dos reglas que siguen.
+
+### El proveedor levanta el daemon que no contesta, una vez por corrida
+
+Cuando la puerta del daemon de la capa no contesta, el proveedor que le habla a `lspd` lo levanta antes de contestar. Lo intenta una vez por corrida y no una por endpoint: `check` pregunta por decenas de endpoints, y cada uno no puede pagar su propio arranque.
+
+Lo que no cambia es el tercer valor: si el daemon no arranca, sigue siendo `None`, y el aviso de puertas vivas que este cliente no calcula sale ahí, cuando igual degrada. Levantarlo es una comodidad, no una garantía, y un `check` que fracasara porque un daemon no arrancó estaría convirtiendo una falla de infraestructura en una reducción de cobertura.
+
+Lo levanta quien le pregunta al puerto, y le pregunta sólo quien necesita tipos: `check`, `apply` y `accept`. `status`, `get` y el resto no preguntan, así que no levantan nada, y no hay una lista de comandos que mantener.
+
+El daemon queda vivo cuando la corrida termina: el índice que construyó se reusa en la siguiente.
+
+### Espera sólo lo que indexa el daemon que levantó, y Ctrl-C la corta
+
+El daemon contesta `ping` antes de que sus language servers estén listos, los levanta a demanda con la primera pregunta de cada lenguaje, y mientras uno indexa contesta `-32001`. Levantar el daemon sin esperar no compraría nada en esa corrida: la primera pregunta volvería `-32001` y el vecindario degradaría igual.
+
+Así que, si el proveedor levantó el daemon en esta corrida, un `-32001` no es `None` todavía. Consulta `status` cada segundo hasta que ningún servidor esté `INDEXING`, y vuelve a preguntar.
+
+- **Espera todo lo que `status` da `INDEXING`**, y no "el servidor de este archivo": `status` nombra servidores, no lenguajes, y la tabla de qué servidor atiende qué extensión es del daemon. Con un daemon de esta corrida, lo que indexa lo arrancaron sus preguntas.
+- **Un servidor `RUNNING` no se espera.** No informa readiness, así que no hay a qué esperar: se le pregunta, y un vacío suyo vale lo que vale para ese lenguaje.
+- **Mientras espera, lo dice por stderr**, al empezar y cada quince segundos: qué servidores espera, en qué estado, cuánto va, y que Ctrl-C sigue sin vecindario.
+- **Ctrl-C corta la espera y no la corrida.** El proveedor contesta `None`, el resto de la corrida sigue con el vecindario no verificado, y no vuelve a esperar. Fuera de una espera, Ctrl-C termina el proceso con 130, como siempre.
+- **Si `status` deja de contestar, es `None`.** Y si no tiene nada `INDEXING` y la pregunta insiste en `-32001`, se vuelve a preguntar una vez —pudo quedar listo entre las dos— y la segunda es `None`.
+- **No tiene techo de tiempo.** Lo que la corta es Ctrl-C.
+
+Un daemon que ya estaba vivo cuando empezó la corrida es de otra: su `-32001` sigue siendo `None`, sin esperar. Es lo que evita que cada `check` corrido con un daemon vivo e indexando se vuelva una espera de minutos.
 
 ### Cuándo se adquiere el vecindario
 

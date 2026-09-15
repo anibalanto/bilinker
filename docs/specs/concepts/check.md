@@ -12,7 +12,7 @@ Requiere git como dependencia dura. El [vecindario](accept.md) necesita resolver
 
 Sin ese proveedor `check` corre igual y el eje del vecindario degrada a `CONTRACT_UNVERIFIED`, que no falla y no bloquea. Es la propiedad que hace que adoptar bilinker no requiera levantar nada.
 
-El vecindario se pregunta si hay a quién. `check` pregunta una vez si hay proveedor; si no lo hay, los endpoints con vecindario aceptado quedan `CONTRACT_UNVERIFIED` y el resto se evalúa igual. No lo levanta, por lo mismo que no clona: es masivo, y arrancar un proceso como efecto colateral de un comando de sólo lectura no es suyo.
+El vecindario se pregunta si hay a quién. Cuando el daemon de la capa no contesta, el proveedor lo levanta, una vez por corrida y no una por endpoint, y espera sólo lo que indexa el daemon que levantó: es la regla de [la aceptación](accept.md), y `check` la hereda por preguntarle al mismo proveedor. Si no arranca, los endpoints con vecindario aceptado quedan `CONTRACT_UNVERIFIED` y el resto se evalúa igual.
 
 ### `check` opera completamente offline
 

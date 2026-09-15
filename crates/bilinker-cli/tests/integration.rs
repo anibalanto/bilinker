@@ -9,6 +9,26 @@ fn bilinker() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_bilinker"))
 }
 
+/// El binario, con un PATH donde no hay `lspd`.
+///
+/// **La suite no le habla a un daemon real.** El adaptador del vecindario levanta
+/// `lspd` cuando su puerta no contesta, y con el binario instalado cada workspace
+/// temporal arrancaría el suyo —y detrás, sus language servers—. Sacar `lspd` del
+/// PATH deja cada test como si no estuviera instalado, que es lo que la suite supone.
+fn bilinker_cmd() -> Command {
+    let mut cmd = Command::new(bilinker());
+    cmd.env("PATH", path_without_lspd());
+    cmd
+}
+
+/// El PATH de la suite, sin los directorios que tienen un `lspd`.
+fn path_without_lspd() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::env::split_paths(&path)
+        .filter(|d| !d.join(if cfg!(windows) { "lspd.exe" } else { "lspd" }).exists());
+    std::env::join_paths(dirs).unwrap()
+}
+
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -20,7 +40,7 @@ fn persona_java() -> PathBuf {
 }
 
 fn run(args: &[&str]) -> (String, String, bool) {
-    let out = Command::new(bilinker())
+    let out = bilinker_cmd()
         .current_dir(workspace())
         .args(args)
         .output()
@@ -163,7 +183,7 @@ fn isolated_git_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 fn run_in(root: &std::path::Path, args: &[&str]) -> (String, String, bool) {
-    let out = std::process::Command::new(bilinker())
+    let out = bilinker_cmd()
         .current_dir(root)
         .args(args)
         .output()
@@ -180,7 +200,7 @@ fn run_in(root: &std::path::Path, args: &[&str]) -> (String, String, bool) {
 /// **Cuál no-cero importa**: un drift que hay que revisar y una capa que hay que
 /// migrar son dos trabajos distintos, y un solo `1` los vuelve el mismo.
 fn code_in(root: &std::path::Path, args: &[&str]) -> (String, String, i32) {
-    let out = std::process::Command::new(bilinker())
+    let out = bilinker_cmd()
         .current_dir(root)
         .args(args)
         .output()
@@ -637,6 +657,78 @@ fn dropping_the_route_literal_is_altered_not_unresolved() {
     assert!(!ok, "la ruta cambió, y eso se reporta:\n{out}");
     assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
+}
+
+/// **Un daemon que no arranca deja el vecindario no verificado, y no es un error.**
+///
+/// El binario corre con un PATH donde está `git` y no `lspd`, y con un HOME propio:
+/// no hay puerta que conteste ni binario que levantar, y la suite no depende de un
+/// `lspd` instalado. El vecindario aceptado se escribe a mano, porque adquirirlo de
+/// verdad pide el daemon que este test no puede tener.
+#[cfg(unix)]
+#[test]
+fn a_daemon_that_does_not_start_leaves_the_contract_unverified() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    let (bilink, _) = only_bilink(&root);
+    let yaml = fs::read_to_string(&bilink).unwrap();
+    let neighbour = "a".repeat(32);
+    let acquired = format!(
+        "n:\n        1:\n          link: capture {neighbour}\n          hash: {}",
+        "b".repeat(64));
+    assert!(yaml.contains("n: declined"), "{yaml}");
+    let yaml = yaml.replace("n: declined", &acquired);
+    // Lo declarado hoy coincide con lo aceptado: el eje de la ubicación no dice nada
+    // y le toca al del contenido, que es el que pide el daemon.
+    let at = yaml.find("  1:\n    link: capture ").expect("la punta del código");
+    let eol = at + yaml[at..].find('\n').unwrap() + 1;
+    let eol = eol + yaml[eol..].find('\n').unwrap() + 1;
+    let yaml = format!("{}    n:\n      1:\n        link: capture {neighbour}\n{}",
+                       &yaml[..eol], &yaml[eol..]);
+    fs::write(&bilink, yaml).unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let git = String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout).unwrap();
+    std::os::unix::fs::symlink(git.trim(), bin.path().join("git")).unwrap();
+
+    let check = || {
+        let out = bilinker_cmd()
+            .current_dir(&root)
+            .env("PATH", bin.path())
+            .env("HOME", home.path())
+            .args(["check", "."])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(stdout.contains("CONTRACT_UNVERIFIED"), "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stderr.to_lowercase().contains("error"), "no es un error:\n{stderr}");
+    };
+
+    // Sin `lspd` en ningún lado.
+    check();
+
+    // Con un `lspd` que arranca y se muere antes de abrir la puerta: se intentó
+    // levantarlo, una sola vez, y el resultado es el mismo.
+    use std::os::unix::fs::PermissionsExt;
+    let marker = home.path().join("spawned");
+    let lspd = bin.path().join("lspd");
+    fs::write(&lspd, format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", marker.display())).unwrap();
+    fs::set_permissions(&lspd, fs::Permissions::from_mode(0o755)).unwrap();
+    check();
+    let spawned = fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(spawned.lines().count(), 1, "se levanta una vez por corrida:\n{spawned}");
+    assert!(spawned.contains("--workspace"), "{spawned}");
 }
 
 /// El único bilink de un workspace de prueba, y su UUID.
@@ -2818,6 +2910,142 @@ fn adopt_never_overwrites_a_decision_only_this_branch_made() {
                "ninguna decisión propia se pisa");
 }
 
+/// Crea una cadena en `branch` y la acepta sobre su ref. Devuelve el uuid.
+fn new_chain_on(root: &Path, branch: &str, tip0: &str, tip1: &str) -> String {
+    git(root, &["checkout", "-q", branch]);
+    run_in(root, &["init"]);
+    let (stdout, stderr, ok) = run_in(root, &["chain", "new", "--tip", tip0, "--tip", tip1]);
+    assert!(ok, "chain new falló en {branch}:\n{stderr}");
+    let uuid = stdout.lines()
+        .find_map(|l| l.strip_prefix("Created chain: "))
+        .expect("uuid").trim().to_string();
+    run_in(root, &["check", "."]);
+    let (_, stderr, ok) = run_in(root, &["accept", "--no-n1", &uuid]);
+    assert!(ok, "accept falló en {branch}:\n{stderr}");
+    uuid
+}
+
+/// Los captures de un commit de la ref, por nombre de archivo.
+fn captures_in_ref(root: &Path, r: &str) -> Vec<String> {
+    git_out(root, &["ls-tree", "-r", "--name-only", r])
+        .lines()
+        .filter(|l| l.starts_with(".bilink/capture/"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `adopt-brings-new-bilinks` — un bilink que sólo tiene el vecino entra entero, con
+/// sus captures.
+#[test]
+fn adopt_brings_a_bilink_only_the_neighbour_has_with_its_captures() {
+    let (_t, root, main, _uuid) = two_tracked_branches();
+    let nuevo = new_chain_on(&root, "feature/x", "docs/spec.md", "src/Service.java");
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("entra nuevo"), "el bilink nuevo se reporta:\n{stdout}");
+
+    let path = format!(".bilink/{nuevo}.yaml");
+    assert_eq!(
+        git_out(&root, &["show", &format!("refs/bilink/{main}:{path}")]).trim(),
+        git_out(&root, &["show", &format!("refs/bilink/feature/x:{path}")]).trim(),
+        "el bilink llegó entero a la ref"
+    );
+    let en_main = captures_in_ref(&root, &format!("refs/bilink/{main}"));
+    for c in captures_in_ref(&root, "refs/bilink/feature/x") {
+        assert!(en_main.contains(&c), "falta {c} en la ref de {main}");
+    }
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "y todo queda OK:\n{out}");
+}
+
+/// `adopt-brings-the-declaration` — un `link` repuntado en el vecino viaja con la
+/// aceptación que se tomó sobre él.
+#[test]
+fn adopt_brings_the_declaration_with_the_decision() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    fs::write(root.join("src/Service.java"),
+        "public class Service {\n    public void run() {}\n    public void stop() {}\n}\n").unwrap();
+    commit(&root, "stop");
+    let (_, stderr, ok) = run_in(&root, &["recapture", &format!("{uuid}.1"), "src/Service.java", "3:5"]);
+    assert!(ok, "recapture falló:\n{stderr}");
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    // main avanza a la rama, como un fast-forward.
+    git(&root, &["checkout", "-q", &main]);
+    git(&root, &["merge", "-q", "--ff-only", "feature/x"]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("declaración"), "la declaración se reporta:\n{stdout}");
+
+    let path = format!(".bilink/{uuid}.yaml");
+    assert_eq!(
+        fs::read_to_string(root.join(&path)).unwrap().trim(),
+        git_out(&root, &["show", &format!("refs/bilink/feature/x:{path}")]).trim(),
+        "declaración y decisión llegan juntas"
+    );
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "sin RELOCATED:\n{out}");
+}
+
+/// `adopt-never-deletes` — lo que el vecino borró se reporta y se queda.
+#[test]
+fn adopt_reports_what_the_neighbour_deleted_and_keeps_it() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+
+    git(&root, &["checkout", "-q", "feature/x"]);
+    run_in(&root, &["init"]);
+    let (_, stderr, ok) = run_in(&root, &["remove", &uuid]);
+    assert!(ok, "remove falló:\n{stderr}");
+    // `remove` no escribe la ref: el borrado viaja con la próxima aceptación.
+    new_chain_on(&root, "feature/x", "docs/spec.md", "src/Service.java");
+    let tree = git_out(&root, &["ls-tree", "-r", "--name-only", "refs/bilink/feature/x"]);
+    assert!(!tree.contains(&uuid), "el borrado está en la ref del vecino:\n{tree}");
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let (stdout, stderr, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(ok, "adopt falló:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("borrado allá"), "el borrado se reporta:\n{stdout}");
+    assert!(root.join(format!(".bilink/{uuid}.yaml")).exists(), "y el bilink se queda");
+}
+
+/// Dos declaraciones distintas del mismo endpoint son un conflicto, y no se escribe
+/// nada.
+#[test]
+fn two_declarations_of_the_same_endpoint_are_a_conflict() {
+    let (_t, root, main, uuid) = two_tracked_branches();
+    let code = "public class Service {\n    public void run() {}\n    public void stop() {}\n    public void halt() {}\n}\n";
+
+    for (branch, pos) in [(main.as_str(), "3:5"), ("feature/x", "4:5")] {
+        git(&root, &["checkout", "-q", branch]);
+        run_in(&root, &["init"]);
+        fs::write(root.join("src/Service.java"), code).unwrap();
+        commit(&root, "tres métodos");
+        let (_, stderr, ok) = run_in(&root, &["recapture", &format!("{uuid}.1"), "src/Service.java", pos]);
+        assert!(ok, "recapture falló en {branch}:\n{stderr}");
+        run_in(&root, &["check", "."]);
+        let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &format!("{uuid}.1")]);
+        assert!(ok, "accept falló en {branch}:\n{stderr}");
+    }
+
+    git(&root, &["checkout", "-q", &main]);
+    run_in(&root, &["init"]);
+    let before = rev(&root, &format!("refs/bilink/{main}"));
+    let (stdout, _, ok) = run_in(&root, &["adopt", "feature/x"]);
+    assert!(!ok, "con conflicto el comando falla:\n{stdout}");
+    assert!(stdout.contains("declaración"), "y nombra la declaración:\n{stdout}");
+    assert_eq!(before, rev(&root, &format!("refs/bilink/{main}")), "todo o nada");
+}
+
 /// Adoptar de la rama actual no tiene sentido y se dice.
 #[test]
 fn adopt_refuses_the_current_branch() {
@@ -3825,7 +4053,7 @@ fn the_hook_ignores_refs_that_are_not_bilink() {
 /// Corre `verify-ref --stdin` con las líneas dadas, como haría un `pre-receive`.
 fn pre_receive(root: &Path, lines: &str) -> (String, bool) {
     use std::io::Write;
-    let mut child = std::process::Command::new(bilinker())
+    let mut child = bilinker_cmd()
         .current_dir(root)
         .args(["verify-ref", "--stdin"])
         .stdin(std::process::Stdio::piped())
@@ -4576,7 +4804,7 @@ fn corte(repo: &Path) -> (String, String, bool) {
         // El script llama a `bilinker`, y tiene que ser **este** binario.
         .env("PATH", format!("{}:{}",
              bilinker().parent().unwrap().display(),
-             std::env::var("PATH").unwrap_or_default()))
+             path_without_lspd().to_string_lossy()))
         .output()
         .expect("failed to run corte-005.sh");
     (
