@@ -798,6 +798,48 @@ Que la fila *"ya coincidía"* exista es la convergencia que el direccionamiento 
 
 Y la fila que no existe es la que dice que `adopt` es asimétrico: un campo que sólo yo cambié se queda como está, y no viaja para el otro lado.
 
+### La declaración se compara igual que la decisión
+
+Cada endpoint tiene dos escritores: `apply` escribe la declaración —`link` y `n`— y `accept` escribe `accepted` ([bilink.md](bilink.md)). Una decisión se toma sobre una declaración, así que `adopt` compara las dos, con las mismas filas:
+
+| Campo | Dimensión en el reporte |
+|---|---|
+| `link` | `declaración` |
+| `n` | `vecindario` |
+| `accepted[].link` | `ubicación` |
+| `accepted[].hash` | `contenido` |
+| `accepted[].agree` | `aprobadores` |
+
+Un conflicto de declaración no se une: un endpoint tiene un solo `link` y un solo `n`. Frena el comando como cualquier conflicto, y se resuelve de un lado con `apply` o `recapture`.
+
+Sin la declaración, una decisión del vecino llega sobre la declaración de acá: el endpoint queda `RELOCATED` por una ubicación que el vecino ya había aprobado.
+
+### Un bilink que sólo tiene el vecino entra entero
+
+Un bilink que no está en la base ni acá, y sí en el vecino, entra con el archivo del vecino, `kind`, `name` y `as` incluidos. Es "entra limpio" sobre el archivo en vez de sobre un campo: de este lado nadie decidió nada sobre él.
+
+```
+entra nuevo      035496d1
+```
+
+`kind`, `name` y `as` son inertes, y sobre un bilink que ya existe de los dos lados no se comparan.
+
+### Los captures entran por unión, y nunca conflictúan
+
+Un capture es inmutable y su nombre es el hash de su ubicación ([capture.md](capture.md)): dos con el mismo nombre son el mismo archivo. Todo capture del vecino que no está acá entra con el commit de `adopt`. Uno que después no referencia nadie lo saca `capture prune`, como siempre.
+
+Los captures no cuentan como algo que adoptar: si lo único que el vecino tiene de más son captures, no hay nada que adoptar.
+
+### `adopt` no borra
+
+Un bilink que está en la base y no está en el vecino se reporta y se queda. `adopt` no decide nada, y un bilink borrado se lleva su última aceptación de la ref. Quien lo quiere afuera corre `bilinker remove`.
+
+```
+borrado allá     a407ca4c    se queda: `bilinker remove a407ca4c` para sacarlo
+```
+
+Lo mismo con un capture: `adopt` sólo agrega.
+
 ### La divergencia se une, y deja de bloquear
 
 Con [`accepted` como lista](bilink.md), un conflicto se une: las dos entradas quedan, el endpoint pasa a `CONSENSUS_DIVERGED`, y el resto del `adopt` sigue. Es la misma resolución que este comando usa para `agree`: unión, campo por campo, sin preguntarle a nadie.
@@ -901,6 +943,8 @@ El merge es a tres puntas y campo por campo, el mismo de `adopt`:
 | el mismo endpoint, mismos valores y `agree` distinto | unión, y el resultado dice algo verdadero que antes no se podía decir: los dos aprobaron |
 
 La última fila es la que hace que el caso más frecuente se cierre sin criterio humano. Si Ana y Luis aceptaron lo mismo, los valores coinciden byte a byte, y lo único que difiere es [`agree`](accept.md), cuya reconciliación es una regla, no una decisión.
+
+Vale igual para la declaración, para un bilink que sólo tiene el remoto, para los captures y para lo que el remoto borró: las reglas de `adopt`, desde § "La declaración se compara igual que la decisión" hasta § "`adopt` no borra".
 
 Con un conflicto no se escribe nada, ni siquiera el fetch se deshace: resolver un `accepted` en conflicto es elegir una de dos decisiones, y eso es `accept`, con una persona mirando.
 
