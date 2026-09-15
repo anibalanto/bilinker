@@ -15,7 +15,7 @@ Requiere git como dependencia dura.
 ### `apply` toma `--dry-run`, `--filter` y `-y`
 
 ```
-bilinker apply [--dry-run] [--filter <estado>] [-y]
+bilinker apply [<uuid>[.<N>]] [--dry-run] [--filter <estado>] [-y]
 ```
 
 | Flag | Descripción |
@@ -23,6 +23,13 @@ bilinker apply [--dry-run] [--filter <estado>] [-y]
 | `--dry-run` | Muestra los fixes que se aplicarían sin escribir nada. |
 | `--filter <estado>` | Aplica sólo fixes de un estado específico (e.g. `--filter MOVED`). |
 | `-y` | Omite la confirmación interactiva. |
+| `<uuid>[.<N>]` | Aplica sólo los fixes de ese bilink, o de ese endpoint. El uuid va entero o por prefijo. |
+
+### Un endpoint acota los fixes a ese bilink
+
+Sin argumento, `apply` propone los fixes de toda la capa. Con un `<uuid>`, sólo los de ese bilink; con `<uuid>.<N>`, sólo los de ese endpoint. Lo demás no se mira como fix ni se escribe, y `--filter` se aplica encima.
+
+Es lo que hace falta para repuntar el vecindario de un endpoint recién aceptado sin tocar el de los demás: con proveedor, `apply` propone además subir la cobertura de cada endpoint con el vecindario renunciado ([§ `apply` mantiene también `n.1.link`](#apply-mantiene-también-n1link)), y esa es una decisión de capa, no del endpoint que se está cerrando.
 
 ### `apply` re-deriva cada estado con fix, acuña el capture nuevo y repunta el `link`
 

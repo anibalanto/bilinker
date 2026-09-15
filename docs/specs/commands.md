@@ -13,7 +13,7 @@ Una fila por comando. El detalle de cada uno está en el concepto al que remite:
 | `bilinker status` | Muestra la cache agrupada por archivo, sin re-verificar. | [check](concepts/check.md) |
 | `bilinker watch` | Reporta en tiempo real los archivos vinculados que se modifican. | [check](concepts/check.md) |
 | `bilinker accept <uuid>[.<N>] \| . [--place\|--content] [--no-n1] [--force]` | Escribe `accepted`: la única decisión del formato. Absorbe la rama y commitea en la ref, un commit por endpoint. | [accept](concepts/accept.md) |
-| `bilinker apply [--dry-run] [-y]` | Repunta los `link` de los captures `MOVED` y `REANCHORED` acuñando el capture nuevo. Propone; nunca escribe `accepted`. | [apply](concepts/apply.md) |
+| `bilinker apply [<uuid>[.<N>]] [--dry-run] [-y]` | Repunta los `link` de los captures `MOVED` y `REANCHORED` acuñando el capture nuevo, en toda la capa o sólo en ese bilink o endpoint. Propone; nunca escribe `accepted`. | [apply](concepts/apply.md) |
 | `bilinker chain new --tip <REF> --tip <REF> [--as <modo>]` | Crea una cadena: un UUID y un bilink en cada capa que los tips atraviesan. | [chain](concepts/chain.md) |
 | `bilinker chain status <uuid>` | Recorre todos los nodos de una cadena con su estado. | [chain](concepts/chain.md) |
 | `bilinker chain list [--kind] [--link] [--as]` | Lista las cadenas a partir del directorio actual, con filtros que se combinan con Y. | [chain](concepts/chain.md) |
