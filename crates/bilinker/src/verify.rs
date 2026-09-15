@@ -180,7 +180,12 @@ fn verify_commit(
     let parents = repo.parents(commit)?;
     let base = parents.first().map(String::as_str);
     faults.extend(verify_files(repo, base, commit)?);
-    faults.extend(verify_agree(repo, base, commit)?);
+    // En una sincronización, lo que el segundo padre ya tenía no es agregar.
+    let brought = match act {
+        Some(Act::Synchronization) => parents.get(1).map(String::as_str),
+        _ => None,
+    };
+    faults.extend(verify_agree(repo, base, brought, commit)?);
 
     // ── la firma ─────────────────────────────────────────────────────────────
     if let Some(file) = signers {
@@ -252,7 +257,10 @@ fn verify_files(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<Str
 /// **Sacar no está restringido**, y no puede estarlo: es lo que hace `adopt` al
 /// traer valores distintos, y lo que hace un `accept` cuando los valores cambian y
 /// la lista se vacía. Lo que afirma algo sobre otra persona es agregar.
-fn verify_agree(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<String>> {
+///
+/// **Una sincronización trae, no agrega.** `brought` es su segundo padre: un nombre
+/// que ya estaba ahí lo agregó un commit de ese lado, verificado con su autor.
+fn verify_agree(repo: &Repo, base: Option<&str>, brought: Option<&str>, commit: &str) -> Result<Vec<String>> {
     let autor = repo.git(&["log", "-1", "--format=%an", commit])?.trim().to_string();
     let mut faults = Vec::new();
 
@@ -262,6 +270,7 @@ fn verify_agree(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<Str
         }
         let Ok(nuevo) = repo.bilink_at(commit, &path) else { continue };
         let viejo = base.and_then(|b| repo.bilink_at(b, &path).ok());
+        let traido = brought.and_then(|b| repo.bilink_at(b, &path).ok());
 
         for n in [0u8, 1u8] {
             // **La unión de todas las entradas**, no la primera.
@@ -271,10 +280,11 @@ fn verify_agree(repo: &Repo, base: Option<&str>, commit: &str) -> Result<Vec<Str
             // puede agregar un nombre abriendo una entrada nueva —eso es lo que hace
             // una divergencia— y mirar sólo la primera dejaría ese endoso sin
             // verificar. Es justo el agujero que esta verificación existe para cerrar.
-            let antes: BTreeSet<String> = viejo
-                .as_ref()
-                .map(|bl| agree_union(&bl.endpoint.get(n).accepted))
-                .unwrap_or_default();
+            let antes: BTreeSet<String> = [viejo.as_ref(), traido.as_ref()]
+                .into_iter()
+                .flatten()
+                .flat_map(|bl| agree_union(&bl.endpoint.get(n).accepted))
+                .collect();
             let ahora = agree_union(&nuevo.endpoint.get(n).accepted);
 
             for nombre in ahora.difference(&antes) {
