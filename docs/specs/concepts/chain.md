@@ -463,17 +463,37 @@ El formato de cada uno sigue distinto porque las preguntas son distintas. `abstr
 bilinker remove <uuid>
 ```
 
-1. Resuelve `.bilink/<uuid>.yaml` en la capa actual.
+1. Resuelve `.bilink/<uuid>.yaml` en la capa actual, en el árbol o, si ya no está ahí, en la ref.
 2. Elimina el archivo.
-3. No elimina los captures que referenciaba: pueden estar en uso por otros bilinks. Un capture que queda sin referentes se limpia con `bilinker capture prune`.
-4. Los nodos adyacentes de la cadena detectarán `BROKEN` en el próximo `check` y deberán decidir: reparar o también remover. La remoción se propaga hop a hop, no es automática.
+3. Commitea el borrado en `refs/bilink/<branch>`.
+4. No elimina los captures que referenciaba: pueden estar en uso por otros bilinks. Un capture que queda sin referentes se limpia con `bilinker capture prune`.
+5. Los nodos adyacentes de la cadena detectarán `BROKEN` en el próximo `check` y deberán decidir: reparar o también remover. La remoción se propaga hop a hop, no es automática.
 
 ```
 removed: .bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.yaml
+commit:  refs/bilink/… @ 4c1d9e0
 
 note: nodos adyacentes detectarán BROKEN en el próximo check
 note: 1 capture quedó sin referentes — `bilinker capture prune` para limpiarlo
 ```
+
+### El borrado es un commit propio en la ref
+
+Un commit de tipo decisión, de un padre, cuya primera línea es `remove <uuid>` ([ref.md](ref.md)). Su árbol es el del commit anterior de la ref menos ese bilink, y no el `.bilink/` del árbol de trabajo: otro cambio sin commitear en `.bilink/` no entra en el commit, y sigue en `bilinker diff`.
+
+`bilinker push` lo publica como cualquier otra decisión. En una capa que todavía no cortó a la ref, `remove` sólo borra el archivo, y commitearlo es de quien trabaja.
+
+### Un borrado que sólo está en el árbol se publica con el mismo `remove`
+
+Si el bilink ya no está en el árbol y sigue en la ref —un borrado hecho con un binario anterior—, `remove <uuid>` commitea el borrado igual. Si no está en ninguno de los dos, es un error.
+
+```
+$ bilinker remove 35876ceb
+removed: .bilink/35876ceb-7df1-4406-bb59-f61926c0267a.yaml  (ya no estaba en el árbol)
+commit:  refs/bilink/… @ 7e21a3f
+```
+
+### `remove` es para lo que ya no tiene sentido
 
 Para los estados `DELETED` y `BROKEN` donde el bilink ya no tiene sentido: el fragmento fue eliminado definitivamente, el repo fue removido, o el bilink fue creado por error. No es un sustituto de `bilinker accept`: si el fragmento cambió pero sigue siendo válido, corresponde `accept`.
 
