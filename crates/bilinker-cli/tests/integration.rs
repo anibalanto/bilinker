@@ -1978,6 +1978,84 @@ fn remove_finds_a_bilink_by_its_prefix() {
     assert!(!root.join(format!(".bilink/{uuid}.yaml")).exists(), "no lo borró");
 }
 
+/// Los paths de `.bilink/` del tip de una ref.
+fn ref_tree(root: &Path, branch: &str) -> String {
+    git_out(root, &["ls-tree", "-r", "--name-only", &format!("refs/bilink/{branch}")])
+}
+
+/// `remove-commits-on-the-ref` — el borrado es un commit `remove <uuid>` en la ref,
+/// y `diff` queda vacío.
+#[test]
+fn remove_commits_the_deletion_on_the_ref() {
+    let (_t, root, uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let before = rev(&root, &format!("refs/bilink/{branch}"));
+
+    let (_, stderr, ok) = run_in(&root, &["remove", &uuid[..8]]);
+    assert!(ok, "remove falló:\n{stderr}");
+
+    assert!(!ref_tree(&root, &branch).contains(&uuid), "el bilink sigue en la ref");
+    let subject = git_out(&root, &["log", "-1", "--format=%s", &format!("refs/bilink/{branch}")]);
+    assert_eq!(subject.trim(), format!("remove {uuid}"), "el mensaje es el comando");
+    let parent = git_out(&root, &["rev-parse", &format!("refs/bilink/{branch}^")]);
+    assert_eq!(parent.trim(), before, "un solo commit, sobre el tip anterior");
+
+    let (out, _, ok) = run_in(&root, &["diff"]);
+    assert!(ok && !out.contains(&uuid), "diff queda vacío:\n{out}");
+    let (out, ok) = verify(&root, &[&format!("refs/bilink/{branch}")]);
+    assert!(ok, "verify-ref lo reconoce:\n{out}");
+}
+
+/// `remove-publishes-a-pending-deletion` — un borrado que sólo está en el árbol se
+/// publica con el mismo comando.
+#[test]
+fn remove_publishes_a_deletion_that_is_only_in_the_tree() {
+    let (_t, root, uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    fs::remove_file(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+
+    let (_, stderr, ok) = run_in(&root, &["remove", &uuid[..8]]);
+    assert!(ok, "remove falló:\n{stderr}");
+    assert!(!ref_tree(&root, &branch).contains(&uuid), "el borrado llegó a la ref");
+}
+
+/// `remove-commits-only-that-bilink` — otro cambio sin commitear en `.bilink/` no
+/// entra en el commit.
+#[test]
+fn remove_commits_only_the_bilink_it_names() {
+    let (_t, root, uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let (stdout, stderr, ok) = run_in(&root, &["chain", "new", "--tip", "docs/spec.md", "--tip", "src/Service.java"]);
+    assert!(ok, "chain new falló:\n{stderr}");
+    let otro = stdout.lines().find_map(|l| l.strip_prefix("Created chain: ")).unwrap().trim().to_string();
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", &otro]);
+    assert!(ok, "accept falló:\n{stderr}");
+
+    // Los dos se borran a mano; sólo uno se nombra.
+    fs::remove_file(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    fs::remove_file(root.join(format!(".bilink/{otro}.yaml"))).unwrap();
+    let (_, stderr, ok) = run_in(&root, &["remove", &uuid[..8]]);
+    assert!(ok, "remove falló:\n{stderr}");
+
+    let tree = ref_tree(&root, &branch);
+    assert!(!tree.contains(&uuid), "el nombrado sale de la ref");
+    assert!(tree.contains(&otro), "el otro no entra en el commit:\n{tree}");
+    let (out, _, _) = run_in(&root, &["diff"]);
+    assert!(out.contains(&otro), "y sigue pendiente:\n{out}");
+}
+
+/// Un uuid que no está ni en el árbol ni en la ref es un error, y no se escribe nada.
+#[test]
+fn remove_of_a_bilink_that_is_nowhere_fails() {
+    let (_t, root, _uuid, _x) = cut_over();
+    let branch = branch_of(&root);
+    let before = rev(&root, &format!("refs/bilink/{branch}"));
+    let (_, _, ok) = run_in(&root, &["remove", "deadbeef"]);
+    assert!(!ok, "no hay qué borrar");
+    assert_eq!(before, rev(&root, &format!("refs/bilink/{branch}")), "la ref no se movió");
+}
+
 
 fn commit(root: &Path, msg: &str) {
     for args in [vec!["add", "-A"], vec!["commit", "-qm", msg]] {

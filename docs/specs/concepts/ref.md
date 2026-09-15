@@ -2,7 +2,7 @@
 
 Ninguna rama del proyecto contiene `.bilink/`. Los bilinks viven en `refs/bilink/<branch>`, una ref por rama del proyecto: los de `rc-2.35` están en `refs/bilink/rc-2.35`.
 
-Es lo que todo comando que escribe sobre la ref tiene que cumplir —`init`, `sync`, `track`, `adopt`, `pull`, `relayer`, y también `accept` y `apply`, que commitean como parte de su acto—, y lo que `verify-ref` verifica desde afuera.
+Es lo que todo comando que escribe sobre la ref tiene que cumplir —`init`, `sync`, `track`, `adopt`, `pull`, `relayer`, y también `accept`, `apply` y `remove`, que commitean como parte de su acto—, y lo que `verify-ref` verifica desde afuera.
 
 ## Dónde vive
 
@@ -38,7 +38,7 @@ Nunca hay un commit que absorba y decida a la vez, y por eso la historia se lee 
 | Tipo | Padres | Árbol de código | `.bilink/` |
 |---|---|---|---|
 | 1 · absorción: trae el código del proyecto | dos: la ref y el commit del proyecto | cambia | sin tocar |
-| 2 · decisión: `accept`, `apply`, `relayer` | uno | sin cambios | cambia |
+| 2 · decisión: `accept`, `apply`, `relayer`, `remove` | uno | sin cambios | cambia |
 | 3 · sincronización: trae bilinks aceptados por otro | dos, los dos de la ref | sin cambios | cambia |
 
 Los tres se distinguen con git a secas, sin leer un bilink: por la cantidad de padres, de dónde vienen, y cuál de los dos árboles se movió.
@@ -177,6 +177,7 @@ track   <rama>                                  ← tipo 1: la ref nace
 accept  [--place|--content] <uuid>.<N>          ← tipo 2
 apply   <uuid>.<N> <capture-nuevo>              ← tipo 2
 relayer <capa>                                  ← tipo 2
+remove  <uuid>                                  ← tipo 2
 adopt   <rama>                                  ← tipo 3.a
 pull    <remoto>                                ← tipo 3.b
 ```
