@@ -1285,15 +1285,8 @@ Eliminar? [y/N] ");
                     bilinker::apply::Scan::Looked { fixes, unlooked } => (fixes, unlooked),
                 };
 
-            // Un endpoint acota los fixes a ese bilink, o a ese endpoint.
             if let Some(ref t) = target {
-                let (prefix, n) = match t.rsplit_once('.') {
-                    Some((u, "0")) => (u, Some(0u8)),
-                    Some((u, "1")) => (u, Some(1u8)),
-                    _ => (t.as_str(), None),
-                };
-                fixes.retain(|f| f.uuid.starts_with(prefix) && n.map_or(true, |n| f.n == n));
-                unlooked.retain(|u| u.uuid.starts_with(prefix) && n.map_or(true, |n| u.n == n));
+                retain_target(t, &mut fixes, &mut unlooked);
             }
 
             if let Some(ref state) = filter {
@@ -2172,6 +2165,22 @@ fn seal_apply(
         Some(_) => Ok(()),
         None => git_commit(root, paths, &message.render()).map(|_| ()),
     }
+}
+
+/// Acota los fixes de `apply`, y lo que no pudo mirar, a un bilink —`<uuid>`— o a
+/// un endpoint —`<uuid>.<N>`—. El uuid va entero o por prefijo.
+fn retain_target(
+    target: &str,
+    fixes: &mut Vec<bilinker::apply::PendingFix>,
+    unlooked: &mut Vec<bilinker::apply::Unlooked>,
+) {
+    let (prefix, n) = match target.rsplit_once('.') {
+        Some((u, "0")) => (u, Some(0u8)),
+        Some((u, "1")) => (u, Some(1u8)),
+        _ => (target, None),
+    };
+    fixes.retain(|f| f.uuid.starts_with(prefix) && n.map_or(true, |n| f.n == n));
+    unlooked.retain(|u| u.uuid.starts_with(prefix) && n.map_or(true, |n| u.n == n));
 }
 
 /// Lo que la persona tipeó, para el trailer `Invocation:`.
