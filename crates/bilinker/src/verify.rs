@@ -325,23 +325,28 @@ fn range(repo: &Repo, old: Option<&str>, new: &str) -> Result<Vec<String>> {
         Some(o) => format!("{o}..{new}"),
         None => new.to_string(),
     };
-    let out = repo.git(&["rev-list", "--reverse", "--first-parent", &spec])?;
-    let todos: Vec<String> = out.lines().map(str::to_string).collect();
-
-    // Sin `old`, `rev-list` se sale de la ref al llegar al corte y sigue por la
-    // historia del proyecto. El freno es el de siempre: los commits de la ref
-    // llevan `.bilink/` en su árbol y los del proyecto no.
-    if old.is_some() {
-        return Ok(todos);
+    // **Por todos los padres**, no sólo los primeros: un `adopt` o un `pull` trae
+    // commits de otra ref como segundo padre, y esa ref pudo no haberse empujado
+    // nunca. Lo que se queda afuera es la historia del proyecto que traen las
+    // absorciones, que no lleva `.bilink/`.
+    //
+    // Un commit de la ref nunca es alcanzable desde una rama del proyecto, así que
+    // lo que ellas alcanzan se descarta sin abrir su árbol. Lo que queda y no lleva
+    // `.bilink/` —un commit que un rebase abandonó— lo saca el filtro de abajo.
+    let mut args = vec!["rev-list".to_string(), "--reverse".into(), "--topo-order".into(), spec];
+    let ramas = repo.git(&["for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes"])?;
+    let ramas: Vec<&str> = ramas.lines().filter(|l| !l.is_empty()).collect();
+    if !ramas.is_empty() {
+        args.push("--not".into());
+        args.extend(ramas.iter().map(|r| r.to_string()));
     }
+    let out = repo.git(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
     let mut propios = Vec::new();
-    for c in todos.into_iter().rev() {
-        if !repo.tree_has_any_bilink(&c)? {
-            break;
+    for c in out.lines() {
+        if repo.tree_has_any_bilink(c)? {
+            propios.push(c.to_string());
         }
-        propios.push(c);
     }
-    propios.reverse();
     Ok(propios)
 }
 

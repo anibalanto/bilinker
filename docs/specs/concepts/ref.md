@@ -1123,6 +1123,10 @@ De cada commit:
 | a `agree` sólo se agrega el autor del commit | el diff de los dos `accepted` |
 | está firmado por una clave de la allowlist | `git verify-commit` |
 
+### El rango incluye lo que una sincronización trae
+
+`verify-ref` verifica los commits propios de la ref en el rango, y no sólo los que están sobre los primeros padres. Un `adopt` o un `pull` trae como segundo padre commits de otra ref, y esa ref pudo no haberse empujado nunca: una rama local que se adopta y después se empuja `main`. Si el recorrido siguiera sólo primeros padres, esos commits entrarían sin que nadie los mirara. Los del proyecto que una absorción trae no se verifican como commits de la ref: no llevan `.bilink/`.
+
 ### `agree` sólo se agrega a sí mismo
 
 Es la fila que convierte `agree` de atribución en atestación, y la que hace que no haga falta ningún mapeo de nombres a claves. La firma ata el commit a una clave de la allowlist, y con ella al autor que el commit declara; el hook exige que los nombres que ese commit agregó a algún `agree` sean exactamente el autor del commit. Sacar un nombre está permitido y no necesita ser el propio: lo que se protege es agregar.
