@@ -1684,11 +1684,39 @@ Eliminar? [y/N] ");
         }
 
         Command::Remove { uuid } => {
-            // `find_bilink_path` recibe la **capa** y le agrega `.bilink` sola.
-            let path = bilinker::accept::find_bilink_path(&cwd, &uuid)?;
-            std::fs::remove_file(&path)?;
-            let rel = path.strip_prefix(&cwd).unwrap_or(&path);
-            eprintln!("removed: {}", rel.display());
+            // `find_bilink_path` recibe la **capa** y le agrega `.bilink` sola. Si el
+            // archivo ya no está en el árbol, el borrado puede estar pendiente en la
+            // ref: se publica igual.
+            let (abs, in_tree) = match bilinker::accept::find_bilink_path(&cwd, &uuid) {
+                Ok(path) => (path, true),
+                Err(e) => match bilinker::bilink_ref::find_in_ref(&cwd, &uuid)? {
+                    Some((root, rel)) => (root.join(rel), false),
+                    None => return Err(e),
+                },
+            };
+            if in_tree {
+                std::fs::remove_file(&abs)?;
+            }
+            let shown = abs.strip_prefix(&cwd).unwrap_or(&abs);
+            let pending = if in_tree { "" } else { "  (ya no estaba en el árbol)" };
+            eprintln!("removed: {}{pending}", shown.display());
+
+            if let Ok(repo) = bilinker::bilink_ref::Repo::open(&cwd) {
+                let rel = abs.strip_prefix(&repo.root).unwrap_or(&abs).to_string_lossy().into_owned();
+                let full = abs.file_stem().and_then(|s| s.to_str()).unwrap_or(&uuid).to_string();
+                let message = bilinker::refmsg::RefMessage::new(
+                    bilinker::refmsg::RefCommand::Remove { uuid: full },
+                ).with_invocation(invocation());
+                if let Some(a) = bilinker::bilink_ref::absorb_act(&cwd)? {
+                    eprintln!("commit:  refs/bilink/… @ {}  (absorbe {})", short(&a.sha),
+                              short(a.absorbed.as_deref().unwrap_or("?")));
+                }
+                if let Some(c) = bilinker::bilink_ref::remove_act(&cwd, &rel, &message)? {
+                    if c.wrote {
+                        eprintln!("commit:  refs/bilink/… @ {}", short(&c.sha));
+                    }
+                }
+            }
             eprintln!("note: nodos adyacentes detectarán BROKEN en el próximo check");
         }
 
