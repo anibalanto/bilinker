@@ -1,0 +1,6 @@
+file: docs/specs/concepts/apply.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El vecindario, para lo cual recibe el puerto"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El mensaje de un fix de vecindario nombra el capture del fragmento"))) @target)
