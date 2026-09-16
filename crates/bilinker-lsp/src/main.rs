@@ -171,6 +171,7 @@ fn lang_from_file(file: &str) -> &'static str {
         Some("java")         => "java",
         Some("yaml" | "yml") => "yaml",
         Some("md")           => "markdown",
+        Some("feature")      => "gherkin",
         Some("ts" | "tsx")   => "typescript",
         Some("js" | "jsx")   => "javascript",
         Some("py")           => "python",
@@ -185,4 +186,15 @@ async fn main() -> Result<()> {
     let (service, socket) = LspService::new(|client| Arc::new(Backend { client }));
     Server::new(stdin, stdout, socket).serve(service).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El fence del hover dice `gherkin`, que es el nombre que resaltan los editores.
+    #[test]
+    fn feature_files_are_fenced_as_gherkin() {
+        assert_eq!(lang_from_file("documentacion/flujos/tableros.feature"), "gherkin");
+    }
 }
