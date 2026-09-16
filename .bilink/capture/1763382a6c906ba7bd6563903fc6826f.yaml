@@ -1,0 +1,6 @@
+file: docs/specs/concepts/check.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Qué necesita y qué no"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`--no-ask-n1` verifica lo que alcanzan git y tree-sitter, y dice lo que no confirmó"))) @target)
