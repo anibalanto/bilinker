@@ -1,0 +1,11 @@
+kind: governs
+endpoint:
+  0:
+    link: capture fee4cf6f9a787ce98e71c3982ed6d74c
+    accepted:
+    - agree:
+      - anibal
+      link: capture fee4cf6f9a787ce98e71c3982ed6d74c
+      hash: f93faaa375c1628a9370e5a7cefffbdcd2ddf1474855c2e707ab55ed8c8a5867
+  1:
+    link: capture db50ae9fc22378dbd236af788ecc1673

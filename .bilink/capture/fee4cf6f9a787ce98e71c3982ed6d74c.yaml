@@ -1,0 +1,6 @@
+file: docs/specs/concepts/check.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Los estados"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "La resolución de los nombres la confirma el daemon"))) @target)
