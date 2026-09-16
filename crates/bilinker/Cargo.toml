@@ -16,6 +16,9 @@ tree-sitter-java = "0.23"
 tree-sitter-rust = "0.24"
 tree-sitter-yaml = "0.7"
 tree-sitter-md = "0.5"
+# No está en crates.io. Fijada a un commit: una rama movería la gramática, y con ella
+# las queries de los captures que ya existen.
+tree-sitter-gherkin = { git = "https://github.com/binhtran432k/tree-sitter-gherkin", rev = "1a709aebeecbe81bd70dfd6ea784894844be1511" }
 sha2 = "0.10"
 hex = "0.4"
 anyhow = "1"
