@@ -11,62 +11,48 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bilinker::neighbours::{Location, Neighbours};
 
 pub struct Lspd;
 
 impl Neighbours for Lspd {
-    /// Los tipos que la firma menciona, un salto.
+    /// Si el daemon de esta capa contesta. **No lo levanta**: levantarlo y apagarlo es
+    /// de `lspd start --wait` y `lspd stop`, fuera de los comandos.
     ///
-    /// Devuelve `None` cuando no hay daemon y no se lo pudo levantar: **no pude
-    /// mirar**, que es distinto de *no hay vecinos*. Se pregunta con un `ping`, que
-    /// falla en el acto si el socket no está, y el arranque se intenta una sola vez por
-    /// corrida — por eso `check` sin daemon paga a lo sumo un arranque fallido, y no
-    /// uno por endpoint.
+    /// Cuando no contesta y hay otras puertas vivas, lo avisa: es lo que pasa cuando
+    /// `lspd` y `lspd-client` no calculan la misma.
+    fn available(&self, layer: &Path) -> bool {
+        if Real.responds(layer) { return true }
+        warn_about_foreign_doors(layer);
+        false
+    }
+
+    /// Los tipos que la firma menciona, un salto. **Contesta o falla.**
     ///
-    /// **Y también cuando el daemon está pero el servidor de atrás sigue indexando.**
-    /// Un `ping` contesta antes que el language server esté listo, así que "hay
-    /// daemon" no alcanza: en esa ventana `definitions` devolvía `[]`, que llega como
-    /// `Some(vec![])` —*"miré y ninguna de estas posiciones resuelve acá"*— y se
-    /// escribe como vecindario adquirido. Es una cobertura afirmada que no existe.
-    ///
-    /// La distinción no se puede hacer de este lado: un vacío legítimo llega igual, y
-    /// llega seguido —`Result<Checked>` pregunta por los dos y `Result` vive en otro
-    /// crate—. Así que la da el daemon con [`NOT_READY`](lspd_client::NOT_READY) y acá
-    /// sólo se traduce.
+    /// Un daemon que indexa se espera, lo haya levantado quien sea: un `ping` contesta
+    /// antes que el language server esté listo, y en esa ventana `definitions`
+    /// devolvía `[]`, que se escribiría como un vecindario adquirido. La distinción la
+    /// da el daemon con [`NOT_READY`](lspd_client::NOT_READY), y acá se espera.
     ///
     /// **Las posiciones son identificadores de tipo**, no el primer byte de un campo
-    /// de la firma. Es lo que hace que preguntar acá tenga sentido: sobre un `(` un
-    /// language server que resuelve perfecto devuelve la función que lo contiene.
-    /// **Y se le pregunta a la puerta de esta capa, no a "la" del sistema.**
-    ///
-    /// Medido el 2026-09-07: un `check` en la capa impl de worklist fallo con
-    /// `file not found` sobre un archivo que existe, porque el daemon vivo
-    /// estaba indexando otro proyecto. Un daemon ajeno **no contesta "no se":
-    /// contesta que el archivo no existe**, y eso llegaba como un error del
-    /// arbol.
-    ///
-    /// El arreglo de entonces fue deducir su workspace del `cwd` del pid —una
-    /// costura, y de Linux—. **Con una puerta por workspace no hace falta**: el
-    /// que contesta en mi puerta es el mio por construccion, y el chequeo se
-    /// borro. Ver `concepts/transport.md` de lspd.
-    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>> {
+    /// de la firma: sobre un `(` un language server que resuelve perfecto devuelve la
+    /// función que lo contiene. **Y se le pregunta a la puerta de esta capa**, que con
+    /// una puerta por workspace es la de su daemon por construcción.
+    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Vec<Location>> {
         of_with(&Real, &RUN, Pace::REAL, &mut std::io::stderr(), layer, file, at)
     }
 }
 
 /// Lo que el adaptador le pide al daemon.
 ///
-/// **Es un trait para que la política se pruebe sin socket**: cuándo se levanta,
-/// cuándo se espera y cuándo se deja de esperar son decisiones de este archivo, y la
-/// suite no puede depender de un `lspd` ni de un language server reales.
+/// **Es un trait para que la política se pruebe sin socket**: cuándo se espera y cuándo
+/// se deja de esperar son decisiones de este archivo, y la suite no puede depender de
+/// un `lspd` ni de un language server reales.
 trait Daemon {
     fn responds(&self, layer: &Path) -> bool;
-    fn spawn(&self, layer: &Path) -> Result<()>;
     fn definitions(&self, layer: &Path, abs: &str, line: usize, col: usize) -> Result<serde_json::Value>;
     fn status(&self, layer: &Path) -> Result<serde_json::Value>;
-    fn warn_about_foreign_doors(&self, layer: &Path);
     /// Antes de cada espera. Es donde el real se hace cargo de Ctrl-C.
     fn before_waiting(&self) {}
 }
@@ -76,7 +62,6 @@ struct Real;
 
 impl Daemon for Real {
     fn responds(&self, layer: &Path) -> bool { lspd_client::responds(layer) }
-    fn spawn(&self, layer: &Path) -> Result<()> { lspd_client::spawn(layer).map(|_| ()) }
     fn definitions(&self, layer: &Path, abs: &str, line: usize, col: usize) -> Result<serde_json::Value> {
         lspd_client::rpc(layer, "definitions", serde_json::json!({
             "file": abs, "line": line, "col": col,
@@ -85,23 +70,12 @@ impl Daemon for Real {
     fn status(&self, layer: &Path) -> Result<serde_json::Value> {
         lspd_client::rpc(layer, "status", serde_json::json!({}))
     }
-    fn warn_about_foreign_doors(&self, layer: &Path) { warn_about_foreign_doors(layer) }
     fn before_waiting(&self) { catch_interrupts(&RUN) }
 }
 
-/// Lo que esta corrida ya hizo con el daemon.
-///
-/// **Es estado de la corrida y no del endpoint**, por lo mismo que el aviso de
-/// puertas ajenas: `check` pregunta por treinta endpoints, y treinta arranques o
-/// treinta esperas no son lo que nadie pidió.
+/// Lo que esta corrida sabe de Ctrl-C.
 struct Run {
-    /// Ya se intentó levantar el daemon.
-    spawn_tried: AtomicBool,
-    /// Y arrancó: el daemon es de esta corrida, y lo que indexe se espera.
-    spawned:     AtomicBool,
-    /// Alguien apretó Ctrl-C en una espera: el resto de la corrida sigue sin vecindario.
-    gave_up:     AtomicBool,
-    /// Hay una espera en curso, y Ctrl-C la corta en vez de matar la corrida.
+    /// Hay una espera en curso, y Ctrl-C la corta en vez de matar el proceso.
     waiting:     AtomicBool,
     /// Llegó un Ctrl-C durante la espera.
     interrupted: AtomicBool,
@@ -109,13 +83,7 @@ struct Run {
 
 impl Run {
     const fn new() -> Self {
-        Run {
-            spawn_tried: AtomicBool::new(false),
-            spawned:     AtomicBool::new(false),
-            gave_up:     AtomicBool::new(false),
-            waiting:     AtomicBool::new(false),
-            interrupted: AtomicBool::new(false),
-        }
+        Run { waiting: AtomicBool::new(false), interrupted: AtomicBool::new(false) }
     }
 }
 
@@ -135,7 +103,7 @@ impl Pace {
     const REAL: Pace = Pace { every: Duration::from_secs(1), report_every: Duration::from_secs(15) };
 }
 
-/// El vecindario, con el daemon que hay, el que se levanta, o ninguno.
+/// El vecindario, con el daemon que hay.
 fn of_with(
     daemon: &dyn Daemon,
     run:    &Run,
@@ -144,9 +112,10 @@ fn of_with(
     layer:  &Path,
     file:   &str,
     at:     &[usize],
-) -> Result<Option<Vec<Location>>> {
-    if !ensure_daemon(daemon, run, layer) {
-        return Ok(None);
+) -> Result<Vec<Location>> {
+    // Se exigió antes de trabajar; si no contesta acá, se murió en el medio.
+    if !daemon.responds(layer) {
+        bail!("el daemon de lspd de esta capa dejó de contestar");
     }
 
     let abs = layer.join(file);
@@ -168,35 +137,30 @@ fn of_with(
         let val = loop {
             match daemon.definitions(layer, &abs, line, col) {
                 Ok(v) => break v,
-                // **Una posición sin resolver invalida el vecindario entero**, no
-                // sólo la suya: el fold es sobre el conjunto, y un conjunto al que le
-                // falta un miembro hashea distinto que el completo. Devolver lo que
-                // se alcanzó a juntar sería exactamente el vacío que este camino
-                // existe para no escribir.
-                Err(e) if not_ready(&e) => {
-                    // Un daemon que ya estaba vivo es de otra corrida: lo que indexa
-                    // no se espera, y su "todavía no" es `None`.
-                    if !run.spawned.load(Ordering::Relaxed) || run.gave_up.load(Ordering::Relaxed) {
-                        return Ok(None);
-                    }
-                    match wait_ready(daemon, run, pace, out, layer) {
-                        Waited::Ready { polled: true } => idle_retries = 0,
-                        // `status` no tenía nada que esperar: pudo quedar listo entre
-                        // las dos preguntas, así que se vuelve a preguntar una vez.
-                        // Dos seguidas no es una carrera, y dar vueltas no lo arregla.
-                        Waited::Ready { polled: false } => {
-                            idle_retries += 1;
-                            if idle_retries > 1 { return Ok(None) }
+                // **Una posición sin resolver invalida el vecindario entero**: el fold
+                // es sobre el conjunto, y devolver lo que se alcanzó a juntar sería un
+                // conjunto al que le falta un miembro.
+                Err(e) if not_ready(&e) => match wait_ready(daemon, run, pace, out, layer) {
+                    Waited::Ready { polled: true } => idle_retries = 0,
+                    // `status` no tenía nada que esperar: pudo quedar listo entre las
+                    // dos preguntas, así que se vuelve a preguntar una vez. Dos
+                    // seguidas no es una carrera, y dar vueltas no lo arregla.
+                    Waited::Ready { polled: false } => {
+                        idle_retries += 1;
+                        if idle_retries > 1 {
+                            bail!("el daemon contesta que no está listo y no tiene nada indexando");
                         }
-                        Waited::Interrupted | Waited::Gone => return Ok(None),
                     }
+                    Waited::Interrupted => bail!("espera cortada con Ctrl-C"),
+                    Waited::Gone => bail!("el daemon de lspd dejó de contestar mientras se esperaba"),
+                },
+                // **Una falla del daemon es una falla del comando.** Un language server
+                // que no está instalado, uno que se cayó y un lenguaje sin soporte son
+                // `-32000`, y leerlos como un vecindario vacío afirmaría uno que nadie
+                // miró.
+                Err(e) if failed(&e) => {
+                    return Err(e.context(format!("el language server no pudo resolver {file}")));
                 }
-                // **Una falla del daemon no es una falla de la corrida.** Un
-                // language server que no está instalado, uno que se cayó y un
-                // lenguaje sin soporte son `-32000`, y para quien pregunta son lo
-                // mismo que no haber podido mirar: quien decide qué escribir con
-                // eso es `accept`, con su regla, y `--no-n1` sigue sirviendo.
-                Err(e) if failed(&e) => return Ok(None),
                 Err(e) => return Err(e),
             }
         };
@@ -205,26 +169,7 @@ fn of_with(
             found.push(loc);
         }
     }
-    Ok(Some(found))
-}
-
-/// Si hay un daemon que contesta en la puerta de esta capa, levantándolo si hace
-/// falta.
-///
-/// **Se intenta una vez por corrida.** Si no arranca, es `None` como siempre: un
-/// daemon que no arranca es una falla de infraestructura, y no puede volverse un
-/// error de `check` ni de `accept`.
-///
-/// **Y el aviso de puertas ajenas sale sólo cuando igual degrada.** Antes de
-/// levantar sería ruido: si arranca, no hay desfasaje que explicar.
-fn ensure_daemon(daemon: &dyn Daemon, run: &Run, layer: &Path) -> bool {
-    if daemon.responds(layer) { return true }
-    if !run.spawn_tried.swap(true, Ordering::Relaxed) && daemon.spawn(layer).is_ok() {
-        run.spawned.store(true, Ordering::Relaxed);
-        return true;
-    }
-    daemon.warn_about_foreign_doors(layer);
-    false
+    Ok(found)
 }
 
 /// Cómo terminó una espera.
@@ -242,10 +187,10 @@ enum Waited {
 ///
 /// **Se espera todo lo que indexa, y no "el servidor de este archivo".** `status`
 /// nombra servidores, no lenguajes ni extensiones, y deducir cuál atiende un archivo
-/// sería copiar de este lado una tabla que es del daemon. Con un daemon levantado
-/// en esta corrida, lo que indexa lo arrancaron las preguntas de esta corrida.
+/// sería copiar de este lado una tabla que es del daemon.
 ///
-/// **No tiene techo de tiempo.** Lo que la corta es Ctrl-C.
+/// **No tiene techo de tiempo.** Lo que la corta es Ctrl-C, y cortarla corta el
+/// comando.
 fn wait_ready(
     daemon: &dyn Daemon,
     run:    &Run,
@@ -254,15 +199,11 @@ fn wait_ready(
     layer:  &Path,
 ) -> Waited {
     daemon.before_waiting();
-    // `interrupted` no se limpia acá: el handler sólo lo prende durante una espera,
-    // y una espera cortada deja `gave_up`, así que no hay una segunda.
+    // `interrupted` no se limpia acá: el handler sólo lo prende durante una espera, y
+    // una espera cortada corta el comando, así que no hay una segunda.
     run.waiting.store(true, Ordering::Relaxed);
     let waited = wait_ready_inner(daemon, run, pace, out, layer);
     run.waiting.store(false, Ordering::Relaxed);
-    if waited == Waited::Interrupted {
-        run.gave_up.store(true, Ordering::Relaxed);
-        let _ = writeln!(out, "  espera cortada: esta corrida sigue sin vecindario de tipos.");
-    }
     waited
 }
 
@@ -285,7 +226,7 @@ fn wait_ready_inner(
         if last_report.is_none_or(|t| t.elapsed() >= pace.report_every) {
             let _ = writeln!(out,
                 "… esperando a {} (INDEXING, {}) para el vecindario de tipos. \
-                 Ctrl-C sigue sin vecindario.",
+                 Ctrl-C corta el comando.",
                 pending.join(", "), elapsed(start.elapsed()));
             last_report = Some(Instant::now());
         }
@@ -316,9 +257,10 @@ fn elapsed(d: Duration) -> String {
 
 /// Se hace cargo de Ctrl-C, una vez por proceso.
 ///
-/// **Durante una espera, Ctrl-C la corta y la corrida sigue.** Fuera de una espera
-/// termina el proceso como terminaba antes, con 130. El handler se instala recién
-/// en la primera espera: una corrida que no espera no cambia en nada.
+/// **Durante una espera, Ctrl-C la corta, y el comando falla por su camino**: lo que
+/// ya verificó queda escrito, y sale con el código de un proveedor que no contestó.
+/// Fuera de una espera termina el proceso como siempre, con 130. El handler se
+/// instala recién en la primera espera: una corrida que no espera no cambia en nada.
 fn catch_interrupts(run: &'static Run) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -348,8 +290,8 @@ static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 ///
 /// Medido el 2026-09-08: el nombre de la puerta cambio en lspd, el commit quedo sin
 /// publicar, y `bilinker` —que toma `lspd-client` del remoto de git— siguio buscando
-/// el nombre viejo. Treinta endpoints degradaron a *no verificado* sin una linea que
-/// dijera por que. Ver `concepts/transport.md` de lspd.
+/// el nombre viejo, sin una linea que dijera por que. Ver `concepts/transport.md` de
+/// lspd.
 ///
 /// **Se pregunta con el mismo `ping`, no mirando procesos.** Un socket vivo contesta
 /// y uno stale falla en el acto; deducirlo del pid seria la costura de `/proc` que
@@ -377,8 +319,8 @@ fn warn_about_foreign_doors(layer: &Path) {
     eprintln!(
         "! el daemon de esta capa no contesta y hay {} puerta(s) viva(s) que este \
          cliente no calcula: {}\n  \
-         el nivel 1 va a degradar a no verificado. Si `lspd` y `lspd-client` no son \
-         de la misma version, la regla del nombre de la puerta los partio en dos.",
+         Si `lspd` y `lspd-client` no son de la misma version, la regla del nombre de \
+         la puerta los partio en dos.",
         foreign.len(),
         foreign.join(", "),
     );
@@ -462,7 +404,7 @@ mod tests {
         assert_eq!(byte_of(src, l, c), Some(byte));
     }
 
-    // ─── el daemon que falta, y la espera ────────────────────────────────────
+    // ─── el daemon que hay, y la espera ──────────────────────────────────────
 
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
@@ -474,20 +416,16 @@ mod tests {
     /// `answers` son las respuestas a `definitions`, en orden —un `Err` lleva el
     /// código—, y `statuses` las de `status`, donde la última se repite.
     struct Fake {
-        alive:        Cell<bool>,
-        spawn_ok:     bool,
-        spawns:       Cell<u32>,
-        foreign:      Cell<u32>,
+        alive:        bool,
         answers:      RefCell<VecDeque<std::result::Result<serde_json::Value, i32>>>,
         statuses:     RefCell<VecDeque<std::result::Result<serde_json::Value, ()>>>,
         status_calls: Cell<u32>,
     }
 
     impl Fake {
-        fn new(alive: bool, spawn_ok: bool) -> Self {
+        fn new(alive: bool) -> Self {
             Fake {
-                alive: Cell::new(alive), spawn_ok,
-                spawns: Cell::new(0), foreign: Cell::new(0),
+                alive,
                 answers: RefCell::new(VecDeque::new()),
                 statuses: RefCell::new(VecDeque::new()),
                 status_calls: Cell::new(0),
@@ -502,12 +440,7 @@ mod tests {
     }
 
     impl Daemon for Fake {
-        fn responds(&self, _: &Path) -> bool { self.alive.get() }
-        fn spawn(&self, _: &Path) -> Result<()> {
-            self.spawns.set(self.spawns.get() + 1);
-            if self.spawn_ok { self.alive.set(true); Ok(()) }
-            else { anyhow::bail!("no se pudo arrancar el daemon (lspd): not found") }
-        }
+        fn responds(&self, _: &Path) -> bool { self.alive }
         fn definitions(&self, _: &Path, _: &str, _: usize, _: usize) -> Result<serde_json::Value> {
             match self.answers.borrow_mut().pop_front().expect("una pregunta de más") {
                 Ok(v) => Ok(v),
@@ -520,7 +453,6 @@ mod tests {
             let next = if s.len() > 1 { s.pop_front().unwrap() } else { s.front().cloned().expect("sin status") };
             next.map_err(|_| anyhow::anyhow!("no hay daemon"))
         }
-        fn warn_about_foreign_doors(&self, _: &Path) { self.foreign.set(self.foreign.get() + 1) }
     }
 
     const NOW: Pace = Pace { every: Duration::ZERO, report_every: Duration::ZERO };
@@ -535,74 +467,44 @@ mod tests {
         serde_json::json!([{ "name": name, "state": state, "queries": 0 }])
     }
 
-    fn ask(fake: &Fake, run: &Run, out: &mut Vec<u8>, layer: &Path) -> Result<Option<Vec<Location>>> {
+    fn ask(fake: &Fake, run: &Run, out: &mut Vec<u8>, layer: &Path) -> Result<Vec<Location>> {
         of_with(fake, run, NOW, out, layer, "a.rs", &[10])
     }
 
-    /// **Un language server que no está instalado es `None`, no un error.** El
-    /// daemon contesta `-32000`, y para quien pregunta es lo mismo que no haber
-    /// podido mirar: `accept` decide qué escribir con su regla, y `--no-n1` sigue
-    /// sirviendo. Antes, el error subía y el comando moría antes de esa decisión.
+    /// **Un language server que no está instalado hace fallar el comando.** El daemon
+    /// contesta `-32000`, y leerlo como un vecindario vacío afirmaría uno que nadie miró.
     #[test]
-    fn a_language_server_that_is_not_installed_is_none() {
+    fn a_language_server_that_fails_fails_the_command() {
         let d = a_layer();
-        let fake = Fake::new(true, true).answering(vec![Err(lspd_client::FAILED)]);
+        let fake = Fake::new(true).answering(vec![Err(lspd_client::FAILED)]);
         let (run, mut out) = (Run::new(), Vec::new());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none(),
-                "una falla del daemon no puede ser un error de la corrida");
+        assert!(ask(&fake, &run, &mut out, d.path()).is_err());
     }
 
-    /// **Un daemon que no arranca es `None`, no un error**: el vecindario queda no
-    /// verificado y la corrida sigue. Y se intenta una vez por corrida, no una por
-    /// endpoint.
+    /// **Un daemon que no contesta no se levanta: es un error.** No hay `spawn` que
+    /// intentar.
     #[test]
-    fn a_daemon_that_does_not_start_is_none_and_is_tried_once() {
+    fn a_daemon_that_does_not_answer_is_not_raised() {
         let d = a_layer();
-        let (fake, run, mut out) = (Fake::new(false, false), Run::new(), Vec::new());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
-        assert_eq!(fake.spawns.get(), 1, "treinta endpoints no son treinta arranques");
-        assert_eq!(fake.foreign.get(), 2, "el aviso de puertas ajenas sigue donde degrada");
+        let (fake, run, mut out) = (Fake::new(false), Run::new(), Vec::new());
+        let e = ask(&fake, &run, &mut out, d.path()).unwrap_err();
+        assert!(e.to_string().contains("dejó de contestar"), "{e}");
     }
 
     #[test]
-    fn a_daemon_that_does_not_answer_is_raised_and_asked() {
+    fn a_live_daemon_is_asked() {
         let d = a_layer();
-        let fake = Fake::new(false, true).answering(vec![Ok(serde_json::json!([]))]);
+        let fake = Fake::new(true).answering(vec![Ok(serde_json::json!([]))]);
         let (run, mut out) = (Run::new(), Vec::new());
-        assert_eq!(ask(&fake, &run, &mut out, d.path()).unwrap(), Some(vec![]));
-        assert_eq!(fake.spawns.get(), 1);
-        assert_eq!(fake.foreign.get(), 0, "no degradó: no hay nada que avisar");
+        assert_eq!(ask(&fake, &run, &mut out, d.path()).unwrap(), vec![]);
     }
 
+    /// **Un daemon que indexa se espera, lo haya levantado quien sea**: `status` hasta
+    /// `READY`, y se vuelve a preguntar. Y mientras, se dice qué se espera.
     #[test]
-    fn a_live_daemon_is_not_raised() {
+    fn an_indexing_daemon_is_waited_whoever_raised_it() {
         let d = a_layer();
-        let fake = Fake::new(true, true).answering(vec![Ok(serde_json::json!([]))]);
-        let (run, mut out) = (Run::new(), Vec::new());
-        assert_eq!(ask(&fake, &run, &mut out, d.path()).unwrap(), Some(vec![]));
-        assert_eq!(fake.spawns.get(), 0);
-    }
-
-    /// Un daemon que ya estaba vivo es de otra corrida: su `-32001` no se espera.
-    #[test]
-    fn not_ready_from_a_daemon_that_was_already_alive_is_none_without_waiting() {
-        let d = a_layer();
-        let fake = Fake::new(true, true)
-            .answering(vec![Err(lspd_client::NOT_READY)])
-            .with_status(vec![Ok(server("rust-analyzer", "INDEXING"))]);
-        let (run, mut out) = (Run::new(), Vec::new());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
-        assert_eq!(fake.status_calls.get(), 0);
-        assert!(out.is_empty());
-    }
-
-    /// El que levantó esta corrida sí se espera: `status` hasta `READY`, y se vuelve
-    /// a preguntar. Y mientras, se dice qué se espera.
-    #[test]
-    fn not_ready_after_raising_waits_for_ready_and_asks_again() {
-        let d = a_layer();
-        let fake = Fake::new(false, true)
+        let fake = Fake::new(true)
             .answering(vec![Err(lspd_client::NOT_READY), Ok(serde_json::json!([]))])
             .with_status(vec![
                 Ok(server("rust-analyzer", "INDEXING")),
@@ -610,50 +512,48 @@ mod tests {
                 Ok(server("rust-analyzer", "READY")),
             ]);
         let (run, mut out) = (Run::new(), Vec::new());
-        assert_eq!(ask(&fake, &run, &mut out, d.path()).unwrap(), Some(vec![]));
+        assert_eq!(ask(&fake, &run, &mut out, d.path()).unwrap(), vec![]);
         assert_eq!(fake.status_calls.get(), 3);
         let said = String::from_utf8(out).unwrap();
         assert!(said.contains("rust-analyzer"), "qué servidor:\n{said}");
         assert!(said.contains("INDEXING"), "en qué estado:\n{said}");
         assert!(said.contains("0s"), "cuánto va:\n{said}");
-        assert!(said.contains("Ctrl-C"), "cómo se sigue sin vecindario:\n{said}");
+        assert!(said.contains("Ctrl-C corta el comando"), "qué hace Ctrl-C:\n{said}");
     }
 
-    /// Ctrl-C corta la espera, da `None`, y la corrida sigue sin volver a esperar.
+    /// **Ctrl-C durante la espera corta el comando**: no sigue sin vecindario.
     #[test]
-    fn ctrl_c_ends_the_wait_with_none_and_the_run_goes_on() {
+    fn ctrl_c_during_the_wait_fails_the_command() {
         let d = a_layer();
-        let fake = Fake::new(false, true)
-            .answering(vec![Err(lspd_client::NOT_READY), Err(lspd_client::NOT_READY)])
+        let fake = Fake::new(true)
+            .answering(vec![Err(lspd_client::NOT_READY)])
             .with_status(vec![Ok(server("rust-analyzer", "INDEXING"))]);
         let (run, mut out) = (Run::new(), Vec::new());
         run.interrupted.store(true, Ordering::Relaxed);
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
-        let polls = fake.status_calls.get();
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
-        assert_eq!(fake.status_calls.get(), polls, "después de Ctrl-C no se vuelve a esperar");
+        let e = ask(&fake, &run, &mut out, d.path()).unwrap_err();
+        assert!(e.to_string().contains("Ctrl-C"), "{e}");
     }
 
     #[test]
-    fn a_daemon_that_dies_while_waiting_is_none() {
+    fn a_daemon_that_dies_while_waiting_fails() {
         let d = a_layer();
-        let fake = Fake::new(false, true)
+        let fake = Fake::new(true)
             .answering(vec![Err(lspd_client::NOT_READY)])
             .with_status(vec![Err(())]);
         let (run, mut out) = (Run::new(), Vec::new());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
+        assert!(ask(&fake, &run, &mut out, d.path()).is_err());
     }
 
     /// Si `status` no tiene nada que esperar y la pregunta insiste en `-32001`, no se
-    /// queda dando vueltas: una vez se vuelve a preguntar, dos es `None`.
+    /// queda dando vueltas: una vez se vuelve a preguntar, dos es una falla.
     #[test]
     fn not_ready_with_nothing_to_wait_for_does_not_spin() {
         let d = a_layer();
-        let fake = Fake::new(false, true)
+        let fake = Fake::new(true)
             .answering(vec![Err(lspd_client::NOT_READY), Err(lspd_client::NOT_READY)])
             .with_status(vec![Ok(server("rust-analyzer", "READY"))]);
         let (run, mut out) = (Run::new(), Vec::new());
-        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none());
+        assert!(ask(&fake, &run, &mut out, d.path()).is_err());
     }
 
     /// Sólo `INDEXING` se espera: `RUNNING` no informa readiness, y no hay a qué.

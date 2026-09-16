@@ -65,13 +65,13 @@ pub enum EndpointState {
     ContractRestyled,
     /// Un vecino cambió: el contrato se movió. Es el caso que motivó todo esto.
     ContractAltered,
-    /// Hay vecindario aceptado y **nadie pudo resolver el de hoy**.
+    /// Todo lo que git y tree-sitter pueden mirar está `Ok`, y **nadie preguntó** si
+    /// los nombres de la firma siguen resolviendo a los vecinos aceptados.
     ///
-    /// No es que el valor difiera: es que no hay con qué compararlo. Por eso es de la
-    /// familia de `LayerUnreachable` y `RemoteUnreachable` —*no pude ver el otro
-    /// lado*— y **no sale con 1**: correr `check` sin daemon es un modo de operación
-    /// normal, no un repo en mal estado.
-    ContractUnverified,
+    /// Sale sólo cuando se pidió no preguntar, así que no es una falla del ambiente
+    /// sino una verificación que se declaró parcial: **no sale con 1**. Y no es un
+    /// `Contract*`: el contrato no se movió en nada de lo que se miró.
+    OkN1Unconfirmed,
     /// Sólo endpoint `path`: la capa apuntada no existe todavía.
     Todo,
     /// Sólo endpoint `path`: el vecino fue re-aceptado.
@@ -141,14 +141,8 @@ pub enum EndpointState {
     /// `link` del nivel es `unknown`.
     ///
     /// No es `ContractRelocated` —eso es que los dos conjuntos están y difieren, y
-    /// acá no hay con qué diferir— ni `ContractUnverified`, que es *no hubo con
-    /// quién*. **Y no es limpio**: hay captures que alguien tiene que acuñar, así que
-    /// sale con 1 por lo mismo que `Pending`.
-    ///
-    /// Los dos empiezan con `UN` y ahí se parecen: `ContractUnverified` es una
-    /// ausencia **del ambiente**, que se arregla prendiendo un daemon y puede no
-    /// arreglarse nunca sin que nadie haya hecho nada mal; ésta es una ausencia **en
-    /// el archivo**, puesta por algo que ya pasó.
+    /// acá no hay con qué diferir—. **Y no es limpio**: hay captures que alguien tiene
+    /// que acuñar, así que sale con 1 por lo mismo que `Pending`.
     ///
     /// **No necesita proveedor**, que es lo que lo vuelve la respuesta correcta
     /// justamente cuando no hay ninguno: comparar ids nunca lo necesitó. Es lo que
@@ -172,12 +166,18 @@ impl EndpointState {
     pub fn is_clean(&self) -> bool {
         matches!(self, Self::Ok | Self::Expanded | Self::Restyled | Self::Open
                      | Self::Todo | Self::LayerUnreachable | Self::RemoteUnreachable
-                     | Self::ContractUnverified)
+                     | Self::OkN1Unconfirmed)
+    }
+
+    /// Se imprime por endpoint. `OkN1Unconfirmed` no: sale en cada endpoint con nivel 1
+    /// cuando se pidió no preguntar, y se cuenta en el resumen.
+    pub fn is_listed(&self) -> bool {
+        !matches!(self, Self::Ok | Self::OkN1Unconfirmed)
     }
 
     /// El estado es del eje del **vecindario** y no del fragmento.
     pub fn is_contract(&self) -> bool {
-        matches!(self, Self::ContractRestyled | Self::ContractAltered | Self::ContractUnverified
+        matches!(self, Self::ContractRestyled | Self::ContractAltered
                      | Self::ContractRelocated | Self::ContractUnlocated)
     }
 
@@ -223,7 +223,7 @@ state_str!(EndpointState,
     Unresolved => "UNRESOLVED",
     ContractRestyled   => "CONTRACT_RESTYLED",
     ContractAltered    => "CONTRACT_ALTERED",
-    ContractUnverified => "CONTRACT_UNVERIFIED",
+    OkN1Unconfirmed    => "OK_N1_UNCONFIRMED",
     ContractUnlocated  => "CONTRACT_UNLOCATED",
     Todo       => "TODO",
     ChainDirty => "CHAIN_DIRTY",
@@ -257,7 +257,8 @@ mod tests {
                   Altered, Unresolved, Todo, ChainDirty, Broken,
                   LayerUnreachable, LayerUnconfigured, RemoteUnreachable,
                   Rejected, Open,
-                  ContractRestyled, ContractAltered, ContractUnverified] {
+                  ContractRestyled, ContractAltered, OkN1Unconfirmed,
+                  ContractRelocated, ContractUnlocated, ConsensusDiverged] {
             assert_eq!(s.to_string().parse::<EndpointState>().unwrap(), s);
         }
         use CaptureState as C;
@@ -266,12 +267,14 @@ mod tests {
         }
     }
 
-    /// `CONTRACT_UNVERIFIED` no hace fallar: no es que el valor difiera, es que no
-    /// hay con qué compararlo. Correr `check` sin daemon es normal.
+    /// `OK_N1_UNCONFIRMED` no hace fallar ni se lista: se pidió no preguntar.
     #[test]
-    fn not_being_able_to_look_is_not_a_failure() {
-        assert!(EndpointState::ContractUnverified.is_clean());
-        assert!(!EndpointState::ContractUnverified.is_ok());
+    fn not_asking_is_clean_and_not_listed() {
+        let s = EndpointState::OkN1Unconfirmed;
+        assert!(s.is_clean());
+        assert!(!s.is_ok());
+        assert!(!s.is_listed());
+        assert!(!s.is_contract(), "el contrato no se movió en nada de lo que se miró");
         assert!(!EndpointState::ContractAltered.is_clean(), "el contrato movido sí falla");
         assert!(!EndpointState::ContractRestyled.is_clean());
     }

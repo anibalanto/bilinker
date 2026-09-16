@@ -76,6 +76,9 @@ enum Command {
         /// Path a un .bilink o a una capa. Default: capa actual.
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// No le pregunta al daemon por el nivel 1: lo que no confirma es OK_N1_UNCONFIRMED
+        #[arg(long = "no-ask-n1")]
+        no_ask_n1: bool,
     },
 
     /// Watch for changes in linked files and alert on drift
@@ -93,6 +96,9 @@ enum Command {
         /// Only apply fixes of this state (e.g. --filter MOVED)
         #[arg(long, value_name = "ESTADO")]
         filter: Option<String>,
+        /// No le pregunta al daemon: arregla lo que resuelve git y cuenta los vecindarios que no miró
+        #[arg(long = "no-ask-n1")]
+        no_ask_n1: bool,
     },
 
     /// Migra los metadatos de bilinker al formato actual
@@ -159,11 +165,14 @@ enum Command {
         /// Aprueba sólo el contenido: escribe accepted.hash
         #[arg(long)]
         content: bool,
-        /// Renuncia al vecindario entero, del nivel 1 para arriba: escribe n1: declined
-        #[arg(long = "no-n1")]
-        no_n1: bool,
-        /// Sólo con --no-n1, y sólo donde éste baja una cobertura que ya estaba
-        #[arg(long, requires = "no_n1")]
+        /// No le pregunta al daemon: conserva el nivel 1 que se puede conservar, y falla donde no
+        #[arg(long = "no-ask-n1")]
+        no_ask_n1: bool,
+        /// Renuncia al vecindario entero, del nivel 1 para arriba: escribe n: declined
+        #[arg(long = "decline-n1")]
+        decline_n1: bool,
+        /// Sólo con --decline-n1, y sólo donde éste baja un nivel 1 adquirido
+        #[arg(long, requires = "decline_n1")]
         force: bool,
     },
 
@@ -1199,14 +1208,20 @@ Eliminar? [y/N] ");
             eprintln!("\nrevisar con `bilinker get {target}` y aceptar con `bilinker accept {target}`");
         }
 
-        Command::Check { path } => {
+        Command::Check { path, no_ask_n1 } => {
             let root = project_root(&cwd)?;
             let check_path = if path.is_absolute() { path } else { cwd.join(path) };
-            let checked = match bilinker::check::check_with(
-                &root, &check_path, Some(&lspd_neighbours::Lspd),
-            ) {
+            let nb: bilinker::neighbours::Provider<'_> =
+                if no_ask_n1 { None } else { Some(&lspd_neighbours::Lspd) };
+            let checked = match bilinker::check::check_with(&root, &check_path, nb) {
                 Ok(c)  => c,
                 Err(e) => {
+                    // **Sin daemon, o con uno que falla, sale con 2**, como con una
+                    // versión que no se entiende: no terminó de verificar.
+                    if bilinker::neighbours::is_provider_error(&e) {
+                        report_provider_error(&e, "check .");
+                        std::process::exit(2);
+                    }
                     // **Una versión que no se entiende sale con 2, no con 1.** No es
                     // lo mismo *"hay endpoints no-OK"* que *"no leí nada"*: un CI que
                     // trata cualquier no-cero igual no nota la diferencia, y uno que
@@ -1223,8 +1238,11 @@ Eliminar? [y/N] ");
             // Se imprime todo lo que no está OK; solo falla lo que no tiene auto-fix.
             let mut exit_code = 0;
             let mut shown     = 0;
+            let mut unconfirmed = 0usize;
             for r in &checked.results {
-                if !r.all_ok() {
+                unconfirmed += [r.state0, r.state1].iter()
+                    .filter(|s| **s == bilinker::state::EndpointState::OkN1Unconfirmed).count();
+                if r.state0.is_listed() || r.state1.is_listed() {
                     shown += 1;
                     println!("{}  ({}, {})", &r.uuid[..8], r.state0, r.state1);
                 }
@@ -1257,6 +1275,13 @@ Eliminar? [y/N] ");
                 (_, u) => eprintln!("\n{} bilink(s) verificados — {u} ilegible(s)",
                                     checked.results.len()),
             }
+            // **Lo que no se confirmó se cuenta, no se lista**: con `--no-ask-n1` sale en
+            // cada endpoint con nivel 1, y una línea por cada uno taparía el trabajo.
+            if unconfirmed > 0 {
+                eprintln!("{unconfirmed} endpoint(s) OK_N1_UNCONFIRMED: el nivel 1 no se confirmó (--no-ask-n1).");
+                eprintln!("  Confirmarlos:  {} && bilinker check .", lspd_start(&checked.n1));
+                eprintln!("  Listarlos:     bilinker status | grep OK_N1_UNCONFIRMED");
+            }
             std::process::exit(exit_code);
         }
 
@@ -1265,15 +1290,28 @@ Eliminar? [y/N] ");
             watch(&root)?;
         }
 
-        Command::Apply { target, dry_run, yes, filter } => {
+        Command::Apply { target, dry_run, yes, filter, no_ask_n1 } => {
             let root   = project_root(&cwd)?;
-            // **`apply` recibe el puerto.** Sin proveedor arregla lo del fragmento con
-            // git y no toca el vecindario: descubrir qué tipos menciona la firma hoy
-            // es lo único que un language server puede contestar.
+            // **`apply` recibe el puerto.** Sin preguntar arregla lo que resuelve git y
+            // cuenta los vecindarios que no miró; preguntando, el daemon tiene que
+            // estar, y sin él sale con 4, antes de proponer nada: su 2 ya dice *"no
+            // hay nada que arreglar"*.
+            let nb: bilinker::neighbours::Provider<'_> =
+                if no_ask_n1 { None } else { Some(&lspd_neighbours::Lspd) };
             // **El paso 0 sale acá**: una capa fría no da una lista de fixes vacía, da
             // otra cosa, y por eso `Scan` es un enum y no un `Vec` con un flag al lado.
-            let (mut fixes, mut unlooked) =
-                match bilinker::apply::scan_fixeable(&cwd, Some(&lspd_neighbours::Lspd))? {
+            let scanned = bilinker::neighbours::require(nb, &cwd, bilinker::apply::demand(&cwd))
+                .and_then(|()| bilinker::apply::scan_fixeable(&cwd, nb));
+            let scanned = match scanned {
+                Ok(s) => s,
+                Err(e) if bilinker::neighbours::is_provider_error(&e) => {
+                    report_provider_error(&e, "apply");
+                    std::process::exit(4);
+                }
+                Err(e) => return Err(e),
+            };
+            let (mut fixes, mut unlooked, unasked) =
+                match scanned {
                     bilinker::apply::Scan::Cold { bilinks } => {
                         eprintln!("error: la capa no tiene estado calculado — {bilinks} bilinks sin mirar.");
                         eprintln!("  El vecindario se pregunta desde el rango del fragmento, y ese rango");
@@ -1282,7 +1320,7 @@ Eliminar? [y/N] ");
                         eprintln!("  Correr primero:  bilinker check .");
                         std::process::exit(3);
                     }
-                    bilinker::apply::Scan::Looked { fixes, unlooked } => (fixes, unlooked),
+                    bilinker::apply::Scan::Looked { fixes, unlooked, unasked } => (fixes, unlooked, unasked),
                 };
 
             if let Some(ref t) = target {
@@ -1302,6 +1340,11 @@ Eliminar? [y/N] ");
                 for u in &unlooked {
                     eprintln!("  {}…  link.{}  {}", u.short(), u.n, u.why);
                 }
+                eprintln!();
+            }
+            if unasked > 0 {
+                eprintln!("Sin preguntar: {unasked} vecindario(s) — --no-ask-n1. Mirarlos: {} && bilinker apply",
+                          lspd_start(&bilinker::apply::demand(&cwd)));
                 eprintln!();
             }
 
@@ -1625,7 +1668,7 @@ Eliminar? [y/N] ");
             }
         },
 
-        Command::Accept { target, place, content, no_n1, force } => {
+        Command::Accept { target, place, content, no_ask_n1, decline_n1, force } => {
             // Dispatch: uuid.N  |  uuid (both endpoints)  |  path / "."
             let is_uuid_n = (target.ends_with(".0") || target.ends_with(".1"))
                 && target[..target.len()-2].chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -1634,7 +1677,7 @@ Eliminar? [y/N] ");
 
             // Qué dimensiones aprueba. Sin flags, las dos.
             let what = bilinker::accept::What {
-                no_n1, force,
+                decline_n1, force,
                 ..match (place, content) {
                     (true, false) => bilinker::accept::What::place_only(),
                     (false, true) => bilinker::accept::What::content_only(),
@@ -1642,13 +1685,30 @@ Eliminar? [y/N] ");
                 }
             };
 
+            let nb: bilinker::neighbours::Provider<'_> =
+                if no_ask_n1 { None } else { Some(&lspd_neighbours::Lspd) };
+
+            // **Sin daemon falla antes de aceptar nada**, sobre todo lo que se va a
+            // aceptar: a medio camino quedarían commits de unos y errores de otros.
+            let targets: Vec<(String, u8)> = if is_uuid_n {
+                vec![parse_accept_target(&target)?]
+            } else if is_path {
+                bilinker::accept::pending(&cwd)
+            } else {
+                vec![(target.clone(), 0), (target.clone(), 1)]
+            };
+            if let Err(e) = bilinker::neighbours::require(nb, &cwd, bilinker::accept::demand(&cwd, &targets, what)) {
+                report_provider_error(&e, &format!("accept {target}"));
+                std::process::exit(1);
+            }
+
             // **Un commit por aceptación, no por invocación.** Cada endpoint aprobado
             // cierra con el suyo, y la absorción que los precede a todos la escribe
             // el primer `seal`: la granularidad sigue al objeto, así que un
             // `accept .` de veinte endpoints deja veinte decisiones auditables una
             // por una en vez de una que las disimula a todas.
             let accept_one = |uuid: &str, n: u8| -> anyhow::Result<()> {
-                let r = bilinker::accept::accept(&cwd, uuid, n, what, Some(&lspd_neighbours::Lspd))?;
+                let r = bilinker::accept::accept(&cwd, uuid, n, what, nb)?;
                 print_accept_result(&r);
                 if !r.wrote {
                     return Ok(());
@@ -1666,7 +1726,6 @@ Eliminar? [y/N] ");
                 // Bulk: all PENDING under path filter
                 let filter = if target == "." { None } else { Some(target.trim_end_matches('/')) };
                 let _ = filter;
-                let targets = bilinker::accept::pending(&cwd);
                 if targets.is_empty() {
                     eprintln!("nothing to accept");
                 } else {
@@ -1674,6 +1733,12 @@ Eliminar? [y/N] ");
                     for (uuid, n) in &targets {
                         match accept_one(uuid, *n) {
                             Ok(())  => count += 1,
+                            // Un daemon que falla, o una espera cortada, corta el comando:
+                            // no sigue aceptando sin vecindario.
+                            Err(e) if bilinker::neighbours::is_provider_error(&e) => {
+                                eprintln!("accepted {count} endpoint(s)");
+                                return Err(e);
+                            }
                             Err(e) => eprintln!("warn  {}.{n}: {e}", &uuid[..8.min(uuid.len())]),
                         }
                     }
@@ -1685,6 +1750,7 @@ Eliminar? [y/N] ");
                 for n in [0u8, 1u8] {
                     match accept_one(&target, n) {
                         Ok(())  => count += 1,
+                        Err(e) if bilinker::neighbours::is_provider_error(&e) => return Err(e),
                         Err(e) => eprintln!("warn .{n}: {e}"),
                     }
                 }
@@ -2604,6 +2670,30 @@ fn print_verify(r: &bilinker::verify::Report) {
         }
     }
     println!("\n{rechazados} de {} rechazados", r.verdicts.len());
+}
+
+/// El error de un comando al que le faltó el daemon, o al que el daemon le falló.
+///
+/// Sin daemon nombra las dos salidas, con los lenguajes que hacen falta.
+fn report_provider_error(e: &anyhow::Error, command: &str) {
+    match e.downcast_ref::<bilinker::neighbours::NoProvider>() {
+        Some(np) => {
+            eprintln!("error: {np}");
+            eprintln!("  Levantarlo:       {}", lspd_start(&np.0));
+            eprintln!("  Sin confirmarlo:  bilinker {command} --no-ask-n1");
+        }
+        None => eprintln!("error: {e:#}"),
+    }
+}
+
+/// `lspd start --wait`, con los lenguajes que hacen falta.
+fn lspd_start(demand: &bilinker::neighbours::Demand) -> String {
+    let mut s = String::from("lspd start --wait");
+    for lang in &demand.languages {
+        s.push_str(" --lang ");
+        s.push_str(lang);
+    }
+    s
 }
 
 /// El estado de la capa, agrupado por archivo.
