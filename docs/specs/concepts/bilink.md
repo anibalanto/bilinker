@@ -107,7 +107,7 @@ Y si los valores que se aceptan coinciden con los de una entrada existente, no h
 
 Si una entrada está escrita, se aceptó entera. No hay endoso parcial de una entrada, y por eso un `agree` adentro de `n.1` no nombra nada.
 
-Y no hay cómo aceptar a medias. Con firma resoluble y sin proveedor, `accept` se niega: no tenés el mapa completo del vecindario, así que no hay nada que aprobar. La única alternativa es declararlo con `--no-n1`, que es renunciar y no abstenerse. No existe el camino *"apruebo la firma y el vecindario no lo miré"*.
+Y no hay cómo aceptar a medias. Con firma resoluble y sin nivel 1 que conservar, `accept` sin daemon se niega: no tenés el mapa completo del vecindario, así que no hay nada que aprobar. La única alternativa es declararlo con `--decline-n1`, que es renunciar y no abstenerse. No existe el camino *"apruebo la firma y el vecindario no lo miré"*.
 
 Lo que sí existe es que dos personas aprueben el mismo fragmento y vecindarios distintos, y eso ya tiene forma: son dos entradas.
 
@@ -398,7 +398,7 @@ Un endpoint puede desalinearse en dos dimensiones —dónde está y qué dice—
 | `CONTRACT_ALTERED` | Un vecino cambió: el contrato se movió | revisar + `bilinker accept` |
 | `CONTRACT_RELOCATED` | El conjunto de vecinos declarado ≠ el aceptado | revisar + `bilinker accept` |
 | `CONTRACT_UNLOCATED` | El contrato está y su ubicación es `unknown` | acuñar sus captures + `accept` |
-| `CONTRACT_UNVERIFIED` | Hay `n` adquirido y nadie pudo resolver el vecindario | levantar el proveedor · o nada |
+| `OK_N1_UNCONFIRMED` | Todo `OK`, y la resolución de los nombres de la firma no se preguntó: `--no-ask-n1` | `check` con el daemon |
 
 Los `CONTRACT_*` son de un eje aparte: no hablan del fragmento sino de los tipos que su firma menciona ([accept.md](accept.md)). Llevan prefijo por eso: `ALTERED` y `CONTRACT_ALTERED` no son grados de lo mismo, son dos preguntas.
 
