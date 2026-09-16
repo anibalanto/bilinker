@@ -1,0 +1,6 @@
+file: docs/specs/concepts/graph.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La cadena"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Un tip de varias partes lleva la declaración que nombra su capture"))) @target)
