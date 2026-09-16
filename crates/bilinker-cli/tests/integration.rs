@@ -6345,3 +6345,38 @@ fn check_on_a_path_that_does_not_exist_is_an_error() {
     assert_ne!(code, 0);
     assert!(stderr.contains("docs/spek.md"), "{stderr}");
 }
+
+// ─── Gherkin ───────────────────────────────────────────────────────────────
+
+/// Un escenario de un `.feature` en español se ata entero, y cambiarle un paso es
+/// `ALTERED`: los pasos son texto, y no hay `hash_ast` que lo llame formato.
+#[test]
+fn changing_a_step_of_a_gherkin_scenario_is_altered() {
+    let (_t, root) = isolated_git_workspace();
+    let feature = "\
+# language: es
+Característica: Tableros
+
+  Escenario: ver las inscripciones
+    Dado un usuario con permiso LEER_JURISDICCION
+    Entonces ve la cantidad de alumnos inscriptos
+";
+    fs::write(root.join("docs/tableros.feature"), feature).unwrap();
+    commit(&root, "un escenario");
+
+    let (_, err, ok) = run_in(&root, &["chain", "new", "--tip", "docs/tableros.feature:5:5", "--tip", "src/Service.java:2:5"]);
+    assert!(ok, "chain new falló sobre un .feature:\n{err}");
+    run_in(&root, &["check", "."]);
+    run_in(&root, &["accept", "--decline-n1", "."]);
+    let uuid = sole_uuid(&root);
+    let bl = fs::read_to_string(root.join(format!(".bilink/{uuid}.yaml"))).unwrap();
+    assert_eq!(bl.matches("hash_ast").count(), 1, "sólo el lado Java lleva hash_ast:\n{bl}");
+
+    fs::write(root.join("docs/tableros.feature"),
+              feature.replace("ve la cantidad de", "ve el total de")).unwrap();
+    commit(&root, "otro paso");
+
+    let states = check_states(&root);
+    assert!(states.contains("ALTERED") && !states.contains("RESTYLED"),
+            "cambiar un paso no dio ALTERED:\n{states}");
+}
