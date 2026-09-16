@@ -257,11 +257,11 @@ Los dos salen con 1, así que la elección no cambia el inventario: cambia qué 
 
 ### `RESTYLED` sólo existe donde el AST discrimina contenido
 
-En prosa el AST no lleva el texto: el s-expression de una sección markdown es el mismo con cualquier párrafo adentro. Comparar ahí diría *"sólo formato"* de una reescritura entera, que es exactamente el estado que invita a aceptar sin leer.
+En prosa el AST no lleva el texto: el s-expression de una sección markdown es el mismo con cualquier párrafo adentro. Un paso de Gherkin es prosa del mismo modo: su árbol es la palabra clave y un texto libre. Comparar ahí diría *"sólo formato"* de una reescritura entera, que es exactamente el estado que invita a aceptar sin leer.
 
-Así que la pregunta la decide la gramática, no el archivo: en markdown y texto plano `accept` no escribe `hash_ast` y `check` no lo compara. Los dos consultan la gramática antes que `accepted`, así que un `hash_ast` guardado por una versión anterior queda inerte en vez de mentir, y `accept` tampoco lo arrastra hacia adelante.
+Así que la pregunta la decide la gramática, no el archivo: en markdown, Gherkin y texto plano `accept` no escribe `hash_ast` y `check` no lo compara. Los dos consultan la gramática antes que `accepted`, así que un `hash_ast` guardado por una versión anterior queda inerte en vez de mentir, y `accept` tampoco lo arrastra hacia adelante.
 
-La lista de lenguajes donde el AST discrimina es la de [capture.md](capture.md), "Lenguajes soportados", menos markdown.
+La lista de lenguajes donde el AST discrimina es la de [capture.md](capture.md), "Lenguajes soportados", menos markdown y Gherkin.
 
 ### `hash_ast` cubre los tokens, no sólo la forma del árbol
 

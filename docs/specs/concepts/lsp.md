@@ -29,6 +29,10 @@ Ninguna más.
 
 Para la posición del cursor, los endpoints cuyo capture la cubre, con su uuid, el estado que la cache ya dice y el fragmento del otro extremo. Un estado ausente se muestra ausente.
 
+### El fragmento del otro extremo lleva el lenguaje de su archivo
+
+`hover` muestra el fragmento en un bloque de código cuyo lenguaje sale de la extensión, con el nombre que resaltan los editores: `.rs` es `rust`, `.java` es `java`, `.yaml` y `.yml` son `yaml`, `.md` es `markdown`, `.feature` es `gherkin`, `.ts` y `.tsx` son `typescript`, `.js` y `.jsx` son `javascript`, y `.py` es `python`. Una extensión que no está en la lista va sin lenguaje.
+
 ### `codeLens` emite una lente completa por línea, sin resolver
 
 `codeLens` no resuelve: `resolve_provider` es falso, y la lente se emite completa. Resolver perezosamente serviría si construirla fuera caro, y no lo es: sale del mismo escaneo que ya se hizo.

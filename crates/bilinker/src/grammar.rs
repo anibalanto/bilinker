@@ -7,6 +7,7 @@ pub fn language_for_file(file: &str) -> &'static str {
         Some("rs")           => "rust",
         Some("yaml" | "yml") => "yaml",
         Some("md")           => "markdown",
+        Some("feature")      => "gherkin",
         Some("ts" | "js")    => "typescript",
         Some("tsx" | "jsx")  => "tsx",
         _                    => "text",
@@ -19,9 +20,10 @@ pub fn for_language(lang: &str) -> Result<Language> {
         "rust"     => Ok(tree_sitter_rust::LANGUAGE.into()),
         "yaml"     => Ok(tree_sitter_yaml::LANGUAGE.into()),
         "markdown"   => Ok(tree_sitter_md::LANGUAGE.into()),
+        "gherkin"    => Ok(tree_sitter_gherkin::LANGUAGE.into()),
         "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "tsx"        => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        other        => bail!("unsupported language: '{other}' (supported: java, rust, yaml, markdown, typescript, tsx)"),
+        other        => bail!("unsupported language: '{other}' (supported: java, rust, yaml, markdown, gherkin, typescript, tsx)"),
     }
 }
 
@@ -33,9 +35,10 @@ pub fn for_language(lang: &str) -> Result<Language> {
 /// que `hash_ast` no distingue nada.
 ///
 /// Donde devuelve `false` no se calcula `hash_ast`, y entonces `RESTYLED` no existe
-/// y todo cambio de texto es `ALTERED` — que en prosa es lo correcto.
+/// y todo cambio de texto es `ALTERED` — que en prosa es lo correcto. Un paso de
+/// Gherkin es prosa: su árbol es la palabra clave y un `step_context` sin texto.
 pub fn ast_discriminates_content(lang: &str) -> bool {
-    !matches!(lang, "markdown" | "text")
+    !matches!(lang, "markdown" | "gherkin" | "text")
 }
 
 /// Cómo llama esta gramática al campo que lleva **el cuerpo** de una declaración.
@@ -89,6 +92,14 @@ pub fn stable_anchor_kinds(lang: &str) -> &'static [&'static str] {
             // ella, capturar una fila obliga a un rango de bytes dentro de la
             // sección, que se corre con cualquier fila agregada más arriba.
             "pipe_table_row",
+        ],
+        // Cada uno se identifica por su título. `scenario_definition` y no `scenario`:
+        // las etiquetas cuelgan del primero, y son parte de lo que el escenario dice.
+        // Un `Esquema del escenario` es un `scenario` con otra línea de título.
+        "gherkin" => &[
+            "feature",
+            "rule",
+            "scenario_definition",
         ],
         "typescript" | "tsx" => &[
             "class_declaration",
@@ -242,5 +253,22 @@ mod ast_tests {
         for lang in ["rust", "java", "typescript", "tsx", "yaml"] {
             assert!(ast_discriminates_content(lang), "{lang} debería discriminar");
         }
+    }
+}
+
+#[cfg(test)]
+mod gherkin_tests {
+    use super::*;
+
+    #[test]
+    fn feature_files_are_gherkin() {
+        assert_eq!(language_for_file("documentacion/flujos/tableros.feature"), "gherkin");
+        assert!(for_language("gherkin").is_ok());
+    }
+
+    /// Los pasos son texto: cambiarlos es ALTERED, nunca RESTYLED.
+    #[test]
+    fn gherkin_does_not_get_an_ast_hash() {
+        assert!(!ast_discriminates_content("gherkin"));
     }
 }
