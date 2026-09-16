@@ -29,6 +29,10 @@ $ bilinker get src/main/java/ar/example/demo/persona/Persona.java:11:5
 
 Si no hay bilinks que cubran esa posición, retorna lista vacía (código 0).
 
+### Un endpoint sin rango en la cache no se descarta en silencio
+
+Sin rango no se puede decir si cubre la posición. `get` no lo lista, y dice por stderr cuántos endpoints del archivo no tienen rango y que hay que correr `bilinker check .`: una lista vacía con ese aviso no afirma que nada cubra la posición.
+
 ## Forma 2: endpoint → contenido del fragmento referenciado
 
 ### `get <UUID>.<N>` devuelve el texto del fragmento que el endpoint referencia
@@ -247,6 +251,19 @@ $ bilinker get src/main/java/ar/example/demo/persona/Persona.java
 ```
 
 Si no hay bilinks que referencien ese archivo, retorna lista vacía (código 0).
+
+### Con la cache fría, lista igual los endpoints del archivo
+
+Qué endpoints referencian un archivo lo dicen los bilinks y sus captures, no la cache: la cache sólo aporta el rango. Un endpoint sin rango en la cache, como uno aceptado después del último `check`, sale en la lista con `sin rango` en lugar de los bytes, y stderr dice que hay que correr `bilinker check .`.
+
+```
+$ bilinker get src/lib.rs
+
+4d6f25b7-118b-41a5-9e9b-fb54ce894cff.1  capture db95cb9cf71e45dec3b8a3159ca7424c  sin rango
+790d32a2-7815-496e-ba60-3a932cf60c1b.1  capture 277c72f4cd0f27e63e22f93dce9c0ab5  bytes 0~11
+hay endpoints sin rango: la cache no los tiene.
+  Correr `bilinker check .` para calcularlos.
+```
 
 ## Cuando el capture no resuelve
 
