@@ -10,4 +10,10 @@ endpoint:
     name: regla
   1:
     link: capture 0a2e61e6f1442b5ff0e2903a7e9ae49b
+    accepted:
+    - agree:
+      - anibal
+      link: capture 0a2e61e6f1442b5ff0e2903a7e9ae49b
+      hash: f6cc1cba4688dcc5038f21561e90c5128f9bf5abea321b9a2abbff763fd58a2c
+      hash_ast: fce40d5d69886354e933ee8c90f2247cc602f478b75b5b0e9a5c0f0536a03d57
     name: código
