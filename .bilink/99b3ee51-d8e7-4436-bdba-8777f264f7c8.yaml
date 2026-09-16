@@ -9,3 +9,8 @@ endpoint:
       hash: ed5d05d267caee4e43229436ff1902fed9afd591e1cea36e7d9c6767a49fcbb5
   1:
     link: capture 431c45db658b084d133d857a62ff9f40
+    accepted:
+    - agree:
+      - anibal
+      link: capture 431c45db658b084d133d857a62ff9f40
+      hash: c84261c785a24b146873037d9ae0d5c6e6741ba076cbbe511a75b5d8ebbde33e
