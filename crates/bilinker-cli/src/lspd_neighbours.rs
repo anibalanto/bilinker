@@ -191,6 +191,12 @@ fn of_with(
                         Waited::Interrupted | Waited::Gone => return Ok(None),
                     }
                 }
+                // **Una falla del daemon no es una falla de la corrida.** Un
+                // language server que no está instalado, uno que se cayó y un
+                // lenguaje sin soporte son `-32000`, y para quien pregunta son lo
+                // mismo que no haber podido mirar: quien decide qué escribir con
+                // eso es `accept`, con su regla, y `--no-n1` sigue sirviendo.
+                Err(e) if failed(&e) => return Ok(None),
                 Err(e) => return Err(e),
             }
         };
@@ -386,6 +392,12 @@ fn not_ready(e: &anyhow::Error) -> bool {
     e.downcast_ref::<lspd_client::RpcError>().is_some_and(|r| r.is_not_ready())
 }
 
+/// Si es el daemon diciendo que esa pregunta no se puede contestar: el language
+/// server falló, no está instalado, o el lenguaje no tiene soporte.
+fn failed(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<lspd_client::RpcError>().is_some_and(|r| r.is_failure())
+}
+
 /// Una definición del daemon, traducida a la forma que bilinker foldea.
 ///
 /// Se descarta lo que cae fuera de la capa: el vecindario de un contrato son los
@@ -525,6 +537,19 @@ mod tests {
 
     fn ask(fake: &Fake, run: &Run, out: &mut Vec<u8>, layer: &Path) -> Result<Option<Vec<Location>>> {
         of_with(fake, run, NOW, out, layer, "a.rs", &[10])
+    }
+
+    /// **Un language server que no está instalado es `None`, no un error.** El
+    /// daemon contesta `-32000`, y para quien pregunta es lo mismo que no haber
+    /// podido mirar: `accept` decide qué escribir con su regla, y `--no-n1` sigue
+    /// sirviendo. Antes, el error subía y el comando moría antes de esa decisión.
+    #[test]
+    fn a_language_server_that_is_not_installed_is_none() {
+        let d = a_layer();
+        let fake = Fake::new(true, true).answering(vec![Err(lspd_client::FAILED)]);
+        let (run, mut out) = (Run::new(), Vec::new());
+        assert!(ask(&fake, &run, &mut out, d.path()).unwrap().is_none(),
+                "una falla del daemon no puede ser un error de la corrida");
     }
 
     /// **Un daemon que no arranca es `None`, no un error**: el vecindario queda no
