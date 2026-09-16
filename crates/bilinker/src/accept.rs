@@ -21,19 +21,20 @@ pub struct What {
     pub place:   bool,
     pub content: bool,
     /// Aceptar renunciando al [vecindario](crate::neighbours): escribe
-    /// `n1: declined` en vez de los folds.
+    /// `n: declined` en vez de los niveles, sin preguntarle a nadie.
     ///
     /// Está acá y no en un parámetro aparte porque **el vecindario es una tercera
     /// dimensión** y se comporta como las otras dos: se aprueba, o no se toca.
     ///
     /// **Renuncia del nivel 1 para arriba, no al nivel 1.** El día que exista un
     /// nivel 2 —los campos de los tipos que el 1 resuelve— queda adentro de esta
-    /// misma renuncia, porque está definido a través del 1. No va a haber un
-    /// `no_n2`: el nombre marca dónde empieza lo que pide un language server.
-    pub no_n1:   bool,
-    /// Sólo junto a `no_n1`, y sólo donde éste **baja** una cobertura que ya estaba.
+    /// misma renuncia, porque está definido a través del 1.
     ///
-    /// Escalonado a propósito: `--no-n1` en una persona se tipea una vez, en un CI
+    /// No preguntar es otra cosa, y no va acá: es aceptar sin proveedor.
+    pub decline_n1: bool,
+    /// Sólo junto a `decline_n1`, y sólo donde éste **baja** un nivel 1 adquirido.
+    ///
+    /// Escalonado a propósito: la renuncia en una persona se tipea una vez, en un CI
     /// se escribe una vez y queda para siempre. Sin el escalón, esa línea de
     /// configuración sería una autorización permanente a bajar cobertura.
     pub force:   bool,
@@ -41,7 +42,7 @@ pub struct What {
 
 impl Default for What {
     /// Por defecto se aprueban las dos.
-    fn default() -> Self { Self { place: true, content: true, no_n1: false, force: false } }
+    fn default() -> Self { Self { place: true, content: true, decline_n1: false, force: false } }
 }
 
 impl What {
@@ -59,6 +60,31 @@ pub struct AcceptResult {
     /// `false` cuando el archivo quedó igual: los mismos valores y quien acepta ya
     /// estaba en el set. No hay nada que agregar, y no hay commit que escribir.
     pub wrote: bool,
+}
+
+/// Cuántos de estos endpoints tienen nivel 1 que preguntar si se aceptan así.
+///
+/// Es lo que se exige antes de trabajar: los que alcanzan una firma con tipos, cuando
+/// se aprueba el contenido y no se renuncia. Un endpoint que no se puede leer o no
+/// resuelve no cuenta: `accept` lo va a rechazar por su cuenta, y con su mensaje.
+pub fn demand(layer: &Path, targets: &[(String, u8)], what: What) -> crate::neighbours::Demand {
+    let mut d = crate::neighbours::Demand::default();
+    if !what.content || what.decline_n1 { return d }
+    let cache = Cache::load(layer);
+    for (uuid, n) in targets {
+        let Ok(path) = find_bilink_path(layer, uuid) else { continue };
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        let e = bl.endpoint.get(*n);
+        let Some(id) = e.link.capture_id() else { continue };
+        let Ok(cap) = Capture::load_in(layer, id) else { continue };
+        let full = path.file_stem().and_then(|s| s.to_str()).unwrap_or(uuid);
+        let Ok((_, Some(range))) = crate::check::resolve_capture(
+            layer, &cap, e.accepted.first(), cache.commit(full, *n)) else { continue };
+        if matches!(crate::neighbours::reach(layer, &cap.file, &range), crate::neighbours::Reach::At(_)) {
+            d.add(&cap.file);
+        }
+    }
+    d
 }
 
 /// Acepta un endpoint.
@@ -159,11 +185,11 @@ fn signer(layer: &Path) -> Result<String> {
     )
 }
 
-/// **Una falla de infraestructura no puede reducir la cobertura de un vínculo.**
+/// **No preguntar no puede reducir la cobertura de un vínculo, ni afirmar una que
+/// nadie miró.**
 ///
-/// Ver `concepts/accept.md` § "Cuándo se adquiere el vecindario" para las siete
-/// combinaciones. Las dos que fallan son las únicas que `--no-n1` destraba, y la
-/// única que *baja* algo pide además `--force`.
+/// Ver `concepts/accept.md` § "El `n` previo tiene tres valores". `folded` es lo que
+/// contestó el proveedor; `None` con firma alcanzable es que no se le preguntó.
 fn resolve_n1(
     cap: &Capture,
     alcance: &crate::neighbours::Reach,
@@ -176,12 +202,6 @@ fn resolve_n1(
     let preserve = || previous.and_then(|a| a.n.clone());
     if !what.content {
         return Ok(preserve());
-    }
-
-    // Se resolvió: se escribe el vecindario entero, y una renuncia anterior se
-    // levanta. Los dos folds ya no se pueden mezclar — viven en el mismo objeto.
-    if let Some(f) = folded {
-        return Ok(Some(N::of_level_1(f.clone())));
     }
 
     // **Qué se puede saber del vecindario se contesta con la gramática, no con el
@@ -197,79 +217,78 @@ fn resolve_n1(
         // hubiera. Escribir ausencia acá le daría a la ausencia un segundo
         // significado que ningún lector puede separar del primero.
         Reach::Unreachable { what: que } => {
-            if what.no_n1 { return Ok(Some(N::declined())); }
+            if what.decline_n1 { return Ok(Some(N::declined())); }
             bail!(
                 "el fragmento de {} {que}, y su vecindario no se puede alcanzar: el \
                  nivel 1 sale de una firma, y ahí no hay una que sea la suya.\n       \
-                 Capturar el contrato con --as, o renunciar al vecindario con --no-n1.",
+                 Capturar el contrato con --as, o renunciar al vecindario con --decline-n1.",
                 cap.file);
         }
 
         Reach::At(_) => {}
     }
 
-    // **Una renuncia escrita es una decisión, y se lee de vuelta.**
-    //
-    // Antes acá había un booleano —"había adquirido"— y un `declined` previo caía en
-    // el mismo casillero que no tener nada, así que se volvía a pedir `--no-n1` en
-    // cada `accept`. Eso convierte la renuncia en una tecla que se tipea siempre, y
-    // un pedido que sale siempre no lo lee nadie: es la misma razón por la que el
-    // aviso no sale sobre prosa ni sobre un DTO, un nivel más adentro.
-    //
-    // No encierra a nadie, y por eso es seguro: el `if let Some(f) = folded` de más
-    // arriba levanta la renuncia sola en cuanto hay proveedor. Subir cobertura es
-    // automático; bajarla sigue pidiendo que se declare.
+    // **Una renuncia escrita es una decisión, y se lee de vuelta.** Un `declined`
+    // previo no cae en el mismo casillero que no tener nada: si cayera, la renuncia
+    // habría que tipearla en cada `accept`, y un pedido que sale siempre no lo lee
+    // nadie.
     let had = match previous.and_then(|a| a.n.as_ref()) {
         None                       => Had::Nothing,
         Some(n) if n.is_acquired() => Had::Acquired,
         Some(_)                    => Had::Declined,
     };
 
-    // **El conjunto de vecinos lo determina la firma, y la firma está en el
-    // fragmento.** Con el capture de contrato el `hash` *es* el de la firma, así que
-    // un `hash` quieto es el mismo conjunto. Sobre un capture que arrastra el cuerpo
-    // esto sobre-dispara —un refactor adentro cuenta como cambio— y erra hacia
-    // pedir que alguien mire, que es el lado correcto para errar.
-    let signature_changed = previous.map(|p| p.hash != content_hash).unwrap_or(true);
+    // Renunciar es una decisión, y bajar un nivel adquirido se pide entero.
+    if what.decline_n1 {
+        return match (had, what.force) {
+            (Had::Acquired, false) => bail!(
+                "--decline-n1 acá baja un vecindario que ya estaba aceptado.\n       \
+                 Conservarlo: aceptar sin --decline-n1. Bajarlo a propósito: --decline-n1 --force."),
+            _ => Ok(Some(N::declined())),
+        };
+    }
 
-    match (had, what.no_n1, what.force, signature_changed) {
-        // No había vecindario que preservar: aceptar así lo deja sin vigilar, y el
+    // Se preguntó: se escribe el vecindario entero, y una renuncia anterior se levanta.
+    if let Some(f) = folded {
+        return Ok(Some(N::of_level_1(f.clone())));
+    }
+
+    // ── sin preguntar ─────────────────────────────────────────────────────────
+    //
+    // **Los nombres del conjunto los pone la firma, y la firma está en el fragmento.**
+    // Con el capture de contrato el `hash` *es* el de la firma, así que un `hash`
+    // quieto no agregó ni sacó nombres. Sobre un capture que arrastra el cuerpo esto
+    // sobre-dispara —un refactor adentro cuenta como cambio— y erra hacia pedir que
+    // alguien mire, que es el lado correcto para errar.
+    let signature_changed = previous.map(|p| p.hash != content_hash).unwrap_or(true);
+    let lang = crate::grammar::language_for_file(&cap.file);
+
+    match (had, signature_changed) {
+        // No había vecindario que conservar: aceptar así lo deja sin vigilar, y el
         // baseline no lo diría.
-        (Had::Nothing, true, _, _) => Ok(Some(N::declined())),
-        (Had::Nothing, false, _, _) => bail!(
-            "no hay proveedor de vecindario, y la firma de {} lo tiene.\n       \
+        (Had::Nothing, _) => bail!(
+            "la firma de {} tiene nivel 1, y --no-ask-n1 no le pregunta a nadie.\n       \
              Aceptar así deja los tipos que la firma menciona sin vigilar, y el \
              baseline no lo diría.\n       \
-             Levantar lspd, o aceptar sin el nivel 1 con --no-n1.", cap.file),
+             Levantar el daemon con `lspd start --wait --lang {lang}`, o renunciar al \
+             nivel 1 con --decline-n1.", cap.file),
 
-        // **Ya se decidió, y sin proveedor no hay con qué revisar la decisión.**
-        // Preservar acá es lo mismo que preservar un adquirido cuya firma no se
-        // movió, y por el mismo motivo. Que la firma haya cambiado no la vuelve
-        // falsa: una renuncia no es sobre un conjunto de vecinos, es sobre si se
-        // vigilan.
-        //
-        // Con `--no-n1` da idéntico —escribir la renuncia sobre una renuncia—, así
-        // que el flag no cambia nada y no hace falta pedirlo.
-        (Had::Declined, _, _, _) => Ok(preserve()),
+        // Una renuncia no es sobre un conjunto de vecinos, es sobre si se vigilan: que
+        // la firma haya cambiado no la vuelve falsa.
+        (Had::Declined, _) => Ok(preserve()),
 
-        // Había, y la firma no se movió: es el mismo conjunto de vecinos. Preservar
-        // es estrictamente más seguro que borrar — si alguno cambió con el proveedor
-        // caído, el valor viejo sigue ahí y el próximo cierre lo reporta.
-        (Had::Acquired, false, _, false) => Ok(preserve()),
+        // Había, y la firma no se movió. Conservar es más seguro que borrar: si algún
+        // vecino cambió, el valor viejo sigue ahí y el próximo `check` lo reporta.
+        (Had::Acquired, false) => Ok(preserve()),
 
-        // Había y la firma cambió: preservar sería mentir, porque el conjunto pudo
+        // Había y la firma cambió: conservar sería mentir, porque el conjunto pudo
         // cambiar con ella.
-        (Had::Acquired, false, _, true) => bail!(
+        (Had::Acquired, true) => bail!(
             "ya hay un vecindario aceptado, y la firma cambió.\n       \
-             Preservarlo mentiría: el conjunto de vecinos pudo cambiar con la firma, \
-             y sin proveedor no hay con qué reemplazarlo.\n       \
-             Levantar lspd, o bajarlo a propósito con --no-n1 --force."),
-
-        // Bajarlo es una decisión, y se pide entera.
-        (Had::Acquired, true, true, _) => Ok(Some(N::declined())),
-        (Had::Acquired, true, false, _) => bail!(
-            "--no-n1 acá baja un vecindario que ya estaba aceptado.\n       \
-             Levantar lspd para conservarlo, o bajarlo a propósito con --no-n1 --force."),
+             Conservarlo mentiría: el conjunto de vecinos pudo cambiar con la firma, y \
+             --no-ask-n1 no le pregunta a nadie.\n       \
+             Levantar el daemon con `lspd start --wait --lang {lang}`, o bajarlo a \
+             propósito con --decline-n1 --force."),
     }
 }
 
@@ -333,10 +352,19 @@ fn compute(
             // que se llegue**. Las posiciones las pone la gramática: preguntar donde
             // arranca el fragmento devuelve `pub`, que no declara nada.
             let alcance = crate::neighbours::reach(layer, &cap.file, &range);
-            let resuelto = match (what.content, nb, &alcance) {
-                (true, Some(p), crate::neighbours::Reach::At(at)) => p.of(layer, &cap.file, at)?
-                    .map(|locs| crate::neighbours::fold(layer, &locs))
-                    .transpose()?,
+            let preguntar = what.content && !what.decline_n1;
+            let resuelto = match (preguntar, nb, &alcance) {
+                (true, Some(p), crate::neighbours::Reach::At(at)) => {
+                    let locs = crate::neighbours::ask(p, layer, &cap.file, at)?;
+                    // Escribirlo sin el vecino que no se puede capturar afirmaría un
+                    // conjunto que no es el de la firma.
+                    let Some(f) = crate::neighbours::fold(layer, &locs)? else {
+                        bail!("el vecindario de {} no se puede representar: algún tipo que la \
+                               firma menciona no se puede capturar.\n       \
+                               Renunciar al nivel 1 con --decline-n1.", cap.file);
+                    };
+                    Some(f)
+                }
                 _ => None,
             };
 
@@ -350,7 +378,6 @@ fn compute(
             // Que `accept` acuñe captures es nuevo —era de `apply` y de `chain new`—
             // y no rompe el reparto: el conjunto es de **sólo-agregar**, y lo que
             // sigue siendo exclusivo de `accept` es escribir `accepted`.
-            let resuelto = resuelto.flatten();
             if let Some(f) = &resuelto {
                 for c in &f.captures { c.write_in(layer)?; }
             }
@@ -385,8 +412,8 @@ fn compute(
                 },
                 // **Un campo con tres estados**, y qué se escribe lo decide
                 // `resolve_n1`: adquirido, `declined`, o ausente porque el fragmento
-                // no tiene firma resoluble. La regla que las gobierna es que una
-                // falla del proveedor nunca baja la cobertura.
+                // no tiene firma resoluble. La regla que las gobierna es que no
+                // preguntar nunca baja la cobertura.
                 n: neighbourhood,
             };
 
@@ -496,8 +523,9 @@ pub fn pending(layer: &Path) -> Vec<(String, u8)> {
             // saltearla acá es lo que evita que un bulk la convierta en otra cosa.
             if bl.endpoint.get(n).link.is_abstract() { continue; }
 
+            // `OK_N1_UNCONFIRMED` no pide ninguna decisión: se pidió no preguntar.
             let needs = match cache.endpoint_state(uuid, n) {
-                Some(s) => !s.is_ok(),
+                Some(s) => s.is_listed(),
                 None    => bl.endpoint.get(n).accepted.is_empty(),
             };
             if needs { out.push((uuid.to_string(), n)); }
@@ -563,11 +591,11 @@ pub fn find_bilink_path(layer: &Path, prefix: &str) -> Result<std::path::PathBuf
     }
 }
 
-/// Las cinco filas de `concepts/accept.md` § "Cuándo se adquiere el vecindario",
-/// más las dos que el corte por gramática deja afuera.
+/// La tabla de `concepts/accept.md` § "El `n` previo tiene tres valores", y las dos
+/// renuncias.
 ///
-/// La regla que las gobierna a todas: **una falla de infraestructura no puede
-/// reducir la cobertura de un vínculo.**
+/// La regla que las gobierna: **no preguntar no puede reducir la cobertura de un
+/// vínculo, ni afirmar una que nadie miró.**
 #[cfg(test)]
 mod n1_tests {
     use super::*;
@@ -602,6 +630,12 @@ mod n1_tests {
         }
     }
 
+    fn declinado(hash: &str) -> Accepted {
+        let mut p = previo(hash, None);
+        p.n = Some(N::declined());
+        p
+    }
+
     fn folded() -> Option<Neighbourhood> {
         Some(Neighbourhood { link: Default::default(), hash: "nuevo".into(), hash_ast: Some("nuevo_ast".into()) })
     }
@@ -611,129 +645,80 @@ mod n1_tests {
         o.as_ref().and_then(|n| n.level(1)).map(|n| n.hash.as_str())
     }
 
-    /// Fila 1 — no había, se resolvió: se calcula y se escribe.
+    fn decline() -> What { What { decline_n1: true, ..What::default() } }
+
+    /// Preguntado, se escribe lo calculado, sea cual sea el previo: una renuncia
+    /// anterior se levanta sola.
     #[test]
-    fn row_1_resolved_without_a_previous_one_is_written() {
+    fn asked_it_writes_what_was_computed_over_anything() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let o = resolve_n1(&cap, &r, None, &folded(), What::default(), "h").unwrap();
-        assert_eq!(adquirido(&o), Some("nuevo"));
-        assert_eq!(o.as_ref().map(|n| n.is_acquired()).unwrap_or(false), true);
+        for p in [None, Some(declinado("h")), Some(previo("h", Some("viejo")))] {
+            let o = resolve_n1(&cap, &r, p.as_ref(), &folded(), What::default(), "h").unwrap();
+            assert_eq!(adquirido(&o), Some("nuevo"));
+        }
     }
 
-    /// Fila 2 — no había y no se pudo mirar: **no se escribe nada**.
-    ///
-    /// Es la fila que vuelve imposible el baseline mudo: hoy esto salía `all clean`.
+    /// Sin preguntar y sin nada que conservar, **no se escribe nada**, y el error
+    /// nombra las dos salidas.
     #[test]
-    fn row_2_nothing_to_lose_and_no_provider_refuses() {
+    fn not_asked_with_nothing_to_keep_refuses() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let e = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap_err();
-        assert!(e.to_string().contains("--no-n1"), "el error tiene que dar la salida: {e}");
+        let e = resolve_n1(&cap, &r, None, &None, What::default(), "h").unwrap_err().to_string();
+        assert!(e.contains("lspd start --wait --lang java"), "{e}");
+        assert!(e.contains("--decline-n1"), "{e}");
     }
 
-    /// Y `--no-n1` la destraba, dejándolo **escrito**.
+    /// Sin preguntar, una renuncia escrita se conserva, aunque la firma haya cambiado.
     #[test]
-    fn row_2_declines_explicitly_and_leaves_it_written() {
+    fn not_asked_a_written_decline_is_kept() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let what = What { no_n1: true, ..What::default() };
-        let o = resolve_n1(&cap, &r, None, &None, what, "h").unwrap();
-        assert_eq!(o, Some(N::declined()), "la renuncia se escribe, no se omite");
+        for hash in ["h", "otro"] {
+            let o = resolve_n1(&cap, &r, Some(&declinado(hash)), &None, What::default(), "h").unwrap();
+            assert_eq!(o, Some(N::declined()));
+        }
     }
 
-    /// Fila 3 — había y se resolvió: se recalcula, y una renuncia anterior se levanta.
+    /// Sin preguntar, un adquirido con la firma intacta se conserva.
     #[test]
-    fn row_3_resolving_again_lifts_a_previous_decline() {
+    fn not_asked_an_acquired_level_with_the_same_signature_is_kept() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let mut p = previo("h", None);
-        p.n = Some(N::declined());
-        let o = resolve_n1(&cap, &r, Some(&p), &folded(), What::default(), "h").unwrap();
-        assert_eq!(adquirido(&o), Some("nuevo"), "volver a tener proveedor recupera la cobertura");
+        let o = resolve_n1(&cap, &r, Some(&previo("h", Some("viejo"))), &None, What::default(), "h").unwrap();
+        assert_eq!(adquirido(&o), Some("viejo"));
     }
 
-    /// **La renuncia escrita se preserva sin volver a pedir `--no-n1`.**
-    ///
-    /// Es lo que la vuelve una decisión que se toma una vez. Antes caía en el mismo
-    /// casillero que "no hay nada" y abortaba, así que el flag había que tipearlo en
-    /// cada `accept` — y un pedido que sale siempre no lo lee nadie.
+    /// Sin preguntar, un adquirido con la firma cambiada no se conserva: el conjunto
+    /// pudo cambiar con ella.
     #[test]
-    fn a_written_decline_is_not_asked_for_again() {
+    fn not_asked_an_acquired_level_with_a_changed_signature_refuses() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let mut p = previo("h", None);
-        p.n = Some(N::declined());
-        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
-        assert_eq!(o, Some(N::declined()), "la decisión ya estaba tomada y escrita");
+        let e = resolve_n1(&cap, &r, Some(&previo("viejo_hash", Some("viejo"))), &None, What::default(), "otro")
+            .unwrap_err().to_string();
+        assert!(e.contains("--decline-n1 --force"), "{e}");
     }
 
-    /// Y tampoco cuando la firma cambió.
-    ///
-    /// La fila que aborta sobre un vecindario **adquirido** no tiene gemela acá: una
-    /// renuncia no es sobre un conjunto de vecinos, así que un conjunto que pudo
-    /// cambiar no la vuelve falsa.
+    /// `--decline-n1` escribe la renuncia, sin preguntar.
     #[test]
-    fn a_written_decline_survives_the_signature_changing() {
+    fn declining_writes_it() {
         let (_d, cap, r) = layer(CON_FIRMA);
-        let mut p = previo("otro-hash", None);
-        p.n = Some(N::declined());
-        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
-        assert_eq!(o, Some(N::declined()), "la firma no es lo que una renuncia afirma");
+        for p in [None, Some(declinado("h"))] {
+            let o = resolve_n1(&cap, &r, p.as_ref(), &None, decline(), "h").unwrap();
+            assert_eq!(o, Some(N::declined()), "la renuncia se escribe, no se omite");
+        }
     }
 
-    /// Y `--no-n1` sobre una renuncia da lo mismo: no hace falta, y no cambia nada.
+    /// Y sobre un adquirido pide `--force`, cambie o no la firma; con él, lo baja.
     #[test]
-    fn declining_over_a_decline_changes_nothing() {
-        let (_d, cap, r) = layer(CON_FIRMA);
-        let mut p = previo("h", None);
-        p.n = Some(N::declined());
-        let what = What { no_n1: true, ..What::default() };
-        let o = resolve_n1(&cap, &r, Some(&p), &None, what, "h").unwrap();
-        assert_eq!(o, Some(N::declined()));
-    }
-
-    /// Fila 4 — había, no se pudo mirar, la firma no se movió: **se preserva**.
-    ///
-    /// Es el caso que contesta *"¿y si una caída de lspd borra lo que ya estaba?"*.
-    /// Preservar es estrictamente más seguro que borrar: si un vecino cambió con el
-    /// proveedor caído, el valor viejo sigue ahí y el próximo cierre lo reporta.
-    #[test]
-    fn row_4_a_provider_outage_never_erases_what_was_there() {
+    fn declining_an_acquired_level_needs_force() {
         let (_d, cap, r) = layer(CON_FIRMA);
         let p = previo("h", Some("viejo"));
-        let o = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "h").unwrap();
-        assert_eq!(adquirido(&o), Some("viejo"), "una caída no puede bajar la cobertura");
-    }
-
-    /// Y `--no-n1` tampoco lo baja solo: bajar algo pide el escalón.
-    #[test]
-    fn row_4_declining_over_an_existing_one_needs_force() {
-        let (_d, cap, r) = layer(CON_FIRMA);
-        let p = previo("h", Some("viejo"));
-        let what = What { no_n1: true, ..What::default() };
-        let e = resolve_n1(&cap, &r, Some(&p), &None, what, "h").unwrap_err();
+        let e = resolve_n1(&cap, &r, Some(&p), &None, decline(), "h").unwrap_err();
         assert!(e.to_string().contains("--force"), "{e}");
-    }
-
-    /// Fila 5 — había, no se pudo mirar, y la firma cambió: preservar mentiría,
-    /// porque el conjunto de vecinos pudo cambiar con ella.
-    #[test]
-    fn row_5_a_changed_signature_cannot_keep_a_stale_neighbourhood() {
-        let (_d, cap, r) = layer(CON_FIRMA);
-        let p = previo("viejo_hash", Some("viejo"));
-        let e = resolve_n1(&cap, &r, Some(&p), &None, What::default(), "otro").unwrap_err();
-        assert!(e.to_string().contains("--no-n1 --force"), "{e}");
-    }
-
-    /// Y con el escalón entero, se baja.
-    #[test]
-    fn row_5_forced_is_a_decision_and_gets_written() {
-        let (_d, cap, r) = layer(CON_FIRMA);
-        let p = previo("viejo_hash", Some("viejo"));
-        let what = What { no_n1: true, force: true, ..What::default() };
-        let o = resolve_n1(&cap, &r, Some(&p), &None, what, "otro").unwrap();
-        assert_eq!(o, Some(N::declined()));
+        let what = What { decline_n1: true, force: true, ..What::default() };
+        assert_eq!(resolve_n1(&cap, &r, Some(&p), &None, what, "otro").unwrap(), Some(N::declined()));
     }
 
     /// **El aviso es preciso o es ruido.** Sobre algo sin firma resoluble no hay nada
-    /// que avisar: ahí la ausencia de `n1` ya era la correcta, y un aviso que
-    /// sale siempre no lo lee nadie.
+    /// que avisar: ahí la ausencia de `n` ya era la correcta.
     #[test]
     fn without_a_resolvable_signature_there_is_nothing_to_warn_about() {
         let (_d, cap, r) = layer(SIN_FIRMA);
