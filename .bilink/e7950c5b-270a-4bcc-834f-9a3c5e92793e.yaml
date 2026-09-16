@@ -10,4 +10,14 @@ endpoint:
     name: regla
   1:
     link: capture 4024b55ec94ae7e7528629bd11bec3e8
+    accepted:
+    - agree:
+      - anibal
+      link: capture 4024b55ec94ae7e7528629bd11bec3e8
+      hash: 75a1a8592b5a0ac41fe0cc69481989ad879a9fa9bd37a52af792c2d9ee57c652
+      hash_ast: fd073416b3e5d028c3ba7161a1f3f27a5bbc3c3a4596da5669b16e3e364469e3
+      n:
+        1:
+          hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          hash_ast: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     name: código
