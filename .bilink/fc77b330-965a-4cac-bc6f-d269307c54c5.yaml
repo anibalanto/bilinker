@@ -9,3 +9,8 @@ endpoint:
       hash: 9e06dc16417be55b3681c6cb43a152af836fde380ee5c3f9cc80252e28b8fb06
   1:
     link: capture fee4cf6f9a787ce98e71c3982ed6d74c
+    accepted:
+    - agree:
+      - anibal
+      link: capture fee4cf6f9a787ce98e71c3982ed6d74c
+      hash: f93faaa375c1628a9370e5a7cefffbdcd2ddf1474855c2e707ab55ed8c8a5867
