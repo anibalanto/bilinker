@@ -39,7 +39,7 @@ Emite las aristas de bilinker en el modelo de aristas de lattice, con los nodos 
 ]
 ```
 
-`state` lleva la tupla de estados de los dos tips, y `commit` el commit en que se aceptó cada uno, que es el baseline de `git log <commit>..HEAD`. Un estado que la cache no tiene sale como `—`. Los `kind` emitidos son `bilink` e `issue`, los dos con garantía `accepted`. `governs` no se emite: exige el endpoint de tipo bilink, que está especificado y no implementado.
+`state` lleva la tupla de estados de los dos tips, y `commit` el commit en que se aceptó cada uno, que es el baseline de `git log <commit>..HEAD`. `declaration` sale sólo cuando algún tip tiene una, con la del otro en `null`: `"declaration":[null,"106~262"]`. Un estado que la cache no tiene sale como `—`. Los `kind` emitidos son `bilink` e `issue`, los dos con garantía `accepted`. `governs` no se emite: exige el endpoint de tipo bilink, que está especificado y no implementado.
 
 La capa de un nodo se nombra relativa a la raíz más externa del ecosistema que contiene a la capa invocada, así que el mismo fragmento tiene la misma forma canónica desde cualquier capa.
 
@@ -59,9 +59,15 @@ Una cadena que no llega a dos tips estructurales no emite arista: una punta `abs
 
 El rango vigente de un fragmento es derivado, y vive en la cache de su capa. Un tip sin rango en la cache no tiene forma canónica, y su cadena no emite arista: lattice necesita `check` corrido antes de consultar.
 
-### Un rango de varias partes sale como el tramo de la primera a la última
+### Un rango de varias partes sale con un tramo por parte
 
-La forma canónica de lattice lleva un solo rango, `inicio~fin`. Un capture de varias partes, como el de `spring-controller`, sale como el tramo que va del inicio de su primera parte al final de la última. El tramo contiene el texto entre las partes, que el fragmento no cubre, así que la contención contra él es más amplia que el fragmento: en un `spring-controller`, arranca en la anotación de ruta de la clase.
+Un capture de varias partes, como el de `spring-controller`, sale con un tramo `inicio~fin` por parte, en orden de archivo y separados por coma: `.::src/Service.java#16~51,106~144,156~180,195~209`. El texto entre dos partes no está en ningún tramo, porque el fragmento no lo cubre.
+
+### Un tip de varias partes lleva la declaración que nombra su capture
+
+La declaración es el nodo que declara el ancla del capture, el nombre de su último predicado `#eq?`: en un `spring-controller`, el método entero, con su cuerpo. Sale en `declaration`, un tramo por tip, o `null` en un tip de una sola parte.
+
+Se resuelve con tree-sitter sobre el archivo de hoy, y sale sólo si ese mismo match da los tramos que tiene la cache: si no, el archivo cambió desde el último `check`, y una declaración de hoy junto a tramos viejos no nombra lo mismo. Un capture sin ancla, o cuya query ya no resuelve, sale sin declaración.
 
 ## Invariantes
 
