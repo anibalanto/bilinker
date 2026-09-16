@@ -1,0 +1,6 @@
+file: docs/decisions/2026-09-16.sobrecarga-en-spring-controller.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "1. En una sobrecarga, los tipos de los parámetros también anclan"))) @target)
