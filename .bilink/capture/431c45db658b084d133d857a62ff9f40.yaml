@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El comando `accept`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`--decline-n1` renuncia, y `--no-ask-n1` no pregunta"))) @target)

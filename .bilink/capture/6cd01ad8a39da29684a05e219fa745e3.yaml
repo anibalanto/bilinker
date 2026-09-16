@@ -1,0 +1,6 @@
+file: docs/decisions/2026-09-16.vecindario-en-lattice.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "3. `check` confirma el nivel 1, y lo que no confirma lo dice `OK_N1_UNCONFIRMED`"))) @target)

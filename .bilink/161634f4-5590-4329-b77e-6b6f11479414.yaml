@@ -3,15 +3,15 @@ endpoint:
     link: capture edf3a8c4552159eb05908d31cac1e9e5
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture edf3a8c4552159eb05908d31cac1e9e5
-      hash: 0410f054f889a8e6e2bb48d5f2d2ba014a970c4878e381bdbc7312c9c12665b2
+      hash: d970624218ac189b76f4f89a21433f1af4cd3384ec6f0907628289ec220eff4f
   1:
     link: capture edb17dc2bc331146d44bd12dd760d800
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture edb17dc2bc331146d44bd12dd760d800
-      hash: 4739c06e001d1ab9fcb23f04d5739779b19f44eb13dc9cfb3a5091969887dd47
-      hash_ast: 7684466153df31b2ea5e5c1dd601ad2a359b0d90bf9852a29af60294510860fe
+      hash: 42551733d2bb840010ed9ba7414cef90b1c728340f53bf4f42818eaced05e191
+      hash_ast: d83c9db5e3de2eeb306ab45cd8da5a7664e9cbb177c667cc45337741f5b628a9
       n: declined
