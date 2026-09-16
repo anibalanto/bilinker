@@ -191,13 +191,14 @@ Quien los encuentra entra por un puerto que bilinker define y que no nombra a na
 
 ```rust
 pub trait Neighbours {
-    fn of(&self, file: &Path, at: &[Position]) -> Result<Option<Vec<Location>>>;
+    fn available(&self, layer: &Path) -> bool;
+    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Vec<Location>>;
 }
 ```
 
 Y lo que devuelve se vuelve un capture, no un hash. Cada ubicación resuelve a un nodo por la regla de siempre —la selección sirve para encontrar los nodos, no para recortarlos— y lo que queda escrito es un id por vecino, en `n.1.link`.
 
-`None` es *"no pude mirar"* y no *"no hay vecinos"*: la distinción de la que sale el estado. El binario le pasa una implementación que le habla a `lspd`; la librería no lo menciona, para que bilinker no quede atado a ese daemon: mañana puede ser SCIP, un índice propio, o un language server hablado directo.
+Contesta o falla: no hay un tercer valor entre *"estos son los vecinos"* y *"no pude"*, y un `Err` hace fallar el comando que preguntó. `available` dice, antes de trabajar, si hay a quién preguntarle. El binario le pasa una implementación que le habla a `lspd`; la librería no lo menciona, para que bilinker no quede atado a ese daemon: mañana puede ser SCIP, un índice propio, o un language server hablado directo.
 
 El puerto recibe posiciones, no el rango del fragmento. Dónde hay un tipo que preguntar es gramática, y la gramática es de bilinker; qué declara ese tipo es del proveedor. Pasarle el rango lo obligaría a inventar dónde preguntar adentro, y un proveedor que adivina eso está haciendo trabajo que no es suyo con conocimiento que no tiene.
 
@@ -209,56 +210,52 @@ Y el hasheo queda de este lado. El recorte de bordes es regla de bilinker y vive
 
 Lo que no puede es distinguirlo de *"el servidor de atrás todavía no indexó"*, porque llega igual. Y ahí el vacío se escribe afirmando una cobertura que no existe.
 
-La distinción la tiene que dar quien la sabe. Un proveedor que no puede contestar tiene que decirlo contestando `None`, no un vacío. Bilinker no tiene con qué adivinarlo: si pusiera una guarda contra el vacío, rompería el caso legítimo, y si no la pone, come el ilegítimo. No hay una tercera opción de este lado del puerto: es el motivo de que el puerto tenga tres respuestas y no dos.
+La distinción la tiene que dar quien la sabe. Un proveedor que no puede contestar tiene que decirlo fallando, no con un vacío. Bilinker no tiene con qué adivinarlo: si pusiera una guarda contra el vacío, rompería el caso legítimo, y si no la pone, come el ilegítimo. No hay otra opción de este lado del puerto: es el motivo de que el puerto no conteste un vacío cuando no pudo mirar.
 
-Del lado de `lspd` eso es `-32001`, que el binario traduce a `None`. Un proveedor que ni siquiera pueda saber si está listo devuelve lo que tenga: ahí la distinción no se puede dar en ningún lado, y eso es una propiedad del lenguaje, no un defecto que bilinker pueda tapar.
+Del lado de `lspd` eso es `-32001`, y el binario espera a que el servidor esté listo antes de volver a preguntar. Un proveedor que ni siquiera pueda saber si está listo devuelve lo que tenga: ahí la distinción no se puede dar en ningún lado, y eso es una propiedad del lenguaje, no un defecto que bilinker pueda tapar.
 
-### Y un daemon de otro workspace es un `None`, no un fracaso
+### Un daemon de otro workspace no contesta en la puerta de esta capa
 
-Medido el 2026-09-07: `bilinker check` en una capa de accreta falló con `file not found` sobre un archivo que existe, porque el daemon vivo era de otro proyecto. Un daemon ajeno no contesta *"no sé"*: contesta *"ese archivo no existe"*, y eso llegaba como un error del árbol. Es el mismo defecto de forma que el vacío —confundir *no pude mirar* con *la respuesta es no*— con la vuelta de que acá la respuesta falsa no es un vacío sino una negación, y sale por el canal de los errores.
+Medido el 2026-09-07: `bilinker check` en una capa de accreta falló con `file not found` sobre un archivo que existe, porque el daemon vivo era de otro proyecto. Un daemon ajeno no contesta *"no sé"*: contesta *"ese archivo no existe"*, y eso llegaba como un error del árbol.
 
-| El daemon | |
-|---|---|
-| no está | `None` |
-| es de otro workspace | `None`, y se dice cuál sirve |
-| es de éste | se le pregunta |
+Desde que la ruta del socket de `lspd` se deriva del workspace, el que contesta en mi puerta es el mío por construcción, y el caso no se puede representar. Cuando la puerta de la capa no contesta y hay otras vivas que este cliente no calcula, se avisa cuáles: es lo que pasa cuando `lspd` y `lspd-client` no son de la misma versión.
 
-Lo que se fija es que no se le cree al que no sirve, que es lo que hace honesto al tercer valor.
+### Los comandos usan el daemon activo y nunca lo levantan
 
-Con una puerta por workspace la pregunta se borra: desde que la ruta del socket de `lspd` se deriva del workspace, el que contesta en mi puerta es el mío por construcción. El chequeo se borra, y no porque se haya arreglado: porque el caso no se puede representar.
+`check`, `apply` y `accept` le preguntan al daemon que contesta en la puerta de la capa, y ninguno lo levanta ni lo apaga. Levantarlo y apagarlo es un paso explícito, fuera de los comandos, en cada copia de un repo:
 
-Y ahí sí bilinker levanta el suyo. Cómo lo levanta y cuánto lo espera son las dos reglas que siguen.
+```
+lspd start --wait --lang rust
+lspd stop
+```
 
-### El proveedor levanta el daemon que no contesta, una vez por corrida
+Un comando que arranca un daemon deja el apagado sin dueño. Medido el 2026-09-16: diecisiete `rust-analyzer` vivos, levantados por comandos que nadie apagó, llevaron una sesión a 20,9 GB. Y el índice se reusa entre corridas mientras el daemon siga vivo.
 
-Cuando la puerta del daemon de la capa no contesta, el proveedor que le habla a `lspd` lo levanta antes de contestar. Lo intenta una vez por corrida y no una por endpoint: `check` pregunta por decenas de endpoints, y cada uno no puede pagar su propio arranque.
+Si el comando tiene nivel 1 que resolver y el daemon no contesta, falla antes de trabajar. El mensaje dice cuántos endpoints lo necesitan y nombra las dos salidas, con los lenguajes de sus archivos:
 
-Y un language server que no está instalado —o que se cayó, o un lenguaje sin soporte— es `None` por el mismo motivo: el daemon contesta `-32000` —el código con que su protocolo dice que una pregunta no se puede contestar—, y eso dice que esa pregunta no se puede contestar, no que la corrida esté mal. Quien decide qué escribir con un `None` es la regla de abajo, y `--no-n1` sigue sirviendo.
+```
+error: 108 endpoint(s) tienen nivel 1 y no hay daemon en esta capa.
+  Levantarlo:       lspd start --wait --lang java --lang typescript
+  Sin confirmarlo:  bilinker accept . --no-ask-n1
+```
 
-Lo que no cambia es el tercer valor: si el daemon no arranca, sigue siendo `None`, y el aviso de puertas vivas que este cliente no calcula sale ahí, cuando igual degrada. Levantarlo es una comodidad, no una garantía, y un `check` que fracasara porque un daemon no arrancó estaría convirtiendo una falla de infraestructura en una reducción de cobertura.
+Un endpoint tiene nivel 1 que resolver cuando su fragmento alcanza una firma con tipos. `status`, `get` y el resto no preguntan, así que no piden daemon.
 
-Lo levanta quien le pregunta al puerto, y le pregunta sólo quien necesita tipos: `check`, `apply` y `accept`. `status`, `get` y el resto no preguntan, así que no levantan nada, y no hay una lista de comandos que mantener.
+### Espera a cualquier daemon que indexa, y Ctrl-C corta el comando
 
-El daemon queda vivo cuando la corrida termina: el índice que construyó se reusa en la siguiente.
+El daemon contesta `ping` antes de que sus language servers estén listos, los levanta a demanda con la primera pregunta de cada lenguaje, y mientras uno indexa contesta `-32001`. Eso es *"todavía no"*, lo haya levantado quien sea: el proveedor consulta `status` cada segundo hasta que ningún servidor esté `INDEXING`, y vuelve a preguntar.
 
-### Espera sólo lo que indexa el daemon que levantó, y Ctrl-C la corta
-
-El daemon contesta `ping` antes de que sus language servers estén listos, los levanta a demanda con la primera pregunta de cada lenguaje, y mientras uno indexa contesta `-32001`. Levantar el daemon sin esperar no compraría nada en esa corrida: la primera pregunta volvería `-32001` y el vecindario degradaría igual.
-
-Así que, si el proveedor levantó el daemon en esta corrida, un `-32001` no es `None` todavía. Consulta `status` cada segundo hasta que ningún servidor esté `INDEXING`, y vuelve a preguntar.
-
-- **Espera todo lo que `status` da `INDEXING`**, y no "el servidor de este archivo": `status` nombra servidores, no lenguajes, y la tabla de qué servidor atiende qué extensión es del daemon. Con un daemon de esta corrida, lo que indexa lo arrancaron sus preguntas.
+- **Espera todo lo que `status` da `INDEXING`**, y no "el servidor de este archivo": `status` nombra servidores, no lenguajes, y la tabla de qué servidor atiende qué extensión es del daemon.
 - **Un servidor `RUNNING` no se espera.** No informa readiness, así que no hay a qué esperar: se le pregunta, y un vacío suyo vale lo que vale para ese lenguaje.
-- **Mientras espera, lo dice por stderr**, al empezar y cada quince segundos: qué servidores espera, en qué estado, cuánto va, y que Ctrl-C sigue sin vecindario.
-- **Ctrl-C corta la espera y no la corrida.** El proveedor contesta `None`, el resto de la corrida sigue con el vecindario no verificado, y no vuelve a esperar. Fuera de una espera, Ctrl-C termina el proceso con 130, como siempre.
-- **Si `status` deja de contestar, es `None`.** Y si no tiene nada `INDEXING` y la pregunta insiste en `-32001`, se vuelve a preguntar una vez —pudo quedar listo entre las dos— y la segunda es `None`.
-- **No tiene techo de tiempo.** Lo que la corta es Ctrl-C.
+- **Mientras espera, lo dice por stderr**, al empezar y cada quince segundos: qué servidores espera, en qué estado, cuánto va, y que Ctrl-C corta el comando.
+- **Ctrl-C durante la espera corta el comando**, que no sigue sin vecindario. Fuera de una espera, Ctrl-C termina el proceso con 130, como siempre.
+- **La espera no tiene techo de tiempo.** Lo que la corta es Ctrl-C.
 
-Un daemon que ya estaba vivo cuando empezó la corrida es de otra: su `-32001` sigue siendo `None`, sin esperar. Es lo que evita que cada `check` corrido con un daemon vivo e indexando se vuelva una espera de minutos.
+Un daemon que falla hace fallar el comando: un language server que no está instalado, uno que se cae o un lenguaje sin soporte contestan `-32000`, y eso es una falla y no un vecindario vacío. También falla si `status` deja de contestar mientras espera, o si la pregunta insiste en `-32001` con nada `INDEXING` después de volver a preguntar una vez. No hay un tercer resultado entre *"contestó"* y *"falló"*.
 
 ### Cuándo se adquiere el vecindario
 
-El puerto puede contestar `None` —*"no pude mirar"*— y ahí hay que decidir qué se escribe. La regla es una: una falla de infraestructura no puede reducir la cobertura de un vínculo.
+Cuando no se le pregunta a nadie —`--no-ask-n1`— hay que decidir qué se escribe. La regla es una: no preguntar no puede reducir la cobertura de un vínculo, ni afirmar una que nadie miró.
 
 Que un fragmento tenga vecindario se sabe por la gramática y no por el proveedor. Y son tres respuestas, no dos:
 
@@ -266,7 +263,7 @@ Que un fragmento tenga vecindario se sabe por la gramática y no por el proveedo
 |---|---|---|
 | no hay | prosa, YAML, un lenguaje sin tipos, un DTO, un `enum`, una constante | la ausencia, sin marca y sin pedir nada |
 | hay, y se alcanza | el fragmento es una firma, o está adentro de una | el `n` calculado sobre sus tipos |
-| hay, y no se alcanza | el archivo entero, un `impl`, una clase con métodos | `accept` falla; `--no-n1` deja la renuncia escrita |
+| hay, y no se alcanza | el archivo entero, un `impl`, una clase con métodos | `accept` falla; `--decline-n1` deja la renuncia escrita |
 
 Lo que separa la primera de la tercera es si el fragmento contiene firmas que quedan sin cubrir. Un DTO no tiene ninguna adentro, así que su ausencia es completa y es la correcta. Un archivo entero de Rust tiene muchas y ninguna es la suya: eso no es *"no hay vecindario"*, es *"no puedo recorrer hacia los elementos del próximo nivel"*.
 
@@ -276,34 +273,35 @@ Un error que sale ahí tiene que decir por qué no se alcanza, porque quien lo l
 Error: el fragmento de crates/bilinker/src/check.rs es el archivo entero, y su
        vecindario no se puede alcanzar: el nivel 1 sale de una firma, y un archivo
        tiene muchas — ninguna es la suya.
-       Capturar el contrato con --as, o renunciar al vecindario con --no-n1.
+       Capturar el contrato con --as, o renunciar al vecindario con --decline-n1.
 ```
 
 De la segunda fila salen las posiciones que se le pasan al puerto: se sube hasta la firma que contiene al fragmento y se baja a los campos que llevan tipos —el retorno y los parámetros—, que son los mismos que [`--as interface`](chain.md) captura. Un capture de contrato y un capture de la función entera terminan preguntando en las mismas posiciones: el vecindario es de la firma, no de cómo se la haya capturado.
 
-Y hay un dato más que se sabe sin daemon: el conjunto de vecinos lo determina la firma, y la firma está en el fragmento. Con el capture de contrato el `hash` del fragmento es el de la firma, así que un `hash` que no se movió es el mismo conjunto de vecinos, aunque su contenido no se haya podido mirar.
+Y hay un dato más que se sabe sin daemon: los nombres del conjunto de vecinos los pone la firma, y la firma está en el fragmento. Con el capture de contrato el `hash` del fragmento es el de la firma, así que un `hash` que no se movió no pudo agregar ni sacar nombres. Lo que no dice es que esos nombres sigan resolviendo a los mismos vecinos: eso depende de los imports y del build, y lo confirma el daemon.
+
+Un vecindario que no se puede representar —el daemon devuelve un vecino que no se puede capturar— hace fallar `accept`, y la salida es `--decline-n1`. Escribirlo sin ese vecino afirmaría un conjunto que no es el de la firma.
 
 ### El `n` previo tiene tres valores, y la tabla de qué se escribe
 
 Puede estar adquirido, puede ser una renuncia escrita, o puede no estar, y los tres son entradas distintas, porque una renuncia es una decisión que alguien tomó y no la ausencia de una.
 
-| `n` previo | Se pudo resolver | Cambió la firma | Qué se escribe |
-|---|---|---|---|
-| ausente | sí | — | `n` calculado |
-| ausente | no | — | nada, y `accept` falla |
-| `declined` | sí | — | `n` calculado: la renuncia se levanta sola |
-| `declined` | no | — | la renuncia que ya estaba, intacta |
-| adquirido | sí | — | `n` recalculado |
-| adquirido | no | no | el `n` que ya estaba, intacto |
-| adquirido | no | sí | nada, y `accept` falla |
+Sin flag, `accept` le pregunta al daemon y escribe el `n` calculado, cualquiera sea el previo: una renuncia anterior se levanta sola. Con `--decline-n1` no le pregunta a nadie y escribe `declined`. Con `--no-ask-n1` no le pregunta a nadie y conserva lo que se puede conservar:
 
-Las dos filas de `declined` son la misma idea que las de adquirido: sin proveedor no hay información nueva con la cual revisar lo que ya se decidió, así que se conserva. Volver a pedirla convertiría la renuncia en algo que se tipea en cada `accept`, y un pedido que sale siempre no lo lee nadie.
+| `n` previo | Cambió la firma | `--no-ask-n1` |
+|---|---|---|
+| ausente | — | nada, y `accept` falla nombrando `lspd start --wait` y `--decline-n1` |
+| `declined` | — | la renuncia que ya estaba, intacta |
+| adquirido | no | el `n` que ya estaba, intacto |
+| adquirido | sí | nada, y `accept` falla: el conjunto pudo cambiar con la firma |
 
-Y conservarla no encierra a nadie: la tercera fila dice que con proveedor la renuncia se levanta sin que nadie pida nada. La asimetría es la correcta: subir cobertura es automático, bajarla sigue pidiendo que se declare.
+La fila de `declined` se conserva aunque la firma haya cambiado: una renuncia no es sobre un conjunto de vecinos, dice que no se vigilan. Volver a pedirla convertiría la renuncia en algo que se tipea en cada `accept`, y un pedido que sale siempre no lo lee nadie.
 
-La sexta fila es la que evita el daño. Preservar es estrictamente más seguro que borrar: si un vecino cambió mientras el proveedor estaba caído, el `n` viejo sigue ahí y el próximo cierre con proveedor lo reporta. Borrándolo, ese cambio se absorbe en el baseline nuevo y deja de ser detectable para siempre.
+La tercera fila conserva un valor que nadie confirmó en esta corrida, y por eso se pide: sin flag, `accept` no conserva en silencio. Conservar es más seguro que borrar —si un vecino cambió, el `n` viejo sigue ahí y el próximo `check` lo reporta—, pero no confirma que los nombres de la firma sigan resolviendo a esos vecinos.
 
-Y la séptima es la única donde preservar sería mentir: si la firma cambió, el conjunto de vecinos pudo cambiar con ella, y el valor viejo es sobre un conjunto que ya no es el de hoy. No tiene gemela en `declined` porque una renuncia no es sobre un conjunto: no dice qué vecinos había, dice que no se vigilan.
+Y la cuarta es la única donde conservar sería mentir: si la firma cambió, el conjunto de vecinos pudo cambiar con ella, y el valor viejo es sobre un conjunto que ya no es el de hoy.
+
+La asimetría es la correcta: subir cobertura es automático con el daemon, y bajarla pide declararlo.
 
 `--place` y `--content` ya aceptan una dimensión sin tocar la otra. El vecindario es una tercera y se comporta igual. Lo que no puede pasar es que una dimensión se borre como efecto colateral de aceptar otra.
 
@@ -320,11 +318,11 @@ Es la misma división que arriba, un nivel más abajo, y con el mismo reparto de
 
 Y son de verdad independientes: un nivel cuyo `link` es [`unknown`](bilink.md) conserva sus dos hashes y no tiene ids. Su eje de ubicación no se puede comparar, y no queda limpio: hay captures que alguien tiene que acuñar. Su eje de contenido se compara igual, contra el `hash` conservado. Por eso el contrato conservado no es un resto inservible: sin ubicación el nivel deja de detectar que un vecino se mudó o se renombró, y sigue detectando que la forma de un vecino cambió, que es lo que motivó al nivel 1. Cuál de los dos ejes nombra el estado es de [check.md](check.md).
 
-Y por eso `apply` recibe el puerto. Un vecino cuyo archivo se renombró es un `MOVED` que git resuelve, pero el conjunto también gana y pierde miembros cuando la firma cambia, y qué tipo entró sólo lo sabe un language server. Todo comando que toque el eje del vecindario recibe el puerto, y degrada sin él. La frontera del subsistema no se mueve: la librería sigue siendo git y tree-sitter, y el proveedor entra por el puerto.
+Y por eso `apply` recibe el puerto. Un vecino cuyo archivo se renombró es un `MOVED` que git resuelve, pero el conjunto también gana y pierde miembros cuando la firma cambia, y qué tipo entró sólo lo sabe un language server. Todo comando que toque el eje del vecindario recibe el puerto, y sin daemon falla, salvo con `--no-ask-n1`. La frontera del subsistema no se mueve: la librería sigue siendo git y tree-sitter, y el proveedor entra por el puerto.
 
 ### `n: declined` es lo que vuelve determinista la renuncia
 
-Renunciar al vecindario tiene que poder decirse, y las dos filas que fallan se destraban declarándolo con `--no-n1`. Eso escribe `n: declined`, y el campo no es cosmético: sin él se rompe la invariante 4.
+Renunciar al vecindario tiene que poder decirse, y las filas que fallan se destraban declarándolo con `--decline-n1`. Eso escribe `n: declined`, y el campo no es cosmético: sin él se rompe la invariante 4.
 
 Sin marca, el mismo fragmento en el mismo estado produce un `accepted` con `n` adquirido o sin él según si había un language server prendido en esa máquina. La determinación la tomaría el ambiente, que no es parte del estado del fragmento.
 
@@ -450,8 +448,9 @@ Cada uno cambia por una sola razón y por ninguna otra: `hash` cuando cambia el 
 bilinker accept <uuid>.<N>
 bilinker accept <uuid>.<N> --place
 bilinker accept <uuid>.<N> --content
-bilinker accept <uuid>.<N> --no-n1
-bilinker accept <uuid>.<N> --no-n1 --force
+bilinker accept <uuid>.<N> --no-ask-n1
+bilinker accept <uuid>.<N> --decline-n1
+bilinker accept <uuid>.<N> --decline-n1 --force
 bilinker accept .
 bilinker accept <path>
 ```
@@ -461,8 +460,9 @@ bilinker accept <path>
 | `<uuid>.<N>` | Endpoint a aceptar: UUID del bilink + índice (0 o 1). |
 | `--place` | Aprueba sólo la ubicación: escribe `accepted.link` y deja `accepted.hash` como estaba. |
 | `--content` | Aprueba sólo el contenido: escribe `accepted.hash` y `accepted.hash_ast`. |
-| `--no-n1` | Acepta renunciando al vecindario entero, del nivel 1 para arriba: escribe `n: declined` en vez de los niveles. |
-| `--force` | Sólo junto a `--no-n1`, y sólo donde éste baja una cobertura que ya estaba. |
+| `--no-ask-n1` | No le pregunta al daemon: conserva el `n` que se puede conservar, y falla donde no. |
+| `--decline-n1` | Acepta renunciando al vecindario entero, del nivel 1 para arriba: escribe `n: declined` en vez de los niveles. |
+| `--force` | Sólo junto a `--decline-n1`, y sólo donde éste baja un nivel 1 adquirido. |
 | `.` o `<path>` | Acepta en bulk todo lo que necesita atención en la capa actual (o bajo el path dado). |
 
 Sin flags, aprueba las dos dimensiones.
@@ -474,7 +474,7 @@ Sin flags, aprueba las dos dimensiones.
 3. Si el fragmento no está commiteado, fallar (ver "Exige el fragmento commiteado").
 4. Si el tip de la rama del proyecto no está absorbido, absorberlo en un commit propio sobre [`refs/bilink/<branch>`](ref.md): un merge que sólo trae código, con el diff de `.bilink/` vacío. Es la misma forma que `sync`.
 5. Calcular el hash del fragmento actual y su `hash_ast` si hay gramática.
-6. Si el fragmento tiene firma resoluble, pedirle el vecindario al proveedor y resolver según la tabla de "El `n` previo tiene tres valores": calcularlo, preservar el que había, o fallar pidiendo `--no-n1`. Nunca borrarlo en silencio.
+6. Si el fragmento tiene firma resoluble, pedirle el vecindario al daemon y escribir el calculado; con `--no-ask-n1` o `--decline-n1`, resolver según la tabla de "El `n` previo tiene tres valores". Nunca borrarlo en silencio.
 7. Escribir `accepted` en el endpoint: `link` con el id del capture vigente, `hash`, `hash_ast`, el `n` que corresponda —adquirido, `declined`, o ausente—, y `agree` con quien acepta agregado al set.
 8. Calcular el `commit` del contenido y escribirlo en [la cache](cache.md).
 9. Cerrar la aceptación con un commit sobre la ref, de un solo padre. Nunca un merge: sobre la ref un commit hace una cosa. Su mensaje es el comando canónico de esta aceptación —`accept [--place|--content] <uuid>.<N>`— y no lo que la persona tipeó, que va como trailer `Invocation:`.
@@ -503,40 +503,42 @@ El nombre que git usaría como autor, que es lo que `git var GIT_AUTHOR_IDENT` c
 
 Y por eso se pregunta así y no leyendo `user.name`. El nombre del autor no siempre sale de ahí: puede venir de `GIT_AUTHOR_NAME`, de un `[includeIf]` por directorio, o del sistema cuando nadie lo configuró. Leer un solo lugar acierta a veces, y cuando falla escribe en `agree` un nombre distinto del que va a quedar en el commit. Si git no puede contestar, `accept` falla, igual que fallaría el commit que viene después.
 
-### `--no-n1`
+### `--decline-n1` renuncia, y `--no-ask-n1` no pregunta
 
-No hay proveedor de vecindario y el fragmento tiene firma resoluble: `accept` no escribe.
+Son dos cosas, y por eso son dos flags. `--no-ask-n1` vale una corrida: no le pregunta a nadie y no escribe nada que no estuviera. `--decline-n1` queda escrito: `n: declined`, y el vecindario deja de vigilarse hasta que alguien acepte con el daemon.
+
+Sin ninguno de los dos, sin daemon y con firma resoluble, `accept` falla antes de trabajar. Con `--no-ask-n1` y nada que conservar, también:
 
 ```
-$ bilinker accept a6d8b710.0
-error: no hay proveedor de vecindario, y la firma de fetchPermissionsFromToken lo tiene.
+$ bilinker accept a6d8b710.0 --no-ask-n1
+error: la firma de src/Svc.java tiene nivel 1, y --no-ask-n1 no le pregunta a nadie.
        Aceptar así deja los tipos que la firma menciona sin vigilar, y el baseline no lo diría.
-       Levantar lspd, o aceptar sin el nivel 1 con --no-n1.
+       Levantar el daemon con `lspd start --wait --lang java`, o renunciar al nivel 1 con --decline-n1.
 ```
 
 Avisar y seguir no alcanza. Un warning por stderr que escribe igual es una línea más de texto: en un CI nadie lo lee, y el baseline mudo queda escrito. El aviso vale porque es la negativa.
 
 Y el aviso es preciso o es ruido. Sólo aparece donde el fragmento tendría vecindario, que se sabe por la gramática, no por el proveedor. Aceptar prosa, un DTO o un lenguaje sin anotaciones de tipo no dice nada, porque ahí la ausencia de `n` ya era la correcta.
 
-Y renuncia al vecindario entero, no al nivel 1. El día que exista un nivel 2 queda adentro de esta misma renuncia, porque está definido a través del 1. No va a haber un `--no-n2`: el flag nombra dónde empieza lo que necesita un language server, y no un escalón suelto.
+`--decline-n1` renuncia al vecindario entero, no al nivel 1. El día que exista un nivel 2 queda adentro de esta misma renuncia, porque está definido a través del 1.
+
+`--no-n1` no existe. Con un significado nuevo, una línea que lo tuviera escrito —un CI, un `accept --no-n1 .`— haría otra cosa sin que nadie se entere; sin el flag, falla y obliga a elegir entre no preguntar y renunciar.
 
 ### El `--force` está escalonado
 
-`--no-n1` no alcanza donde el endpoint ya tiene `n` adquirido y la firma cambió, que es la única fila donde renunciar baja algo:
+`--decline-n1` no alcanza donde el endpoint ya tiene `n` adquirido, que es donde renunciar baja algo:
 
 ```
-$ bilinker accept a6d8b710.0 --no-n1
-error: a6d8b710.0 ya tiene un vecindario aceptado, y la firma cambió.
-       Renunciar acá lo pierde: el conjunto de vecinos pudo cambiar con la firma,
-       y sin proveedor no hay con qué reemplazarlo.
-       Levantar lspd, o bajarlo a propósito con --no-n1 --force.
+$ bilinker accept a6d8b710.0 --decline-n1
+error: --decline-n1 acá baja un vecindario que ya estaba aceptado.
+       Conservarlo: aceptar sin --decline-n1. Bajarlo a propósito: --decline-n1 --force.
 ```
 
-`--no-n1` en una persona se tipea una vez; en un CI se escribe una vez y queda para siempre. Una máquina sin language server lo necesita legítimamente para el caso donde no se pierde nada, y con un solo flag esa línea de configuración sería una autorización permanente a bajar cobertura cada vez que alguien cambie una firma. Escalonarlo deja al CI andando para el caso benigno y lo hace fallar justo cuando alguien tiene que mirar.
+`--decline-n1` en una persona se tipea una vez; en un CI se escribe una vez y queda para siempre. Con un solo flag, esa línea de configuración sería una autorización permanente a bajar cobertura. Escalonarlo deja al CI andando para el caso donde no se pierde nada y lo hace fallar justo cuando alguien tiene que mirar.
 
-Es la forma que tiene [`capture remove --force`](capture.md): un guard sobre algo que otros nombran, un mensaje que da primero la salida no destructiva y después el override, y un force que lo hace igual y dice qué costó. Acá la salida no destructiva es levantar el proveedor.
+Es la forma que tiene [`capture remove --force`](capture.md): un guard sobre algo que otros nombran, un mensaje que da primero la salida no destructiva y después el override, y un force que lo hace igual.
 
-`--force` es de `--no-n1`, no de `accept`. Solo, es un error. Un `--force` que modificara el comando entero se comería cualquier guard que se agregue después, en silencio y sin que nadie lo pida.
+`--force` es de `--decline-n1`, no de `accept`. Solo, es un error. Un `--force` que modificara el comando entero se comería cualquier guard que se agregue después, en silencio y sin que nadie lo pida.
 
 ### Exige el fragmento commiteado
 
@@ -566,7 +568,7 @@ Tras `check`, sobre `PENDING`, `ALTERED`, `RESTYLED` o `CHAIN_DIRTY`, cuando el 
 | Código | Condición |
 |---|---|
 | 0 | Aceptación registrada. |
-| 1 | UUID no encontrado, endpoint inválido, capture sin resolver, fragmento sin commitear, o vecindario no resuelto sin `--no-n1`. |
+| 1 | UUID no encontrado, endpoint inválido, capture sin resolver, fragmento sin commitear, nivel 1 sin daemon y sin flag, un daemon que falla o una espera cortada con Ctrl-C, o un nivel 1 que `--no-ask-n1` no puede conservar. |
 
 ### Lo que no se acepta a ciegas
 
@@ -586,5 +588,5 @@ Un `accept .` sobre una capa recién cambiada fabrica aprobaciones que nadie mir
 8. `agree` no participa de ninguna comparación de estado ni de ningún hash. `OK` no depende de cuántos aprobaron.
 9. Un `accept` que cambia algún valor deja `agree` con quien aceptó y nadie más; uno que no los cambia lo agrega al set que había.
 10. Un commit sobre la ref sólo agrega a su propio autor a un `agree`. Sacar no está restringido: agregar es lo único que afirma algo sobre otra persona.
-11. Ningún `accept` reduce la cobertura de un endpoint sin que alguien lo haya pedido. Que el proveedor de vecindario no conteste nunca borra un `n` adquirido: o se preserva, o `accept` falla.
+11. Ningún `accept` reduce la cobertura de un endpoint sin que alguien lo haya pedido con `--decline-n1`. Sin daemon nunca se borra un `n` adquirido: `accept` falla, o con `--no-ask-n1` lo conserva.
 12. Un `accepted` sin `n` afirma que el fragmento no tiene firma resoluble. La renuncia se escribe, no se omite.

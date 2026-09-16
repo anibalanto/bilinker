@@ -35,10 +35,10 @@ pub struct Location {
 
 /// Quién resuelve el vecindario.
 ///
-/// **`None` es *no pude mirar*, y no *no hay vecinos*.** De esa distinción sale el
-/// estado `CONTRACT_UNVERIFIED`: sin ella, un daemon apagado se leería como un
-/// contrato que no menciona ningún tipo, que es la confusión más cara del
-/// ecosistema con otro disfraz.
+/// **Contesta o falla.** No hay un tercer valor para *"no pude mirar"*: un proveedor
+/// que no puede contestar devuelve `Err`, y el comando que preguntó falla. Leerlo como
+/// un vacío haría pasar un daemon apagado por un contrato que no menciona ningún tipo.
+///
 /// **Y recibe posiciones, no el rango del fragmento.** Dónde hay un tipo que
 /// preguntar es gramática, y la gramática es de bilinker; qué declara ese tipo es del
 /// proveedor. Pasarle el rango lo obligaba a inventar dónde preguntar adentro, y lo
@@ -50,11 +50,81 @@ pub struct Location {
 /// genérico, un proveedor que resuelve perfecto devuelve la función misma o un tipo
 /// de otra capa. Ver `concepts/accept.md` § "Dónde se pregunta".
 pub trait Neighbours {
-    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Option<Vec<Location>>>;
+    /// Si hay a quién preguntarle en esta capa. Se consulta antes de trabajar.
+    fn available(&self, layer: &Path) -> bool;
+    fn of(&self, layer: &Path, file: &str, at: &[usize]) -> Result<Vec<Location>>;
 }
 
-/// Quién resuelve el vecindario en esta corrida, si hay alguien.
+/// A quién se le pregunta en esta corrida. `None` es no preguntarle a nadie.
 pub type Provider<'a> = Option<&'a dyn Neighbours>;
+
+/// Cuántos endpoints de una corrida tienen nivel 1 que resolver, y de qué lenguajes.
+///
+/// Es lo que dice el error cuando no hay a quién preguntarle: cuántos, y qué
+/// lenguajes tiene que calentar quien levante el proveedor.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Demand {
+    pub endpoints: usize,
+    pub languages: std::collections::BTreeSet<&'static str>,
+}
+
+impl Demand {
+    pub fn add(&mut self, file: &str) {
+        self.endpoints += 1;
+        // `tsx` es una gramática y no un lenguaje: lo atiende el mismo servidor.
+        match grammar::language_for_file(file) {
+            "tsx" => { self.languages.insert("typescript"); }
+            lang if !grammar::signature_kinds(lang).is_empty() => { self.languages.insert(lang); }
+            _ => {}
+        }
+    }
+    pub fn is_empty(&self) -> bool { self.endpoints == 0 }
+}
+
+/// Hay nivel 1 que resolver y nadie a quién preguntarle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoProvider(pub Demand);
+
+impl std::fmt::Display for NoProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} endpoint(s) tienen nivel 1 y no hay daemon en esta capa.", self.0.endpoints)
+    }
+}
+
+impl std::error::Error for NoProvider {}
+
+/// El proveedor falló mientras se le preguntaba: el comando no terminó.
+///
+/// Va como contexto del error del proveedor, para que quien sale del proceso lo
+/// distinga de un error del árbol sin mirar el texto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderFailed;
+
+impl std::fmt::Display for ProviderFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("el proveedor del vecindario no contestó")
+    }
+}
+
+/// Falla antes de trabajar si hay nivel 1 que resolver y el proveedor no está.
+///
+/// Sin proveedor —no preguntarle a nadie— y sin demanda no hay nada que exigir.
+pub fn require(nb: Provider<'_>, layer: &Path, demand: Demand) -> Result<()> {
+    match nb {
+        Some(p) if !demand.is_empty() && !p.available(layer) => Err(NoProvider(demand).into()),
+        _ => Ok(()),
+    }
+}
+
+/// Le pregunta al proveedor, y marca su falla como [`ProviderFailed`].
+pub fn ask(p: &dyn Neighbours, layer: &Path, file: &str, at: &[usize]) -> Result<Vec<Location>> {
+    p.of(layer, file, at).map_err(|e| e.context(ProviderFailed))
+}
+
+/// Si el error viene de que el proveedor no está o falló.
+pub fn is_provider_error(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<NoProvider>().is_some() || e.downcast_ref::<ProviderFailed>().is_some()
+}
 
 /// Qué se puede saber del vecindario de un fragmento **antes de preguntarle a nadie**.
 ///
@@ -187,8 +257,8 @@ pub struct Folded {
 /// rompería la correspondencia entre `link` y `hash` — el fold cubriría un conjunto
 /// y la lista nombraría otro.
 ///
-/// Así que es todo o nada, y "nada" cae en el mismo casillero que un daemon caído:
-/// `CONTRACT_UNVERIFIED`. **No pude**, que es distinto de *no hay*.
+/// Así que es todo o nada, y quien lo pide decide qué hace con "nada": `accept` falla,
+/// y `check` lo lee como un conjunto que ya no es el aceptado.
 pub fn fold(layer: &Path, locs: &[Location]) -> Result<Option<Folded>> {
     let mut captures: Vec<(String, String, Option<String>, bilink_format::Capture)> = Vec::new();
 
@@ -209,16 +279,47 @@ pub fn fold(layer: &Path, locs: &[Location]) -> Result<Option<Folded>> {
         let Ok((c, h, rr)) = crate::capture::compute(layer, &loc.file, &[(pos, pos)], None)
             else { return Ok(None) };
 
-        let lang = grammar::language_for_file(&loc.file);
-        let ast = grammar::ast_discriminates_content(lang)
-            .then(|| {
-                let rs = rr.parts().first()?;
-                sexp_of(lang, &source, rs.start, rs.end).map(|x| hash::sha256(x.as_bytes()))
-            })
-            .flatten();
-
+        let ast = ast_of(&loc.file, &source, &rr);
         captures.push((c.id(), h, ast, c));
     }
+    Ok(Some(plegar(captures)))
+}
+
+/// El fold de los vecinos aceptados, resolviendo cada capture por su query.
+///
+/// **Es el mismo fold que calcula [`fold`]**, con el mismo orden, el mismo recorte y
+/// el mismo `hash_ast`: sólo cambia de dónde sale cada rango. Con esto el contenido de
+/// un nivel 1 se verifica sin preguntarle a nadie.
+///
+/// `None` es que algún capture no se pudo leer o no resuelve: la declaración aceptada
+/// ya no está donde estaba.
+pub fn fold_captures(layer: &Path, ids: &[String]) -> Result<Option<Folded>> {
+    let mut captures = Vec::new();
+    for id in ids {
+        let Ok(c) = bilink_format::Capture::load_in(layer, id) else { return Ok(None) };
+        let (state, ranges) = crate::check::resolve_capture(layer, &c, None, None)?;
+        let (true, Some(rr)) = (state.is_resolved(), ranges) else { return Ok(None) };
+        let Ok(source) = std::fs::read_to_string(layer.join(&c.file)) else { return Ok(None) };
+        let h = hash::sha256(rr.text(&source).as_bytes());
+        let ast = ast_of(&c.file, &source, &rr);
+        captures.push((c.id(), h, ast, c));
+    }
+    Ok(Some(plegar(captures)))
+}
+
+/// La huella de un vecino, donde la gramática discrimina contenido.
+fn ast_of(file: &str, source: &str, rr: &Ranges) -> Option<String> {
+    let lang = grammar::language_for_file(file);
+    grammar::ast_discriminates_content(lang)
+        .then(|| {
+            let rs = rr.parts().first()?;
+            sexp_of(lang, source, rs.start, rs.end).map(|x| hash::sha256(x.as_bytes()))
+        })
+        .flatten()
+}
+
+/// Los dos hashes de un conjunto de vecinos, ya capturados.
+fn plegar(mut captures: Vec<(String, String, Option<String>, bilink_format::Capture)>) -> Folded {
 
     // **El orden es por id de capture**, que es la identidad: `sha256(file \0 query \0)`.
     //
@@ -241,14 +342,14 @@ pub fn fold(layer: &Path, locs: &[Location]) -> Result<Option<Folded>> {
         }
     }
 
-    Ok(Some(Folded {
+    Folded {
         n: Neighbourhood {
             link: bilink_format::CaptureSet::new(captures.iter().map(|(id, ..)| id.clone()).collect()).into(),
             hash:     hash::sha256(texts.as_bytes()),
             hash_ast: every_one_has_a_grammar.then(|| hash::sha256(sexps.as_bytes())),
         },
         captures: captures.into_iter().map(|(.., c)| c).collect(),
-    }))
+    }
 }
 
 /// Línea y columna **1-based** de un offset, que es lo que `capture` toma.
@@ -371,15 +472,17 @@ mod port_tests {
     use std::fs;
     use tempfile::tempdir;
 
-    /// Un proveedor de mentira: contesta lo que se le dijo, o que no pudo mirar.
+    /// Un proveedor de mentira: contesta lo que se le dijo, o falla.
     struct Fake {
+        alive: bool,
         locs:  Option<Vec<Location>>,
         asked: Cell<usize>,
     }
     impl Neighbours for Fake {
-        fn of(&self, _l: &Path, _f: &str, _at: &[usize]) -> Result<Option<Vec<Location>>> {
+        fn available(&self, _l: &Path) -> bool { self.alive }
+        fn of(&self, _l: &Path, _f: &str, _at: &[usize]) -> Result<Vec<Location>> {
             self.asked.set(self.asked.get() + 1);
-            Ok(self.locs.clone())
+            self.locs.clone().ok_or_else(|| anyhow::anyhow!("el daemon no contestó"))
         }
     }
 
@@ -398,30 +501,95 @@ mod port_tests {
         Location { file: "Svc.rs".into(), symbol: "Dto".into(), start: 0, end: 28 }
     }
 
-    /// **`None` es "no pude mirar" y no "no hay vecinos".** Los dos casos tienen que
-    /// producir cosas distintas, o un daemon apagado se leería como un contrato que
-    /// no menciona ningún tipo.
+    /// **Un proveedor que no puede contestar falla, y la falla se distingue.** No hay
+    /// un vacío que lo disfrace de contrato sin tipos.
     #[test]
-    fn not_being_able_to_look_is_not_an_empty_neighbourhood() {
+    fn a_provider_that_cannot_answer_fails_and_is_told_apart() {
         let d = repo();
+        let mudo = Fake { alive: true, locs: None, asked: Cell::new(0) };
+        let e = ask(&mudo, d.path(), "Svc.rs", &[0]).unwrap_err();
+        assert!(is_provider_error(&e), "la falla del proveedor se marca: {e:#}");
+
         let vacio = fold(d.path(), &[]).unwrap().unwrap().n;
         let con   = fold(d.path(), &[dto()]).unwrap().unwrap().n;
-        assert_ne!(vacio.hash, con.hash);
-
-        let mudo = Fake { locs: None, asked: Cell::new(0) };
-        assert!(mudo.of(d.path(), "Svc.rs", &[0]).unwrap().is_none(),
-                "sin proveedor no hay vecindario, y eso no es un vecindario vacío");
+        assert_ne!(vacio.hash, con.hash, "y un vacío legítimo sigue siendo otra cosa");
     }
 
     /// Se le pregunta una vez por endpoint, no una por vecino.
     #[test]
     fn the_provider_is_asked_once() {
         let d = repo();
-        let p = Fake { locs: Some(vec![dto(), dto()]), asked: Cell::new(0) };
-        let locs = p.of(d.path(), "Svc.rs", &[0]).unwrap().unwrap();
+        let p = Fake { alive: true, locs: Some(vec![dto(), dto()]), asked: Cell::new(0) };
+        let locs = ask(&p, d.path(), "Svc.rs", &[0]).unwrap();
         assert_eq!(p.asked.get(), 1);
         // Y dos veces el mismo vecino es un vecino.
         assert_eq!(fold(d.path(), &locs).unwrap().unwrap().n, fold(d.path(), &[dto()]).unwrap().unwrap().n);
+    }
+
+    /// **Sin proveedor que conteste, falla antes de trabajar, y dice cuántos y de qué
+    /// lenguajes.** Sin demanda, o sin preguntarle a nadie, no hay nada que exigir.
+    #[test]
+    fn requiring_a_provider_fails_only_with_demand_and_nobody_to_ask() {
+        let d = repo();
+        let apagado = Fake { alive: false, locs: None, asked: Cell::new(0) };
+        let mut demand = Demand::default();
+        demand.add("src/A.java");
+        demand.add("web/b.tsx");
+        demand.add("docs/spec.md");
+
+        let e = require(Some(&apagado), d.path(), demand.clone()).unwrap_err();
+        let NoProvider(dicho) = e.downcast_ref::<NoProvider>().expect("es un NoProvider").clone();
+        assert_eq!(dicho.endpoints, 3);
+        assert_eq!(dicho.languages.iter().copied().collect::<Vec<_>>(), vec!["java", "typescript"],
+                   "los lenguajes que lspd entiende, sin prosa");
+        assert!(is_provider_error(&e));
+
+        assert!(require(Some(&apagado), d.path(), Demand::default()).is_ok(), "sin demanda");
+        assert!(require(None, d.path(), demand.clone()).is_ok(), "sin preguntarle a nadie");
+        let vivo = Fake { alive: true, locs: None, asked: Cell::new(0) };
+        assert!(require(Some(&vivo), d.path(), demand).is_ok());
+        assert_eq!(apagado.asked.get() + vivo.asked.get(), 0, "exigir no pregunta nada");
+    }
+
+    /// **El fold de los captures de los vecinos, resueltos por su query, es el mismo
+    /// que calcula `accept`.** Es lo que deja verificar el contenido del nivel 1 sin
+    /// preguntarle a nadie.
+    #[test]
+    fn folding_the_neighbour_captures_equals_the_fold_accept_computes() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("Svc.rs"),
+            "pub struct Dto {\n    pub x: u8,\n}\n\npub enum Kind { A, B }\n\npub fn get(k: Kind) -> Dto { todo!() }\n").unwrap();
+        fs::write(d.path().join("Otro.java"),
+            "class Otro {\n\tprivate String y;\n}\n").unwrap();
+        let src = fs::read_to_string(d.path().join("Svc.rs")).unwrap();
+        let locs = vec![
+            Location { file: "Svc.rs".into(), symbol: "Dto".into(),
+                       start: src.find("Dto").unwrap(), end: src.find("Dto").unwrap() + 3 },
+            Location { file: "Svc.rs".into(), symbol: "Kind".into(),
+                       start: src.find("Kind").unwrap(), end: src.find("Kind").unwrap() + 4 },
+            Location { file: "Otro.java".into(), symbol: "Otro".into(), start: 6, end: 10 },
+        ];
+
+        let aceptado = fold(d.path(), &locs).unwrap().unwrap();
+        for c in &aceptado.captures { c.write_in(d.path()).unwrap(); }
+        let ids = aceptado.n.link.known_ids().unwrap().to_vec();
+
+        let hoy = fold_captures(d.path(), &ids).unwrap().expect("los captures resuelven");
+        assert_eq!(hoy.n, aceptado.n, "mismo conjunto, mismo hash y mismo hash_ast");
+    }
+
+    /// Un capture de vecino que ya no resuelve no se pliega: es un cambio.
+    #[test]
+    fn a_neighbour_capture_that_no_longer_resolves_does_not_fold() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("Svc.rs"), "pub struct Dto { pub x: u8 }\n").unwrap();
+        let aceptado = fold(d.path(), &[Location {
+            file: "Svc.rs".into(), symbol: "Dto".into(), start: 11, end: 14 }]).unwrap().unwrap();
+        for c in &aceptado.captures { c.write_in(d.path()).unwrap(); }
+        let ids = aceptado.n.link.known_ids().unwrap().to_vec();
+
+        fs::write(d.path().join("Svc.rs"), "pub struct Otro { pub x: u8 }\n").unwrap();
+        assert!(fold_captures(d.path(), &ids).unwrap().is_none());
     }
 }
 

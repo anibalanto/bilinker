@@ -8,11 +8,36 @@ Opera en dos pasos: resuelve los captures referenciados —localizando cada frag
 
 ### Git y tree-sitter le alcanzan para todo menos un eje
 
-Requiere git como dependencia dura. El [vecindario](accept.md) necesita resolver tipos, y eso entra por un puerto que el binario implementa contra un language server.
+Requiere git como dependencia dura. El [vecindario](accept.md) se verifica en dos partes, y sólo una necesita resolver tipos:
 
-Sin ese proveedor `check` corre igual y el eje del vecindario degrada a `CONTRACT_UNVERIFIED`, que no falla y no bloquea. Es la propiedad que hace que adoptar bilinker no requiera levantar nada.
+| Qué se verifica | Con qué |
+|---|---|
+| que las declaraciones de los vecinos aceptados no cambiaron | sus captures, con tree-sitter |
+| que los nombres de la firma sigan resolviendo a esos vecinos | el daemon de `lspd`, por el puerto del vecindario |
 
-El vecindario se pregunta si hay a quién. Cuando el daemon de la capa no contesta, el proveedor lo levanta, una vez por corrida y no una por endpoint, y espera sólo lo que indexa el daemon que levantó: es la regla de [la aceptación](accept.md), y `check` la hereda por preguntarle al mismo proveedor. Si no arranca, los endpoints con vecindario aceptado quedan `CONTRACT_UNVERIFIED` y el resto se evalúa igual.
+La segunda depende de los imports del archivo, de lo que declara el mismo paquete y de las dependencias del build, que están fuera del fragmento y fuera de los captures. Por eso la pregunta entra por un puerto que el binario implementa contra un language server.
+
+Una capa sin ningún nivel 1 adquirido —sin `n`, o con todo `declined`— no le pregunta a nadie, y `check` corre ahí con git y tree-sitter solos.
+
+### `check` usa el daemon activo y nunca lo levanta
+
+Levantar y apagar el daemon es un paso explícito, fuera de los comandos: `lspd start --wait` y `lspd stop`. Un comando que arranca un daemon deja el apagado sin dueño.
+
+Si la capa tiene algún nivel 1 adquirido y el daemon no contesta, `check` falla antes de verificar nada, sale con 2, y nombra las dos salidas con los lenguajes que hacen falta:
+
+```
+error: 108 endpoint(s) tienen nivel 1 y no hay daemon en esta capa.
+  Levantarlo:       lspd start --wait --lang java --lang typescript
+  Sin confirmarlo:  bilinker check . --no-ask-n1
+```
+
+Un daemon que indexa se espera, lo haya levantado quien sea, con la regla de [la aceptación](accept.md). Uno que falla hace fallar `check` con 2: no terminó de verificar. Lo que alcanzó a verificar antes queda en la cache, como en cualquier check parcial.
+
+### `--no-ask-n1` verifica lo que alcanzan git y tree-sitter, y dice lo que no confirmó
+
+Con `--no-ask-n1`, `check` no le pregunta a nadie en esta corrida. Verifica el fragmento y el contenido de los vecinos aceptados, y lo único que queda sin confirmar es la resolución de los nombres, que es `OK_N1_UNCONFIRMED`.
+
+Es lo que declara una vez un CI sin language server. Nunca baja cobertura: no escribe nada, y bajarla es `accept --decline-n1`.
 
 ### `check` opera completamente offline
 
@@ -21,12 +46,13 @@ Es de `check` y no de toda la herramienta. Es masivo: corre sobre todos los bili
 ### `check` toma un bilink o una capa, y con `--against` una ref
 
 ```
-bilinker check [<path>] [--against <ref>]
+bilinker check [<path>] [--against <ref>] [--no-ask-n1]
 ```
 
 | Argumento | Descripción |
 |---|---|
 | `path` | Path a una capa, a un bilink individual, o a un archivo o directorio de la capa. Default: la capa actual. |
+| `--no-ask-n1` | No le pregunta al daemon por el nivel 1: lo que no confirma es `OK_N1_UNCONFIRMED`. |
 | `--against <ref>` | Toma los `accepted` de otro lado en vez de los del árbol, y no escribe cache. |
 
 ### Un path que no es una capa ni un bilink verifica lo que cae bajo él
@@ -164,7 +190,7 @@ Comparan lo hallado contra `accepted`.
 | CONTRACT_ALTERED | Un tipo que la firma menciona cambió. | revisar + `accept` |
 | CONTRACT_RELOCATED | El conjunto de vecinos declarado ≠ el aceptado. | revisar + `accept` |
 | CONTRACT_UNLOCATED | El vecindario aceptado conserva su contenido y su ubicación es `unknown`. | acuñar sus captures + `accept` |
-| CONTRACT_UNVERIFIED | Hay vecindario aceptado y no se pudo resolver el de hoy. | nada, o levantar el proveedor |
+| OK_N1_UNCONFIRMED | Todo `OK` salvo la resolución de los nombres de la firma, que no se preguntó: `--no-ask-n1`. | `check` con el daemon |
 
 `EXPANDED` necesita el texto aceptado, así que se detecta acá y no en la dimensión de ubicación.
 
@@ -179,12 +205,47 @@ No es ninguno de los dos estados vecinos, y la diferencia no es de matiz:
 | | Qué dice |
 |---|---|
 | `CONTRACT_RELOCATED` | los dos conjuntos están y difieren |
-| `CONTRACT_UNVERIFIED` | no hubo con quién resolver el vecindario de hoy |
+| `OK_N1_UNCONFIRMED` | los vecinos aceptados no cambiaron, y nadie preguntó si la firma los sigue nombrando |
 | `CONTRACT_UNLOCATED` | el contenido está aprobado y de qué vecinos salió no se sabe |
 
-Sale con 1, y ahí está la diferencia que importa con `CONTRACT_UNVERIFIED`: éste no es una ausencia del ambiente sino trabajo escrito en el archivo. Hay captures que alguien tiene que acuñar, y hasta que se acuñen el nivel no detecta que un vecino se mudó de archivo o se renombró. Correr `check` sin daemon es un modo de operación normal; un vecindario sin ubicación no lo es.
+Sale con 1, y ahí está la diferencia que importa con `OK_N1_UNCONFIRMED`: éste no es una pregunta que no se hizo sino trabajo escrito en el archivo. Hay captures que alguien tiene que acuñar, y hasta que se acuñen el nivel no detecta que un vecino se mudó de archivo o se renombró.
 
-Y no necesita proveedor, que es lo que lo vuelve la respuesta correcta justamente cuando no hay ninguno: comparar ids nunca lo necesitó. Es lo que garantiza que un nivel sin ubicación no desaparezca del inventario por no haber levantado un language server.
+Y sin daemon se contesta igual: comparar ids nunca lo necesitó. Es lo que garantiza que un nivel sin ubicación no desaparezca del inventario con `--no-ask-n1`.
+
+### El contenido del nivel 1 se verifica con los captures de los vecinos
+
+Cada id de `accepted.n.1.link` es un capture. `check` los resuelve por su query y los pliega con el mismo fold que calcula `accept`: el mismo orden por id, el mismo recorte de bordes y el mismo `hash_ast` todo-o-nada. Si el fold difiere de `accepted.n.1.hash`, un vecino cambió, y eso es drift probado: no necesita daemon, y sale igual con `--no-ask-n1`.
+
+| El fold de los captures | Estado |
+|---|---|
+| igual | sigue a la ubicación y a la resolución |
+| distinto en texto, igual en `hash_ast` | `CONTRACT_RESTYLED` |
+| distinto | `CONTRACT_ALTERED` |
+
+Un vecino cuyo capture ya no resuelve es `CONTRACT_ALTERED`: la declaración aceptada ya no está donde estaba, y eso es un cambio, no una ausencia.
+
+Con el `link` del nivel en `unknown` no hay captures que resolver, y el contenido sólo se puede comparar recalculando el vecindario con el daemon.
+
+### La resolución de los nombres la confirma el daemon
+
+Que las declaraciones no cambiaron no dice que los nombres de la firma sigan resolviendo a ellas. Con el daemon, `check` le pregunta el conjunto de hoy y lo compara por ids contra el aceptado: si difiere, es `CONTRACT_RELOCATED`. Con el `link` en `unknown` no hay ids, y compara el fold del conjunto de hoy contra el `hash` conservado.
+
+### `OK_N1_UNCONFIRMED`: todo lo que git y tree-sitter miran está bien, y la resolución no se preguntó
+
+Sale sólo con `--no-ask-n1`, y sólo sobre un nivel 1 adquirido, también el vacío: un import nuevo puede meterle un vecino. Sin `n` o con `declined`, el estado es `OK`.
+
+Sale con 0. No se lista uno por uno: el resumen dice cuántos son y qué correr para confirmarlos, y se listan filtrando la salida de [`status`](#muestra-la-cache-agrupada-por-archivo-sin-re-verificar) por el estado.
+
+### Lo probado le gana a lo sospechado
+
+Un endpoint tiene un estado. Sobre el nivel 1, en este orden:
+
+1. `CONTRACT_ALTERED` y `CONTRACT_RESTYLED`: el contenido de un vecino cambió.
+2. `CONTRACT_RELOCATED` y `CONTRACT_UNLOCATED`: el conjunto difiere, o no tiene ubicación.
+3. `OK_N1_UNCONFIRMED`: no se preguntó.
+4. `OK`.
+
+El eje del vecindario se evalúa sólo cuando el del fragmento dice `OK`.
 
 ### Un cambio real de contrato le gana a la ubicación faltante
 
@@ -470,18 +531,29 @@ f1e2d3c4  (EXPANDED, OK)
   → fix disponible: bilinker apply
 ```
 
+`OK_N1_UNCONFIRMED` tampoco se imprime por endpoint: con `--no-ask-n1` sale en cada endpoint con nivel 1, y una línea por cada uno taparía el trabajo. Se cuenta al final:
+
+```
+12 endpoint(s) OK_N1_UNCONFIRMED: el nivel 1 no se confirmó (--no-ask-n1).
+  Confirmarlos:  lspd start --wait --lang rust && bilinker check .
+  Listarlos:     bilinker status | grep OK_N1_UNCONFIRMED
+```
+
 ### Código de salida de `check`
 
 | Código | Condición |
 |---|---|
-| 0 | Todos los captures resuelven y todos los endpoints están en `OK`, `EXPANDED`, `RESTYLED` o `CONTRACT_UNVERIFIED`. |
+| 0 | Todos los captures resuelven y todos los endpoints están en `OK`, `EXPANDED`, `RESTYLED` u `OK_N1_UNCONFIRMED`. |
 | 1 | Algún capture en `UNANCHORED`, `DELETED` o `BROKEN`, o algún endpoint en `RELOCATED`, `ALTERED`, `UNRESOLVED`, `PENDING`, `CHAIN_DIRTY`, `CONSENSUS_DIVERGED`, `CONTRACT_RESTYLED`, `CONTRACT_ALTERED`, `CONTRACT_RELOCATED` o `CONTRACT_UNLOCATED`. |
 | 1 | Algún bilink no se pudo leer, aunque todos los que se leyeron estén `OK`. |
 | 2 | La versión de formato de la capa no se entiende. No se verificó nada. |
+| 2 | Hay nivel 1 adquirido y el daemon no contesta, o falla, o Ctrl-C cortó su espera. No se terminó de verificar. |
 
-`CONTRACT_UNVERIFIED` sale con 0, con las ausencias y no con los drifts: no es que el valor difiera, es que no hay con qué compararlo. Correr `check` sin daemon es un modo de operación normal —`check` es masivo y offline— y hacerlo salir con 1 volvería rojo cualquier CI que no levante un language server.
+Sin flag, un `check` que sale con 0 confirmó todo nivel 1. No hay un estado para *"pregunté y no pude"*: un daemon que indexa se espera, y uno que falla es un `check` que no terminó.
 
-`CONTRACT_UNLOCATED` sale con 1, y no es una excepción a eso. Uno es una ausencia del ambiente y el otro es una ausencia en el archivo, puesta ahí por algo que ya pasó. La primera se arregla prendiendo un daemon y puede no arreglarse nunca sin que nadie haya hecho nada mal; la segunda es trabajo que alguien tiene que hacer, y sale con 1 por lo mismo que `PENDING`. Y no vuelve rojo un CI que ya estaba verde: ningún archivo lleva el valor hasta que algo lo escriba.
+`OK_N1_UNCONFIRMED` sale con 0 porque se pidió no preguntar: lo que git y tree-sitter pueden mirar está bien, y el resumen dice cuántos quedaron sin confirmar.
+
+`CONTRACT_UNLOCATED` sale con 1: es trabajo escrito en el archivo, puesto ahí por algo que ya pasó, y sale con 1 por lo mismo que `PENDING`.
 
 `RELOCATED` sale con 1. Repuntar no aprueba, y un vínculo apuntando a un fragmento que nadie miró es trabajo pendiente, no un detalle de mantenimiento.
 

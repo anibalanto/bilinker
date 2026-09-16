@@ -109,14 +109,39 @@ pub enum Scan {
     Cold { bilinks: usize },
     /// La capa se miró. Los que no se pudieron van aparte de los fixes, **no
     /// mezclados con los que no tenían nada**.
-    Looked { fixes: Vec<PendingFix>, unlooked: Vec<Unlooked> },
+    ///
+    /// `unasked` cuenta los vecindarios que no se miraron porque no se le preguntó a
+    /// nadie: no son agujeros, se pidió no mirarlos.
+    Looked { fixes: Vec<PendingFix>, unlooked: Vec<Unlooked>, unasked: usize },
+}
+
+/// Cuántos endpoints de la capa tienen vecindario que preguntar.
+///
+/// Es lo que `apply` exige antes de trabajar: los que alcanzan una firma con tipos,
+/// con el rango que dejó el último `check`. Una capa fría no tiene rangos, y ahí la
+/// que se planta es la regla de la capa mirada.
+pub fn demand(layer: &Path) -> crate::neighbours::Demand {
+    let cache = Cache::load(layer);
+    let mut d = crate::neighbours::Demand::default();
+    for path in bilink_files(&layer.join(".bilink")) {
+        let Ok(bl) = BiLink::load(&path) else { continue };
+        for n in [0u8, 1u8] {
+            let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
+            let Some(range) = cache.capture_ranges(id) else { continue };
+            let Ok(cap) = Capture::load_in(layer, id) else { continue };
+            if matches!(crate::neighbours::reach(layer, &cap.file, &range), crate::neighbours::Reach::At(_)) {
+                d.add(&cap.file);
+            }
+        }
+    }
+    d
 }
 
 /// Qué salió de mirar el vecindario de **un** endpoint.
 ///
-/// **Tres valores y no un `Option`**, que es lo que separa *"no hay"* de *"no pude"* —
-/// la misma figura que [`Reach`](crate::neighbours::Reach) tiene un nivel más abajo, y
-/// por el mismo motivo: el tercer valor es el que hace honestos a los otros dos.
+/// **Más de dos valores y no un `Option`**, que es lo que separa *"no hay"* de *"no
+/// pude"* y de *"no pregunté"* — la misma figura que [`Reach`](crate::neighbours::Reach)
+/// tiene un nivel más abajo, y por el mismo motivo.
 enum Looked {
     /// Hay conjunto nuevo que proponer.
     Fix(Fix),
@@ -124,6 +149,8 @@ enum Looked {
     Nada,
     /// No se pudo mirar.
     NoSePudo(&'static str),
+    /// No se le preguntó a nadie. Lleva lo que git resolvió sin preguntar, si algo.
+    SinPreguntar(Option<Fix>),
 }
 
 /// Recorre la capa y calcula la ubicación nueva de cada endpoint que la necesite.
@@ -151,6 +178,7 @@ pub fn scan_fixeable(
 
     let mut fixes = Vec::new();
     let mut unlooked = Vec::new();
+    let mut unasked = 0usize;
 
     for path in bilinks {
         let Ok(bl) = BiLink::load(&path) else { continue };
@@ -216,6 +244,16 @@ pub fn scan_fixeable(
                     n, what: fix, reason: "N1",
                 }),
                 Looked::Nada => {}
+                Looked::SinPreguntar(fix) => {
+                    unasked += 1;
+                    if let Some(fix) = fix {
+                        fixes.push(PendingFix {
+                            bilink_path: path.clone(),
+                            uuid: uuid.to_string(),
+                            n, what: fix, reason: "N1",
+                        });
+                    }
+                }
                 // **Un endpoint cuyo fragmento se está por repuntar no está sin mirar:
                 // está sin poder preguntarse todavía.** El vecindario se pregunta desde
                 // el rango del fragmento, y el rango que vale es el de la ubicación
@@ -231,18 +269,17 @@ pub fn scan_fixeable(
             }
         }
     }
-    Ok(Scan::Looked { fixes, unlooked })
+    Ok(Scan::Looked { fixes, unlooked, unasked })
 }
 
 /// El conjunto de vecinos que la firma menciona hoy, si difiere del declarado.
 ///
-/// **Sin proveedor no hay fix**, y no es una falla: es la degradación que el eje del
-/// vecindario tiene en todos lados. `apply` arregla lo del fragmento con git y dice
-/// que no pudo tocar esto.
-///
-/// Y **descubrir el conjunto es lo único que necesita el proveedor**. Que un vecino se
+/// **Descubrir el conjunto es lo único que necesita el proveedor**. Que un vecino se
 /// haya mudado de archivo lo resuelve git como cualquier `MOVED`; lo que git no puede
 /// saber es que la firma ahora menciona un tipo más.
+///
+/// Sin proveedor —no preguntarle a nadie— arregla lo que resuelve git y cuenta el
+/// vecindario como no mirado. Con proveedor, una falla suya corta el comando.
 fn neighbourhood_fix(
     layer: &Path,
     bl: &BiLink,
@@ -250,10 +287,6 @@ fn neighbourhood_fix(
     n: u8,
     nb: crate::neighbours::Provider<'_>,
 ) -> Result<Looked> {
-    // Sin proveedor el eje entero queda sin mirar, y eso ya se reporta una vez para la
-    // corrida —no una por endpoint— porque es la degradación declarada del comando y no
-    // un accidente de este bilink.
-    let Some(p) = nb else { return Ok(Looked::Nada) };
     let e = bl.endpoint.get(n);
     // Un endpoint que no es un capture —`path`, `issue`— no tiene vecindario. No es que
     // no se haya podido: no lo tiene.
@@ -282,12 +315,10 @@ fn neighbourhood_fix(
     // dos formas de eso son respuestas sobre el árbol, no ausencias de respuesta.
     let crate::neighbours::Reach::At(at) = crate::neighbours::reach(layer, &cap.file, &range)
         else { return Ok(Looked::Nada) };
-    // Un `None` del proveedor es *"no pude mirar"* y no *"no hay vecinos"*: el daemon no
-    // contesta, o una posición no resolvió. Leerlo como vacío es el mismo error que
-    // `concepts/language-servers.md` describe del otro lado de la frontera.
-    let Some(locs) = p.of(layer, &cap.file, &at)? else {
-        return Ok(Looked::NoSePudo("el proveedor de vecindario no pudo contestar"));
+    let Some(p) = nb else {
+        return Ok(Looked::SinPreguntar(moved_neighbours(layer, e.n.as_ref())?));
     };
+    let locs = crate::neighbours::ask(p, layer, &cap.file, &at)?;
     let Some(f) = crate::neighbours::fold(layer, &locs)? else { return Ok(Looked::Nada) };
 
     let Some(hoy) = f.n.link.captures() else { return Ok(Looked::Nada) };
@@ -307,6 +338,32 @@ fn neighbourhood_fix(
     };
     if !hay_fix { return Ok(Looked::Nada); }
     Ok(Looked::Fix(Fix::Neighbourhood { to: hoy.clone(), captures: f.captures }))
+}
+
+/// Los vecinos declarados cuyo archivo git ve renombrado, repuntados a su capture nuevo.
+///
+/// Es lo que se arregla sin preguntarle a nadie: el conjunto es el mismo, y cada
+/// miembro que se mudó es un `MOVED` como el de cualquier fragmento. Que el conjunto
+/// haya ganado o perdido miembros no se puede saber desde acá.
+fn moved_neighbours(layer: &Path, declared: Option<&bilink_format::DeclaredN>) -> Result<Option<Fix>> {
+    let Some(ids) = declared.and_then(|d| d.level(1)).and_then(|l| l.link.known_ids()) else {
+        return Ok(None);
+    };
+    let mut to = Vec::new();
+    let mut captures = Vec::new();
+    for id in ids {
+        let Ok(cap) = Capture::load_in(layer, id) else { to.push(id.clone()); continue };
+        let (state, _) = crate::check::resolve_capture(layer, &cap, None, None)?;
+        match (state, compute_moved(layer, &cap)) {
+            (CaptureState::Moved, Ok(Some(moved))) => {
+                to.push(moved.id());
+                captures.push(moved);
+            }
+            _ => to.push(id.clone()),
+        }
+    }
+    if captures.is_empty() { return Ok(None) }
+    Ok(Some(Fix::Neighbourhood { to: bilink_format::CaptureSet::new(to), captures }))
 }
 
 /// Acuña el capture nuevo y repunta el `link`. **No toca `accepted`.**
@@ -443,9 +500,10 @@ mod neighbourhood_fix_tests {
 
     struct Fake { locs: Option<Vec<Location>>, asked: Cell<usize> }
     impl Neighbours for Fake {
-        fn of(&self, _l: &Path, _f: &str, _at: &[usize]) -> Result<Option<Vec<Location>>> {
+        fn available(&self, _l: &Path) -> bool { true }
+        fn of(&self, _l: &Path, _f: &str, _at: &[usize]) -> Result<Vec<Location>> {
             self.asked.set(self.asked.get() + 1);
-            Ok(self.locs.clone())
+            self.locs.clone().ok_or_else(|| anyhow::anyhow!("el daemon se cayó"))
         }
     }
 
@@ -484,15 +542,54 @@ mod neighbourhood_fix_tests {
         }
     }
 
-    /// **Sin proveedor no hay fix de vecindario, y no es una falla.**
-    ///
-    /// Es la degradación que el eje tiene en todos lados: `apply` arregla lo del
-    /// fragmento con git y no toca esto.
+    /// **Sin preguntar no hay fix de vecindario que pida al daemon, y se cuenta.**
     #[test]
-    fn without_a_provider_the_neighbourhood_is_left_alone() {
+    fn without_asking_the_neighbourhood_is_counted_and_left_alone() {
         let (d, ..) = layer();
+        let Scan::Looked { fixes, unlooked, unasked } = scan_fixeable(d.path(), None).unwrap()
+            else { panic!("la capa está mirada") };
+        assert!(fixes.is_empty(), "sin preguntar, nada que proponer");
+        assert!(unlooked.is_empty(), "no es un agujero: se pidió no mirar");
+        assert_eq!(unasked, 1, "el vecindario de la firma, sin mirar");
+        assert_eq!(demand(d.path()).endpoints, 1, "y es lo que se le exigiría al daemon");
+    }
+
+    /// **Sin preguntar, un vecino cuyo archivo git ve renombrado se repunta.**
+    #[test]
+    fn without_asking_a_neighbour_moved_by_git_is_repointed() {
+        let (d, uuid, _) = layer();
+        // El vecino vive en su propio archivo, declarado y commiteado.
+        std::fs::write(d.path().join("Dto.rs"), "pub struct Dto { pub x: u8 }\n").unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").current_dir(d.path()).args(args).output().unwrap();
+        };
+        git(&["add", "-A"]); git(&["commit", "-qm", "dto"]);
+        let (dto, _, _) = crate::capture::compute(d.path(), "Dto.rs", &[((1,12),(1,12))], None).unwrap();
+        dto.write_in(d.path()).unwrap();
+        let path = BiLink::path_in(d.path(), &uuid);
+        let mut bl = BiLink::load(&path).unwrap();
+        bl.endpoint.get_mut(0).n = Some(DeclaredN::of_level_1(CaptureSet::new(vec![dto.id()])));
+        bl.write(&path).unwrap();
+
+        git(&["mv", "Dto.rs", "Modelo.rs"]);
+
         let fixes = scan(d.path(), None);
-        assert!(fixes.is_empty(), "sin proveedor, nada que proponer");
+        let fix = fixes.iter().find(|f| matches!(f.what, Fix::Neighbourhood { .. }))
+            .expect("el vecino que se mudó se repunta sin preguntar");
+        let Fix::Neighbourhood { to, captures } = &fix.what else { unreachable!() };
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].file, "Modelo.rs");
+        assert_eq!(to.ids(), &[captures[0].id()]);
+    }
+
+    /// **Un proveedor que falla corta el scan**: no hay un vecindario "sin mirar" que
+    /// lo disimule.
+    #[test]
+    fn a_provider_that_fails_stops_the_scan() {
+        let (d, ..) = layer();
+        let p = Fake { locs: None, asked: Cell::new(0) };
+        let e = scan_fixeable(d.path(), Some(&p)).err().expect("falla");
+        assert!(crate::neighbours::is_provider_error(&e), "{e:#}");
     }
 
     /// **Una capa fría no es una lista de fixes vacía.**
@@ -514,24 +611,6 @@ mod neighbourhood_fix_tests {
             Scan::Looked { .. } => panic!("una capa sin estado calculado no se miró"),
         }
         assert_eq!(p.asked.get(), 0, "y no se le preguntó nada al proveedor");
-    }
-
-    /// **Y un endpoint que no se pudo mirar no se cuenta como revisado.**
-    ///
-    /// El proveedor que no contesta —el daemon caído, una posición sin resolver— devuelve
-    /// `None`, y leerlo como *"no hay vecinos"* es el mismo vacío en otro lugar.
-    #[test]
-    fn an_endpoint_that_could_not_be_looked_at_is_not_nothing() {
-        let (d, ..) = layer();
-        // `None` es *"no pude mirar"*; `Some(vec![])` sería *"miré y no hay"*.
-        let p = Fake { locs: None, asked: Cell::new(0) };
-        let Scan::Looked { fixes, unlooked } = scan_fixeable(d.path(), Some(&p)).unwrap()
-            else { panic!("la capa está mirada") };
-
-        assert!(!fixes.iter().any(|f| matches!(f.what, Fix::Neighbourhood { .. })),
-                "no hay nada que proponer");
-        assert!(!unlooked.is_empty(),
-                "y eso no es lo mismo que no haber encontrado nada");
     }
 
     /// **Con proveedor, propone el conjunto que la firma menciona hoy.**

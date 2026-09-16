@@ -15,7 +15,7 @@ Requiere git como dependencia dura.
 ### `apply` toma `--dry-run`, `--filter` y `-y`
 
 ```
-bilinker apply [<uuid>[.<N>]] [--dry-run] [--filter <estado>] [-y]
+bilinker apply [<uuid>[.<N>]] [--dry-run] [--filter <estado>] [-y] [--no-ask-n1]
 ```
 
 | Flag | Descripción |
@@ -24,12 +24,13 @@ bilinker apply [<uuid>[.<N>]] [--dry-run] [--filter <estado>] [-y]
 | `--filter <estado>` | Aplica sólo fixes de un estado específico (e.g. `--filter MOVED`). |
 | `-y` | Omite la confirmación interactiva. |
 | `<uuid>[.<N>]` | Aplica sólo los fixes de ese bilink, o de ese endpoint. El uuid va entero o por prefijo. |
+| `--no-ask-n1` | No le pregunta al daemon: arregla lo que resuelve git y cuenta los vecindarios que no miró. |
 
 ### Un endpoint acota los fixes a ese bilink
 
 Sin argumento, `apply` propone los fixes de toda la capa. Con un `<uuid>`, sólo los de ese bilink; con `<uuid>.<N>`, sólo los de ese endpoint. Lo demás no se mira como fix ni se escribe, y `--filter` se aplica encima.
 
-Es lo que hace falta para repuntar el vecindario de un endpoint recién aceptado sin tocar el de los demás: con proveedor, `apply` propone además subir la cobertura de cada endpoint con el vecindario renunciado ([§ `apply` mantiene también `n.1.link`](#apply-mantiene-también-n1link)), y esa es una decisión de capa, no del endpoint que se está cerrando.
+Es lo que hace falta para repuntar el vecindario de un endpoint recién aceptado sin tocar el de los demás: con el daemon, `apply` propone además subir la cobertura de cada endpoint con el vecindario renunciado ([§ `apply` mantiene también `n.1.link`](#apply-mantiene-también-n1link)), y esa es una decisión de capa, no del endpoint que se está cerrando.
 
 ### `apply` re-deriva cada estado con fix, acuña el capture nuevo y repunta el `link`
 
@@ -214,8 +215,11 @@ El bloque de "sin mirar" va arriba, entre los fixes y la confirmación, y no al 
 | 1 | Error al calcular o aplicar algún fix, o algún endpoint que no se pudo mirar. |
 | 2 | No hay endpoints con fix disponible, y todos se miraron. |
 | 3 | La capa no tiene estado calculado: falta correr `check`. |
+| 4 | Hay vecindarios que mirar y el daemon no contesta, o falla, o Ctrl-C cortó su espera. |
 
 El 2 es una afirmación sobre el árbol, así que sólo sale cuando hubo con qué hacerla. Un endpoint que no se pudo ubicar la debilita, y por eso cae en el 1 junto con los demás casos de *"no se sabe"*. El 3 no es un caso de eso: es el prerequisito sin cumplir, y se distingue porque lo arregla otro comando.
+
+El 4 tampoco: lo que falta es el daemon, y es un código propio porque el 2 ya dice *"no hay nada que arreglar"*. Con `--no-ask-n1`, el 2 dice que no hay nada que git arregle, y el resumen cuenta los vecindarios que no se miraron.
 
 ## El vecindario, para lo cual recibe el puerto
 
@@ -232,7 +236,29 @@ Pero el conjunto no sólo se mueve: gana y pierde miembros.
 
 De `{Dto}` a `{Dto, Filtro}`. No es un `MOVED` ni un `REANCHORED`: es un miembro nuevo, y qué tipo es `Filtro` sólo lo sabe un language server. Así que `apply` recibe el proveedor de vecindario, igual que `check` y `accept`.
 
-Sin proveedor arregla lo del fragmento y dice que no pudo tocar el vecindario. Todo comando que toque el eje del vecindario recibe el puerto, y degrada sin él. La frontera del subsistema no se mueve: la librería sigue siendo git y tree-sitter, y el proveedor entra por el puerto.
+La frontera del subsistema no se mueve: la librería sigue siendo git y tree-sitter, y el proveedor entra por el puerto.
+
+### Sin daemon, `apply` falla con 4 antes de trabajar
+
+`apply` usa el daemon activo y nunca lo levanta, con la regla de [la aceptación](accept.md). Si algún endpoint de la capa alcanza una firma con tipos y el daemon no contesta, falla antes de proponer nada, sale con 4 y nombra las dos salidas:
+
+```
+error: 12 endpoint(s) tienen nivel 1 y no hay daemon en esta capa.
+  Levantarlo:       lspd start --wait --lang rust
+  Sin confirmarlo:  bilinker apply --no-ask-n1
+```
+
+Un daemon que falla durante la corrida, o una espera cortada con Ctrl-C, también sale con 4.
+
+### Con `--no-ask-n1` arregla lo que resuelve git, y cuenta lo que no miró
+
+Lo que resuelve git no necesita daemon: el fragmento que se movió, y un vecino cuyo archivo se renombró, que es un `MOVED` de uno de los captures de `n.1.link` y se repunta a su capture nuevo.
+
+Lo que sí lo necesita queda sin mirar: un conjunto que ganó o perdió miembros, llenar un `unknown` y subir la cobertura de un endpoint sin nivel. El resumen cuenta esos vecindarios en una línea, no uno por uno:
+
+```
+Sin preguntar: 12 vecindario(s) — --no-ask-n1. Mirarlos: lspd start --wait && bilinker apply
+```
 
 ### Y llena un `unknown`, que es el otro modo de ganar miembros
 
@@ -275,4 +301,5 @@ Lo que `apply` no hace, y no debe: detectar que el tipo de retorno pasó de `A` 
 - `apply` es idempotente: un fix ya aplicado se detecta como no-op.
 - `apply` escribe un commit de decisión por `link` repuntado, todos hijos de la misma absorción.
 - `ALTERED`, `UNRESOLVED` y `CHAIN_DIRTY` no tienen fix y `apply` no los toca.
-- Un nivel del vecindario en `unknown` tiene fix sólo con proveedor: sin él, `apply` lo deja como está y lo dice. Y el fix llena la declaración, nunca el `accepted`.
+- Un nivel del vecindario en `unknown` tiene fix sólo con el daemon: con `--no-ask-n1`, `apply` lo deja como está y lo cuenta. Y el fix llena la declaración, nunca el `accepted`.
+- `apply` nunca levanta el daemon. Sin él falla con 4, salvo con `--no-ask-n1`.
