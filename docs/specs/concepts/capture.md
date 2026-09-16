@@ -249,6 +249,7 @@ Sale sin `query`, que es lo que "Un capture tiene dos campos, `file` y `query`" 
 | `.rs` | Rust | `function_item`, `struct_item`, `enum_item`, `trait_item`, `impl_item`, `const_item`, `static_item` |
 | `.yaml`, `.yml` | YAML | `block_sequence_item` (usa `id:` como predicado), `block_mapping_pair` (usa clave) |
 | `.md` | Markdown | `section` (usa texto del heading como predicado), `pipe_table_row` (usa el texto de su primera celda) |
+| `.feature` | Gherkin | `feature`, `rule`, `scenario_definition` (usan el título de su línea como predicado) |
 | `.ts`, `.js` | TypeScript | `class_declaration`, `abstract_class_declaration`, `function_declaration`, `generator_function_declaration`, `enum_declaration`, `interface_declaration`, `type_alias_declaration`, `method_definition`, `method_signature` |
 | `.tsx`, `.jsx` | TSX | igual que TypeScript, con parser TSX para archivos con JSX |
 
@@ -262,6 +263,7 @@ Qué nodo conviene capturar, por tipo de documento:
 |---|---|---|
 | Código (Java, Rust, TypeScript…) | función, método, clase, declaración con nombre | comentario, `use`/`import` |
 | Markdown | heading h2–h4, bloque de código, fila de tabla | párrafo libre, h1 |
+| Gherkin | escenario, esquema del escenario, regla, característica | paso suelto, etiqueta, fila de `Ejemplos` |
 | YAML / TOML | clave de mapping, item con `id:` | valor string libre |
 | JSON | clave de objeto | valor primitivo |
 
@@ -272,7 +274,7 @@ El criterio es que el ancla se nombre a sí misma. Un nodo sin nombre propio pro
 1. Leer el archivo y parsearlo con la gramática tree-sitter del lenguaje detectado por extensión.
 2. Encontrar el nodo AST más pequeño que contiene la selección completa (`named_descendant_for_point_range`). Con varias selecciones, una vez por cada una.
 3. Subir en el árbol AST hasta el primer ancestro que sea un ancla estable para el lenguaje.
-4. Casos especiales por lenguaje. YAML `block_sequence_item`: busca el par `id:` dentro del item y usa su valor como predicado, capturando el item completo. YAML `block_mapping_pair`: usa el texto de la clave como predicado. Markdown `section`: busca el heading dentro del section y usa su texto inline como predicado, capturando toda la sección (heading + contenido). Rust `impl_item`: el discriminante no es un campo `name` sino el tipo implementado (`type:`) y, cuando es la implementación de un trait, también el trait (`trait:`). Con uno solo, `impl Foo` y `impl Bar for Foo` quedan indistinguibles.
+4. Casos especiales por lenguaje. YAML `block_sequence_item`: busca el par `id:` dentro del item y usa su valor como predicado, capturando el item completo. YAML `block_mapping_pair`: usa el texto de la clave como predicado. Markdown `section`: busca el heading dentro del section y usa su texto inline como predicado, capturando toda la sección (heading + contenido). Gherkin `feature`, `rule` y `scenario_definition`: usan como predicado el título de su línea —`Característica:`, `Regla:`, `Escenario:` o `Esquema del escenario:`, en el dialecto que declare `# language:`— y capturan el nodo entero; el del escenario lleva sus etiquetas, sus pasos y sus ejemplos. El predicado nombra también el tipo de línea, así que un escenario y un esquema con el mismo título se distinguen, y dos escenarios con el mismo título bajo la misma regla no: ahí `capture` se niega. Rust `impl_item`: el discriminante no es un campo `name` sino el tipo implementado (`type:`) y, cuando es la implementación de un trait, también el trait (`trait:`). Con uno solo, `impl Foo` y `impl Bar for Foo` quedan indistinguibles.
 5. Construir la query como el camino del AST desde ese ancestro hasta el nodo target. Cada predicado usa un nombre de captura único (`@n0`, `@n1`, …). El `@target` se coloca en el nodo que representa el fragmento completo. Con varios nodos señalados —[`chain new`](chain.md) con más de una posición— el ancestro es el ancla estable que los contiene a todos, los caminos se funden en un patrón único, y va un `@target` por nodo. Las partes de un patrón salen en orden de archivo: tree-sitter exige el orden de la gramática, y en Java las anotaciones van antes del nombre. Ninguna parte puede contener a otra: cuando pasa, `capture` falla diciendo cuáles.
 6. Verificar que la query identifica el fragmento: resolverla contra el mismo archivo y comprobar que devuelve exactamente un match, con exactamente los nodos señalados. Si devuelve otros nodos, un número distinto, o matchea más de una vez, `capture` falla sin escribir nada.
 7. Calcular el id —el hash de los campos, cada uno seguido de un `\0`— y escribir `.bilink/capture/<id>.yaml` si no existe. Nada de cache: ni `range`, ni `state`, ni timestamp.

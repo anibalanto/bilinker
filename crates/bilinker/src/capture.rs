@@ -784,6 +784,12 @@ fn real_name_predicate<'a>(
             return (pred, None);
         }
     }
+    // Special case: Gherkin — característica, regla y escenario, por su título
+    if lang == "gherkin" {
+        if let Some(pred) = gherkin_title_predicate(node, source, counter) {
+            return (pred, None);
+        }
+    }
     // Special case: YAML block_sequence_item — use id: or first key as predicate
     if node.kind() == "block_sequence_item" {
         if let Some(pred) = yaml_sequence_item_predicate(node, source, counter) {
@@ -849,6 +855,32 @@ fn markdown_table_row_predicate(node: Node, source: &str, counter: &mut usize) -
     let cap = format!("@n{counter}");
     *counter += 1;
     Some(format!("\n  (pipe_table_cell) {cap} (#eq? {cap} \"{text}\")"))
+}
+
+/// Una característica, una regla o un escenario de Gherkin, identificados por su título.
+///
+/// El título es el `context` de la línea que empieza con la palabra clave, y esa
+/// línea cuelga de un nodo intermedio distinto en cada caso: el encabezado en la
+/// característica y la regla, el `scenario` en el escenario. El camino entero entra
+/// en el predicado, porque el `context` de un paso tiene otro kind pero el de una
+/// línea de `Ejemplos` no.
+fn gherkin_title_predicate(node: Node, source: &str, counter: &mut usize) -> Option<String> {
+    let (wrapper, lines): (&str, &[&str]) = match node.kind() {
+        "feature"             => ("feature_header", &["feature_line"]),
+        "rule"                => ("rule_header", &["rule_line"]),
+        "scenario_definition" => ("scenario", &["scenario_line", "scenario_outline_line"]),
+        _ => return None,
+    };
+    let mut c = node.walk();
+    let wrap = node.named_children(&mut c).find(|n| n.kind() == wrapper)?;
+    let mut c = wrap.walk();
+    let line = wrap.named_children(&mut c).find(|n| lines.contains(&n.kind()))?;
+    let mut c = line.walk();
+    let title = line.named_children(&mut c).find(|n| n.kind() == "context")?;
+    let text = query::escape_query_string(&source[title.byte_range()]);
+    let cap = format!("@n{counter}");
+    *counter += 1;
+    Some(format!("\n  ({wrapper} ({} (context) {cap} (#eq? {cap} \"{text}\")))", line.kind()))
 }
 
 /// For a YAML `block_sequence_item`, find the `id:` pair inside and use its value as predicate.
@@ -1123,5 +1155,103 @@ mod prune_neighbourhood_tests {
             hash: "h".into(), hash_ast: None, n: Some(N::declined()),
         };
         assert!(accepted_neighbours(&a).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod gherkin_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const FEATURE: &str = "\
+# language: es
+@modulo:tableros
+Característica: Tableros
+
+  Los tableros estadísticos de ui3.
+
+  Regla: Jurisdicción
+
+    @TAB-J-01 @permiso:LEER_JURISDICCION
+    Escenario: ver las inscripciones de la jurisdicción
+      Dado un usuario con permiso LEER_JURISDICCION en una jurisdicción
+      Cuando entra a Tableros y elige \"Inscripciones\"
+      Entonces ve la cantidad de alumnos inscriptos
+
+    @TAB-J-02
+    Esquema del escenario: ver el tablero de <tablero>
+      Dado un usuario con permiso LEER_JURISDICCION en una jurisdicción
+      Cuando entra a Tableros y elige \"<tablero>\"
+      Entonces ve el tablero
+
+      Ejemplos:
+        | tablero        |
+        | Calificaciones |
+
+  Regla: Unidad de servicio
+
+    @TAB-U-01
+    Escenario: ver las inscripciones de la jurisdicción
+      Dado un usuario con permiso LEER_UNIDAD_SERVICIO
+      Entonces ve la cantidad de alumnos inscriptos
+";
+
+    /// El texto que el capture agarra al señalar `line:col`.
+    fn captured(source: &str, line: usize, col: usize) -> Result<(String, String)> {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("tableros.feature"), source).unwrap();
+        let (cap, _, ranges) = compute(dir.path(), "tableros.feature", &[((line, col), (line, col))], None)?;
+        Ok((cap.query.unwrap(), ranges.text(source)))
+    }
+
+    /// Señalar un paso captura el escenario entero: sus etiquetas, su título y sus pasos.
+    #[test]
+    fn a_step_captures_its_whole_scenario_with_tags() {
+        let (query, text) = captured(FEATURE, 12, 9).unwrap();
+        assert!(text.starts_with("@TAB-J-01 @permiso:LEER_JURISDICCION"), "sin las etiquetas:\n{text}");
+        assert!(text.contains("Entonces ve la cantidad de alumnos inscriptos"), "sin los pasos:\n{text}");
+        assert!(!text.contains("TAB-J-02"), "se llevó el escenario siguiente:\n{text}");
+        assert!(query.contains("\"ver las inscripciones de la jurisdicción\""), "el título no es el ancla:\n{query}");
+        assert!(query.contains("\"Jurisdicción\""), "no lo ata a su regla:\n{query}");
+    }
+
+    #[test]
+    fn a_scenario_outline_is_anchored_by_its_title() {
+        let (query, text) = captured(FEATURE, 17, 7).unwrap();
+        assert!(text.starts_with("@TAB-J-02"), "{text}");
+        assert!(text.contains("| Calificaciones |"), "sin los ejemplos:\n{text}");
+        assert!(query.contains("\"ver el tablero de <tablero>\""), "{query}");
+    }
+
+    #[test]
+    fn a_rule_is_anchored_by_its_title() {
+        let (query, text) = captured(FEATURE, 25, 5).unwrap();
+        assert!(text.starts_with("Regla: Unidad de servicio"), "{text}");
+        assert!(text.contains("@TAB-U-01"), "{text}");
+        assert!(!text.contains("TAB-J-01"), "{text}");
+        assert!(query.contains("\"Unidad de servicio\""), "{query}");
+    }
+
+    #[test]
+    fn a_feature_is_anchored_by_its_title() {
+        let (query, text) = captured(FEATURE, 3, 3).unwrap();
+        assert!(text.contains("Característica: Tableros"), "{text}");
+        assert!(query.contains("\"Tableros\""), "{query}");
+    }
+
+    /// Dos escenarios de la misma regla con el mismo título no son ancla.
+    #[test]
+    fn two_scenarios_with_the_same_title_are_refused() {
+        let twice = FEATURE.replace("    @TAB-J-02\n",
+            "    Escenario: ver las inscripciones de la jurisdicción\n      Entonces ve otra cosa\n\n    @TAB-J-02\n");
+        let err = captured(&twice, 12, 9).unwrap_err().to_string();
+        assert!(err.contains("matchea 2 veces") || err.contains("otros nodos"), "{err}");
+    }
+
+    /// Con el mismo título en reglas distintas, la regla los distingue.
+    #[test]
+    fn the_rule_tells_apart_scenarios_with_the_same_title() {
+        let (_, text) = captured(FEATURE, 29, 9).unwrap();
+        assert!(text.starts_with("@TAB-U-01"), "{text}");
     }
 }
