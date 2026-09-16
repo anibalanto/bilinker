@@ -3,9 +3,9 @@ endpoint:
     link: capture 2d7b7055fe2fc2554313cd7b0b3791a0
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture 2d7b7055fe2fc2554313cd7b0b3791a0
-      hash: daed77c06163276ebf80fce1ccafaf825f68bb6be9113b8383303cdd45f2e38b
+      hash: 527922063253c109bdaab4c95ec2c51547495e37dee1975e9780876dec18d8da
   1:
     link: capture 82213a02b74fc0359b395c30192e357d
     accepted:
