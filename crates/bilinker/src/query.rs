@@ -119,6 +119,41 @@ pub fn find_all_fragments(language: Language, source: &str, query_str: &str) -> 
     Ok(fragments(language, source, query_str, false)?.into_iter().map(|m| m.fragment).collect())
 }
 
+/// Los rangos del primer match y la declaración de su ancla: el padre del nodo que
+/// nombra el último predicado `(#eq? @nK "...")`.
+///
+/// Un fragmento de varias partes deja afuera lo que hay entre ellas —en un endpoint
+/// de Spring, el nombre y el cuerpo del método—, y la declaración es el nodo que
+/// las envuelve. `None` si la query no matchea o no tiene ancla.
+pub fn declaration(language: Language, source: &str, query_str: &str) -> Result<Option<(Ranges, ByteRange)>> {
+    let Some(anchor) = anchor_capture(query_str) else { return Ok(None) };
+
+    let mut parser = Parser::new();
+    parser.set_language(&language).context("set language")?;
+    let tree = parser.parse(source, None).context("parse failed")?;
+    let query = Query::new(&language, query_str)
+        .with_context(|| format!("invalid query:\n{query_str}"))?;
+    let Some(anchor_idx) = query.capture_index_for_name(&anchor) else { return Ok(None) };
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let Some(m) = matches.next() else { return Ok(None) };
+    let Some(parent) = m.captures.iter()
+        .find(|cap| cap.index == anchor_idx)
+        .and_then(|cap| cap.node.parent()) else { return Ok(None) };
+
+    let Some(fragment) = find_fragment(language, source, query_str)? else { return Ok(None) };
+    let (start, end) = trim_edges(source, parent.start_byte(), parent.end_byte());
+    Ok(Some((fragment.ranges, ByteRange { start, end })))
+}
+
+/// El nombre de la captura del último predicado `(#eq? @nK "...")`: `nK`.
+fn anchor_capture(query_str: &str) -> Option<String> {
+    let at = query_str.rfind("(#eq? @")? + "(#eq? @".len();
+    let name: String = query_str[at..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    (!name.is_empty()).then_some(name)
+}
+
 /// Un match de la query: el fragmento entero, y el texto del último predicado de
 /// nombre si la query lo tiene.
 pub struct TargetMatch {

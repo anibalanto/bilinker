@@ -2866,9 +2866,25 @@ fn outermost_root(start: &Path) -> PathBuf {
 
 /// Un extremo estructural de una cadena, en forma canónica de lattice.
 struct TipNode {
-    canonical: String,
-    state:     String,
-    commit:    String,
+    canonical:   String,
+    state:       String,
+    commit:      String,
+    /// El nodo que envuelve a las partes, `inicio~fin`, sólo con varias partes.
+    declaration: Option<String>,
+}
+
+/// La declaración de un capture de varias partes, si sus tramos de hoy son los de
+/// la cache.
+///
+/// Los tramos salen de la cache y la declaración del archivo de hoy: si el archivo
+/// cambió desde el último `check`, juntarlas nombraría dos cosas distintas.
+fn tip_declaration(layer: &Path, cap: &bilink_format::Capture, cached: &bilink_format::Ranges) -> Option<String> {
+    if cached.parts().len() < 2 { return None; }
+    let query  = cap.query.as_deref()?;
+    let source = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
+    let language = bilinker::grammar::for_language(bilinker::grammar::language_for_file(&cap.file)).ok()?;
+    let (ranges, decl) = bilinker::query::declaration(language, &source, query).ok()??;
+    (ranges.to_string() == cached.to_string()).then(|| format!("{}~{}", decl.start, decl.end))
 }
 
 /// Recorre la cadena de `bl` y devuelve sus extremos estructurales.
@@ -2892,13 +2908,12 @@ fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
             // El rango sale de la cache. Con cache fría no hay nodo canónico que
             // emitir: lattice necesita `check` corrido antes de consultar.
             let Some(range) = cache.capture_ranges(id) else { continue };
-            // Lattice lleva un solo rango por nodo: varias partes salen como el
-            // tramo de la primera a la última, texto intermedio incluido.
+            // Un tramo por parte: lo que hay entre dos partes no es del fragmento.
             tips.push(TipNode {
-                canonical: format!("{}::{}#{}~{}",
-                    layer_label(base, &layer), cap.file, range.start(), range.end()),
+                canonical: format!("{}::{}#{}", layer_label(base, &layer), cap.file, range),
                 state:  cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into()),
                 commit: cache.commit(uuid, n).unwrap_or("").to_string(),
+                declaration: tip_declaration(&layer, &cap, &range),
             });
         }
 
@@ -2931,10 +2946,20 @@ fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> Vec<String> {
         if tips.len() < 2 { continue; }
         let (a, b) = (&tips[0], &tips[1]);
 
+        // La declaración sale sólo si algún tip la tiene: sin ella, la arista es
+        // la de siempre.
+        let declaration = match (&a.declaration, &b.declaration) {
+            (None, None) => String::new(),
+            (da, db) => {
+                let js = |d: &Option<String>| d.as_ref().map_or("null".to_string(), |d| format!("\"{d}\""));
+                format!(r#","declaration":[{},{}]"#, js(da), js(db))
+            }
+        };
+
         out.push(format!(
-            r#"  {{"from":"{}","to":"{}","kind":"{}","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"{}","state":["{}","{}"],"commit":["{}","{}"]}}"#,
+            r#"  {{"from":"{}","to":"{}","kind":"{}","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"{}","state":["{}","{}"],"commit":["{}","{}"]{}}}"#,
             esc_json(&a.canonical), esc_json(&b.canonical),
-            kind, uuid, a.state, b.state, a.commit, b.commit,
+            kind, uuid, a.state, b.state, a.commit, b.commit, declaration,
         ));
     }
 

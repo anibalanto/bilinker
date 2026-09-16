@@ -156,21 +156,74 @@ fn bilinks_without_a_checked_range_exit_with_one_and_name_check() {
     assert!(stderr.contains("bilinker check"), "{stderr}");
 }
 
+/// Los tramos de un nodo: `archivo#a~b,c~d`.
+fn spans_of(node: &str) -> Vec<(usize, usize)> {
+    let (_, ranges) = node.rsplit_once('#').unwrap_or_else(|| panic!("sin rango: {node}"));
+    ranges.split(',').map(|r| {
+        let (a, b) = r.split_once('~').unwrap_or_else(|| panic!("no es inicio~fin: {node}"));
+        (a.parse().unwrap(), b.parse().unwrap())
+    }).collect()
+}
+
+fn spring_controller_graph(root: &Path) -> serde_yaml_ng::Value {
+    chain(root, &["--as.1", "spring-controller", "--tip", "src/Service.java:8:37"]);
+    code_in(root, &["check", "."]);
+    let (stdout, stderr, code) = code_in(root, &["graph", ".", "--format", "json"]);
+    assert_eq!(code, 0, "{stderr}");
+    edges(&stdout).remove(0)
+}
+
 #[test]
-fn a_range_of_several_parts_is_the_span_from_the_first_to_the_last() {
+fn a_range_of_several_parts_has_one_span_per_part() {
     let (_tmp, root) = workspace();
-    chain(&root, &["--as.1", "spring-controller", "--tip", "src/Service.java:8:37"]);
+    let edge = spring_controller_graph(&root);
+    let to = field(&edge, "to");
+    let spans = spans_of(to);
+    assert_eq!(spans.len(), 4, "la ruta de la clase, la del método, el retorno y los parámetros: {to}");
+
+    let src = fs::read_to_string(root.join("src/Service.java")).unwrap();
+    assert_eq!(spans[0].0, src.find("@RequestMapping").unwrap(), "arranca en la primera parte: {to}");
+    let name = src.find("getPermissions").unwrap();
+    assert!(spans.iter().all(|&(a, b)| !(a <= name && name < b)), "el nombre queda entre dos tramos: {to}");
+    let body = src.find("return svc").unwrap();
+    assert!(spans.iter().all(|&(_, b)| b <= body), "sin el cuerpo: {to}");
+}
+
+#[test]
+fn a_tip_of_several_parts_carries_the_declaration_of_its_anchor() {
+    let (_tmp, root) = workspace();
+    let edge = spring_controller_graph(&root);
+    let decl = edge.get("declaration").and_then(|d| d.as_sequence())
+        .unwrap_or_else(|| panic!("falta `declaration`: {edge:?}"));
+    assert!(decl[0].is_null(), "la spec es de una sola parte: {edge:?}");
+
+    let src = fs::read_to_string(root.join("src/Service.java")).unwrap();
+    let (start, end) = range_of(&format!("#{}", decl[1].as_str().unwrap()));
+    assert_eq!(start, src.find("@GetMapping").unwrap(), "el método, desde sus anotaciones");
+    assert_eq!(end, src.find("    }\n}").unwrap() + 5, "hasta el final de su cuerpo");
+}
+
+#[test]
+fn a_tip_of_one_part_has_no_declaration() {
+    let (_tmp, root) = workspace();
+    chain(&root, &["--tip", "src/Service.java:5:17"]);
     code_in(&root, &["check", "."]);
 
     let (stdout, stderr, code) = code_in(&root, &["graph", ".", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}");
-    let edges = edges(&stdout);
-    let to = field(&edges[0], "to");
-    assert!(!to.contains(','), "lattice no parsea varias partes: {to}");
+    assert!(edges(&stdout)[0].get("declaration").is_none(), "{stdout}");
+}
 
-    let (start, end) = range_of(to);
+#[test]
+fn a_declaration_is_not_emitted_against_stale_spans() {
+    let (_tmp, root) = workspace();
+    chain(&root, &["--as.1", "spring-controller", "--tip", "src/Service.java:8:37"]);
+    code_in(&root, &["check", "."]);
     let src = fs::read_to_string(root.join("src/Service.java")).unwrap();
-    assert_eq!(start, src.find("@RequestMapping").unwrap(), "arranca en la primera parte: {to}");
-    assert!(end > src.find("getPermissions").unwrap(), "termina en la última: {to}");
-    assert!(end <= src.find("    {\n        return").unwrap(), "sin el cuerpo: {to}");
+    fs::write(root.join("src/Service.java"), format!("// movido\n{src}")).unwrap();
+
+    let (stdout, stderr, code) = code_in(&root, &["graph", ".", "--format", "json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(edges(&stdout)[0].get("declaration").is_none(),
+            "los tramos son de la cache, y la declaración sería de hoy:\n{stdout}");
 }
