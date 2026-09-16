@@ -1,0 +1,6 @@
+file: docs/specs/concepts/graph.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "La cadena"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Los tips se buscan cruzando capas por los endpoints `path`"))) @target)
