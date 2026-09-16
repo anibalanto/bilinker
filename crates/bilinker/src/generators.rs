@@ -200,10 +200,31 @@ fn verbo_de(texto: &str) -> Option<&'static str> {
 
 /// El literal de ruta de una anotación, si lo lleva.
 ///
-/// Toma el **primer** string de los argumentos: `("/x")` y `(value = "/x", produces
-/// = "…")` dan lo mismo. `produces` y `consumes` van después y no son ruta.
+/// **Sólo la ruta**: el primer argumento cuando es un string, o el valor de `value` o
+/// de `path`. `params`, `produces`, `consumes` y `headers` también llevan strings, y
+/// tomar el primero que aparece convertía `@GetMapping(params = "ids")` en la ruta
+/// `ids`.
 fn literal_de(texto: &str) -> Option<String> {
-    let (_, resto) = texto.split_once('"')?;
+    let (_, args) = texto.split_once('(')?;
+    let args = args.trim_start();
+    let valor = if args.starts_with('"') || args.starts_with('{') {
+        args
+    } else {
+        ["value", "path"].iter().find_map(|clave| {
+            let mut resto = args;
+            while let Some(i) = resto.find(clave) {
+                let antes = resto[..i].chars().last();
+                let despues = resto[i + clave.len()..].trim_start();
+                if antes.map_or(true, |c| !c.is_alphanumeric() && c != '_') && despues.starts_with('=') {
+                    return Some(despues[1..].trim_start());
+                }
+                resto = &resto[i + clave.len()..];
+            }
+            None
+        })?
+    };
+    let valor = valor.trim_start_matches('{').trim_start();
+    let resto = valor.strip_prefix('"')?;
     let (lit, _) = resto.split_once('"')?;
     (!lit.is_empty()).then(|| lit.to_string())
 }
@@ -258,6 +279,55 @@ fn annotation_named<'t>(node: Node<'t>, names: &[&str], source: &str) -> Option<
         if found.is_some() { return found; }
     }
     None
+}
+
+/// Si otro método de la clase se llama igual: una sobrecarga, que el nombre solo no
+/// distingue.
+fn is_overloaded(class: Option<Node>, method: Node, source: &str) -> bool {
+    let (Some(class), Some(name)) = (class, method.child_by_field_name("name")) else { return false };
+    let Some(body) = class.child_by_field_name("body") else { return false };
+    let nombre = &source[name.byte_range()];
+    let mut c = body.walk();
+    let repetido = body.children(&mut c)
+        .filter(|n| n.kind() == "method_declaration" && n.id() != method.id())
+        .any(|n| n.child_by_field_name("name").is_some_and(|x| &source[x.byte_range()] == nombre));
+    repetido
+}
+
+/// Los parámetros de una sobrecarga: el nodo es contenido, y el tipo de cada uno ancla.
+///
+/// **En orden y sin huecos**, con `.` entre hijos: `(Short)` no tiene que matchear
+/// `(Short, Integer)`. **Con `#match?` y no `#eq?`**, para que el último `#eq?` de la
+/// query siga siendo el nombre del método.
+fn parameter_types_pattern(cap: &mut impl FnMut() -> String, params: Node, source: &str) -> String {
+    let mut c = params.walk();
+    let mut hijos = Vec::new();
+    for p in params.named_children(&mut c) {
+        match p.child_by_field_name("type") {
+            Some(t) if p.kind() == "formal_parameter" => {
+                let n = cap();
+                hijos.push(format!(
+                    "(formal_parameter type: (_) {n} (#match? {n} \"^{}$\"))",
+                    query::escape_query_string(&regex_literal(&source[t.byte_range()]))));
+            }
+            _ => hijos.push(format!("({})", p.kind())),
+        }
+    }
+    if hijos.is_empty() {
+        return "parameters: (formal_parameters) @target".to_string();
+    }
+    format!("parameters: (formal_parameters\n        .\n        {}\n        .) @target",
+            hijos.join("\n        .\n        "))
+}
+
+/// Un texto como regex que lo matchea literal.
+fn regex_literal(texto: &str) -> String {
+    let mut out = String::with_capacity(texto.len());
+    for ch in texto.chars() {
+        if "\\.^$|?*+()[]{}".contains(ch) { out.push('\\'); }
+        out.push(ch);
+    }
+    out
 }
 
 fn enclosing_class<'t>(node: Node<'t>) -> Option<Node<'t>> {
@@ -315,6 +385,10 @@ fn spring_pattern(
     // `modifiers, type, name, parameters`. El nombre va en el medio, no al final.
     for field in ["type", "name", "parameters"] {
         let Some(child) = method.child_by_field_name(field) else { continue };
+        if field == "parameters" && is_overloaded(class, method, source) {
+            method_parts.push(parameter_types_pattern(&mut cap, child, source));
+            continue;
+        }
         if field == "name" {
             let c = cap();
             method_parts.push(format!(
