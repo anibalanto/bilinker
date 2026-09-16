@@ -23,6 +23,10 @@ bilinker graph <selector>
 
 Un selector que no encuentra ningún bilink sale con 1, y lo dice por stderr. También sale con 1 una capa con bilinks de la que no sale ninguna arista, como una capa sin `check` corrido, y el mensaje dice que hay que correrlo. Un error, como un UUID que no existe o un bilink que no se puede leer, también sale con 1. Para lattice cualquiera de los tres es un proveedor que no contestó, y no un grafo vacío.
 
+### Con algún bilink sin rango en la cache, emite lo que tiene y sale con 3
+
+Un bilink cuyo tip no tiene rango en la cache, como uno creado y aceptado después del último `check`, no emite arista. Si otros sí la emiten, `graph` las emite, dice por stderr cuántos bilinks quedaron afuera y que hay que correr `bilinker check .`, y sale con 3. Para lattice es un proveedor que contestó incompleto, y no un grafo completo.
+
 ## Los formatos
 
 ### `json` es el único formato, y el que se usa sin `--format`
