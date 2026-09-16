@@ -1,0 +1,19 @@
+kind: governs
+endpoint:
+  0:
+    link: capture 64b98078c955237a9e02a22ce0952633
+    accepted:
+    - agree:
+      - anibal
+      link: capture 64b98078c955237a9e02a22ce0952633
+      hash: 446b638fe884f2fbbabd9978ce0d7e326e63dfb048578e3e2266f2d3d134d59e
+    name: regla
+  1:
+    link: capture 0a2e61e6f1442b5ff0e2903a7e9ae49b
+    accepted:
+    - agree:
+      - anibal
+      link: capture 0a2e61e6f1442b5ff0e2903a7e9ae49b
+      hash: f6cc1cba4688dcc5038f21561e90c5128f9bf5abea321b9a2abbff763fd58a2c
+      hash_ast: fce40d5d69886354e933ee8c90f2247cc602f478b75b5b0e9a5c0f0536a03d57
+    name: código
