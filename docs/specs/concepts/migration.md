@@ -76,7 +76,7 @@ De las salidas que se consideraron, dos son peores:
 | negarse si hay algún `n` adquirido | deja la migración bloqueada por algo que no puede arreglar, y obliga a re-aceptar todo antes de poder leer los archivos con el binario nuevo |
 | escribir `declined` | la renuncia queda escrita |
 
-Con `declined`, `check` y `status` dicen que ese endpoint no vigila su vecindario en vez de dejar creer que sí; un `accept` posterior con proveedor lo levanta solo, porque una renuncia anterior se levanta sola en cuanto hay con qué resolver; y nadie tiene que volver a tipear `--no-n1` en el medio. Al revés funciona y de frente no: se migra, y quien quiera el vecindario lo recupera aceptando.
+Con `declined`, `check` y `status` dicen que ese endpoint no vigila su vecindario en vez de dejar creer que sí; un `accept` posterior con proveedor lo levanta solo, porque una renuncia anterior se levanta sola en cuanto hay con qué resolver; y nadie tiene que volver a tipear `--decline-n1` en el medio. Al revés funciona y de frente no: se migra, y quien quiera el vecindario lo recupera aceptando.
 
 ### Una migración que no puede llevar un campo hacia adelante escribe `unknown`, no una renuncia
 
