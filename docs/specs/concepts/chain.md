@@ -293,6 +293,25 @@ Es el reparto inverso al de `--as interface`, que pone el nombre en los dos role
 
 Lo que cuesta es que renombrar el método deja el capture sin ancla, y el endpoint `UNRESOLVED`. Cuando la similitud lo encuentra sin ambigüedad el capture es `REANCHORED`: `apply` lo repunta y el endpoint queda `RELOCATED` hasta que alguien acepte. Entre hermanos parecidos la similitud no alcanza, el capture es `UNANCHORED`, y la salida es `recapture`. No hay ancla más barata: en un endpoint cuya anotación no lleva literal no hay otra cosa que lo distinga de sus hermanos, y anclar por algo que el fragmento captura convierte el cambio que importa en un puntero perdido.
 
+### En una sobrecarga, los tipos de los parámetros también anclan
+
+Si el nombre del método se repite entre los métodos de la clase, el nombre solo no distingue el endpoint, y la query suma un predicado por el tipo de cada parámetro, en orden y sin huecos:
+
+```
+      parameters: (formal_parameters
+        .
+        (formal_parameter type: (_) @n3 (#match? @n3 "^Short$"))
+        .
+        (formal_parameter type: (_) @n4 (#match? @n4 "^List<Long>$"))
+        .) @target
+```
+
+Los tipos distinguen siempre: Java no compila dos métodos con el mismo nombre y los mismos tipos de parámetros. Los parámetros siguen siendo contenido —el nodo lleva `@target`—, y lo que ancla es sólo el texto de cada tipo, no sus anotaciones ni sus nombres.
+
+Van con `#match?` y no con `#eq?`, así que el último `#eq?` de la query sigue siendo el nombre del método.
+
+Lo que cuesta es lo de toda ancla: cambiar el tipo de un parámetro de un método sobrecargado deja el capture sin resolver, y la salida es `recapture`. Cambiar su ruta sigue siendo contenido, y se ve como `ALTERED` con su diff. Un método que no se repite en la clase ancla sólo en el nombre, como antes.
+
 ### El alias: el verbo y la ruta, compuestos del fragmento
 
 Un bilink se identifica por su UUID, y para un endpoint hay un nombre que cualquiera reconoce. Está entero adentro de lo capturado, así que se compone y no se guarda:
@@ -316,6 +335,14 @@ Pero se lee del archivo y no de la query, aunque en la query esté. `name: (iden
 El alias es de cada generador y no del formato. Cada uno nombra en su vocabulario: acá es el verbo y la ruta porque eso es un endpoint; `--as interface` nombra por el método, porque eso es una firma. Un generador que no sepa nombrar no nombra, y el bilink se muestra por UUID.
 
 Dónde vive el valor compuesto es de [la cache](cache.md), no de acá: es un derivado del capture, como `range`.
+
+### El literal de ruta del alias es el posicional, el de `value` o el de `path`
+
+El alias toma de cada anotación sólo su ruta: el primer argumento cuando es un string, o el valor de `value` o de `path`. `params`, `produces`, `consumes` y `headers` no son ruta, y una anotación que sólo los lleva no tiene literal propio: el alias se desempata con el nombre del método, como en un markerless.
+
+```
+GET jur/{idJurisdiccion}/us  ·  getMany
+```
 
 ### Y bilinker no sabe de Spring
 

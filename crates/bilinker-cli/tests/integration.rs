@@ -897,6 +897,97 @@ fn renaming_a_markerless_endpoint_costs_a_recapture() {
     assert!(out.contains("UNRESOLVED"), "y el capture es el que no resuelve:\n{out}");
 }
 
+/// Un controller con dos endpoints que se llaman igual: la sobrecarga de sge.
+fn workspace_with_an_overload() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    fs::write(root.join("src/Dashboard.java"), concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/dashboards\")\n",
+        "public class Dashboard {\n",
+        "\n",
+        "    @GetMapping(\"/alertas/acciones-tomadas\")\n",
+        "    public AlertaDto alertas(Short idJur)\n",
+        "    {\n",
+        "        return svc.alertas(idJur);\n",
+        "    }\n",
+        "\n",
+        "    @GetMapping(\"/alertas/acciones-tomadas/institucion\")\n",
+        "    public List<AccionDto> alertas(Integer idUs, List<Long> anios)\n",
+        "    {\n",
+        "        return svc.acciones(idUs, anios);\n",
+        "    }\n",
+        "\n",
+        "    @GetMapping(params = \"ids\")\n",
+        "    public List<UsDto> getMany(String ids)\n",
+        "    {\n",
+        "        return svc.many(ids);\n",
+        "    }\n",
+        "}\n",
+    )).unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "ctl"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
+    (tmp, root)
+}
+
+/// `spring-overload-anchors-on-parameter-types` — dos métodos con el mismo nombre se
+/// distinguen por los tipos de sus parámetros, que anclan con `#match?`; el nombre
+/// sigue siendo el último `#eq?`.
+#[test]
+fn an_overloaded_endpoint_anchors_on_its_parameter_types() {
+    let (_tmp, root) = workspace_with_an_overload();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Dashboard.java:12:29",
+    ]);
+    assert!(ok, "una sobrecarga no puede bloquear el capture:\n{stderr}");
+
+    let cap = capture_of(&root, "Dashboard.java");
+    assert!(cap.contains("\"^Integer$\"") && cap.contains("\"^List<Long>$\""),
+            "los tipos de los parámetros anclan:\n{cap}");
+    let last_eq = cap.lines().filter(|l| l.contains("#eq?")).last().unwrap_or("");
+    assert!(last_eq.contains("\"alertas\""), "el último #eq? es el nombre del método:\n{cap}");
+
+    run_in(&root, &["check", "."]);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--no-n1", "."]);
+    assert!(ok, "{stderr}");
+
+    // El hermano no es el propio.
+    let java = root.join("src/Dashboard.java");
+    let edit = |from: &str, to: &str| {
+        let src = fs::read_to_string(&java).unwrap();
+        fs::write(&java, src.replace(from, to)).unwrap();
+    };
+    edit("public AlertaDto alertas(Short idJur)", "public OtroDto alertas(Short idJur)");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(ok, "tocar la otra sobrecarga no mueve nada:\n{out}");
+
+    // Y la ruta es contenido: cambia y se ve.
+    edit("/alertas/acciones-tomadas/institucion", "/alertas/acciones/institucion");
+    let (out, _, _) = run_in(&root, &["check", "."]);
+    assert!(out.contains("ALTERED"), "cambiar la ruta es ALTERED, con su diff:\n{out}");
+}
+
+/// `spring-alias-reads-only-the-route` — `params = "ids"` no es ruta: el alias se
+/// desempata con el nombre del método.
+#[test]
+fn the_alias_does_not_take_params_for_the_route() {
+    let (_tmp, root) = workspace_with_an_overload();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "spring-controller", "--tip", "src/Dashboard.java:18:22",
+    ]);
+    assert!(ok, "{stderr}");
+    run_in(&root, &["check", "."]);
+
+    let (out, _, _) = run_in(&root, &["chain", "list"]);
+    assert!(!out.contains("dashboardsids") && !out.contains("/ids"), "params no es ruta:\n{out}");
+    assert!(out.contains("GET /dashboards") && out.contains("getMany"),
+            "sin literal propio, el alias lleva el nombre:\n{out}");
+}
+
 /// La detección sugiere y no elige: sin `--as`, el capture es el nodo entero.
 #[test]
 fn detection_suggests_and_does_not_choose() {
