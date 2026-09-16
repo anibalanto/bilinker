@@ -1144,52 +1144,9 @@ Eliminar? [y/N] ");
                 let col:  usize = parts.next().unwrap().parse()?;
                 let line: usize = parts.next().unwrap().parse()?;
                 let file        = parts.next().unwrap();
-                let file_path   = cwd.join(file);
-                let root        = project_root(&cwd)?;
-
-                let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
-                if results.is_empty() {
-                    return Ok(());
-                }
-                // Sin rango no se sabe si cubre la posición: una lista vacía
-                // afirmaría que no.
-                let unranged = results.iter().filter(|(_, _, r)| r.is_none()).count();
-                if unranged > 0 {
-                    eprintln!("{unranged} endpoint(s) de {file} sin rango en la cache: puede cubrir la posición alguno.");
-                    eprintln!("  Correr `bilinker check .` para calcularlos.");
-                }
-                let source = std::fs::read_to_string(&file_path).unwrap_or_default();
-                let byte = line_col_to_byte(&source, line, col);
-                for (bilink_path, n, range) in results {
-                    let Some(range) = range else { continue };
-                    if range.parts().iter().any(|r| byte >= r.start && byte < r.end) {
-                        let uuid  = bilink_path.file_stem()
-                            .and_then(|s| s.to_str()).unwrap_or("?");
-                        let bl    = bilink_format::BiLink::load(&bilink_path)?;
-                        let other = &bl.endpoint.get(1 - n).link;
-                        println!("{uuid}.{n}  {other}");
-                    }
-                }
+                get_at_position(&cwd, file, line, col)?;
             } else {
-                let file_path = cwd.join(&target);
-                let root      = project_root(&cwd)?;
-
-                let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
-                let mut unranged = false;
-                for (bilink_path, n, range) in results {
-                    let uuid  = bilink_path.file_stem()
-                        .and_then(|s| s.to_str()).unwrap_or("?");
-                    let bl    = bilink_format::BiLink::load(&bilink_path)?;
-                    let other = &bl.endpoint.get(1 - n).link;
-                    match range {
-                        Some(range) => println!("{uuid}.{n}  {other}  bytes {range}"),
-                        None => { unranged = true; println!("{uuid}.{n}  {other}  sin rango"); }
-                    }
-                }
-                if unranged {
-                    eprintln!("hay endpoints sin rango: la cache no los tiene.");
-                    eprintln!("  Correr `bilinker check .` para calcularlos.");
-                }
+                get_file(&cwd, &target)?;
             }
         }
 
@@ -2790,6 +2747,64 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
 
     if cold {
         eprintln!("sin estados: la cache está fría.");
+        eprintln!("  Correr `bilinker check .` para calcularlos.");
+    }
+    Ok(())
+}
+
+// ─── get: posición y archivo ──────────────────────────────────────────────────
+
+/// Los endpoints de `file` cuyo rango cubre la posición.
+///
+/// Sin rango en la cache no se sabe si un endpoint la cubre, así que no se lista:
+/// se cuentan y se avisa, porque una lista vacía afirmaría que ninguno la cubre.
+fn get_at_position(cwd: &Path, file: &str, line: usize, col: usize) -> anyhow::Result<()> {
+    let file_path = cwd.join(file);
+    let root      = project_root(cwd)?;
+
+    let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
+    if results.is_empty() {
+        return Ok(());
+    }
+    let unranged = results.iter().filter(|(_, _, r)| r.is_none()).count();
+    if unranged > 0 {
+        eprintln!("{unranged} endpoint(s) de {file} sin rango en la cache: puede cubrir la posición alguno.");
+        eprintln!("  Correr `bilinker check .` para calcularlos.");
+    }
+    let source = std::fs::read_to_string(&file_path).unwrap_or_default();
+    let byte = line_col_to_byte(&source, line, col);
+    for (bilink_path, n, range) in results {
+        let Some(range) = range else { continue };
+        if range.parts().iter().any(|r| byte >= r.start && byte < r.end) {
+            let uuid  = bilink_path.file_stem()
+                .and_then(|s| s.to_str()).unwrap_or("?");
+            let bl    = bilink_format::BiLink::load(&bilink_path)?;
+            let other = &bl.endpoint.get(1 - n).link;
+            println!("{uuid}.{n}  {other}");
+        }
+    }
+    Ok(())
+}
+
+/// Todos los endpoints que referencian `target`, con sus bytes o `sin rango`.
+fn get_file(cwd: &Path, target: &str) -> anyhow::Result<()> {
+    let file_path = cwd.join(target);
+    let root      = project_root(cwd)?;
+
+    let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
+    let mut unranged = false;
+    for (bilink_path, n, range) in results {
+        let uuid  = bilink_path.file_stem()
+            .and_then(|s| s.to_str()).unwrap_or("?");
+        let bl    = bilink_format::BiLink::load(&bilink_path)?;
+        let other = &bl.endpoint.get(1 - n).link;
+        match range {
+            Some(range) => println!("{uuid}.{n}  {other}  bytes {range}"),
+            None => { unranged = true; println!("{uuid}.{n}  {other}  sin rango"); }
+        }
+    }
+    if unranged {
+        eprintln!("hay endpoints sin rango: la cache no los tiene.");
         eprintln!("  Correr `bilinker check .` para calcularlos.");
     }
     Ok(())
