@@ -1,0 +1,6 @@
+file: docs/specs/concepts/graph.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El selector"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Con algún bilink sin rango en la cache, emite lo que tiene y sale con 3"))) @target)
