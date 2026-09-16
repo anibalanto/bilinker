@@ -233,6 +233,8 @@ Y ahí sí bilinker levanta el suyo. Cómo lo levanta y cuánto lo espera son la
 
 Cuando la puerta del daemon de la capa no contesta, el proveedor que le habla a `lspd` lo levanta antes de contestar. Lo intenta una vez por corrida y no una por endpoint: `check` pregunta por decenas de endpoints, y cada uno no puede pagar su propio arranque.
 
+Y un language server que no está instalado —o que se cayó, o un lenguaje sin soporte— es `None` por el mismo motivo: el daemon contesta `-32000` —el código con que su protocolo dice que una pregunta no se puede contestar—, y eso dice que esa pregunta no se puede contestar, no que la corrida esté mal. Quien decide qué escribir con un `None` es la regla de abajo, y `--no-n1` sigue sirviendo.
+
 Lo que no cambia es el tercer valor: si el daemon no arranca, sigue siendo `None`, y el aviso de puertas vivas que este cliente no calcula sale ahí, cuando igual degrada. Levantarlo es una comodidad, no una garantía, y un `check` que fracasara porque un daemon no arrancó estaría convirtiendo una falla de infraestructura en una reducción de cobertura.
 
 Lo levanta quien le pregunta al puerto, y le pregunta sólo quien necesita tipos: `check`, `apply` y `accept`. `status`, `get` y el resto no preguntan, así que no levantan nada, y no hay una lista de comandos que mantener.
