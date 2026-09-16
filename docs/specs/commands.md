@@ -18,7 +18,7 @@ Una fila por comando. El detalle de cada uno está en el concepto al que remite:
 | `bilinker chain status <uuid>` | Recorre todos los nodos de una cadena con su estado. | [chain](concepts/chain.md) |
 | `bilinker chain list [--kind] [--link] [--as]` | Lista las cadenas a partir del directorio actual, con filtros que se combinan con Y. | [chain](concepts/chain.md) |
 | `bilinker remove <uuid>` | Elimina el bilink de la capa actual y commitea el borrado en la ref. Publica también un borrado que sólo está en el árbol. Los vecinos detectan `BROKEN` en el próximo `check`. | [chain](concepts/chain.md) |
-| `bilinker graph <selector> [--format tree\|flat\|json] [--depth <n>] [--recursive]` | Recorre el grafo de bilinks cruzando capas. `json` es el contrato de proveedor hacia lattice. | [graph](concepts/graph.md) |
+| `bilinker graph <selector> [--format json] [--recursive]` | Exporta las aristas de los bilinks en JSON, una por cadena entre sus tips, con su estado, su commit y el rango de la cache: el contrato de proveedor hacia lattice. Sin ninguna arista que emitir, sale con 1. | [graph](concepts/graph.md) |
 | `bilinker index [--recursive]` · `index status` | Construye el índice derivado de la capa, o dice si está al día. | [index](concepts/index.md) |
 | `bilinker init [--dry-run]` | Pone a punto el clon: exclusión, refspec y `.bilink/` materializado. Lo primero en un clon nuevo. | [ref](concepts/ref.md) |
 | `bilinker sync [--dry-run]` | Absorbe el tip de la rama del proyecto en la ref, sin decidir nada. | [ref](concepts/ref.md) |
