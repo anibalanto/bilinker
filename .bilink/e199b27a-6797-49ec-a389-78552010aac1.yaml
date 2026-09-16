@@ -1,0 +1,10 @@
+endpoint:
+  0:
+    link: capture fee23f96a12e6d931b5db49eed9c290c
+    accepted:
+    - agree:
+      - anibal
+      link: capture fee23f96a12e6d931b5db49eed9c290c
+      hash: f69c0ea30af08cebf4ca2ac2eeebc66345d8072901e621672024b74cd400efe6
+  1:
+    link: capture 09850d5e4fae169faabc60b6d11ab78b
