@@ -1,6 +1,6 @@
 # El grafo
 
-`bilinker graph` recorre el grafo de bilinks a partir de un archivo, un fragmento o un UUID y muestra todos los nodos conectados, cruzando capas. Responde a la pregunta de con qué está vinculado algo, y a través de qué caminos. Es navegación: no modifica nada.
+`bilinker graph` exporta las aristas de los bilinks en el modelo de aristas de lattice. Es la forma en que bilinker actúa como proveedor de `lattice graph`: resolver una cadena a través de capas es conocimiento del formato bilink, y recorrer el grafo y componerlo con las aristas de otros proveedores es de lattice. No recorre ni modifica nada.
 
 ## El selector
 
@@ -8,129 +8,62 @@
 
 ```
 bilinker graph <selector>
-  [--depth <n>]
-  [--format <tree|flat|json>]
+  [--format json]
   [--recursive]
 ```
 
-| Selector | Comportamiento |
-|----------|----------------|
-| `archivo.md` | Todos los bilinks que referencian ese archivo en la capa actual |
-| `archivo.md:42:5` | Bilinks cuyo capture cubre esa posición |
+| Selector | Qué bilinks exporta |
+|----------|---------------------|
+| `archivo.md` | Los que referencian ese archivo en la capa actual |
+| `archivo.md:42:5` | Los mismos que el archivo: la posición no filtra |
 | `<uuid>`, ocho o más caracteres hexadecimales | Un bilink concreto, por UUID o prefijo |
-| `.` o `*` | Todos los bilinks de la capa actual; con `--recursive`, los de todas las capas bajo la raíz del proyecto |
+| `.` o `*` | Todos los bilinks de la capa actual, los `.yaml` de su `.bilink/`; con `--recursive`, los de todas las capas bajo la raíz del proyecto |
 
-`--depth <n>` limita la profundidad del recorrido, y sin él no hay límite. `--depth 1` muestra sólo los bilinks directamente conectados al selector. Un selector que no resuelve a ningún archivo ni bilink conocido sale con 1; un error de lectura, con 2.
+### Sin ninguna arista que emitir, sale con 1
 
-## El recorrido
-
-### El traversal es un BFS que cruza capas por los endpoints `path`
-
-Cada fragmento de archivo es un nodo; los endpoints `path` son aristas hacia otras capas.
-
-```
-graph(selector):
-  1. Resolver selector → lista de bilinks iniciales
-  2. Para cada bilink:
-       emitir fragmento(s) estructural(es)
-       para cada endpoint path no visitado:
-         adjacent = stratum::resolve(path)
-         si adjacent/.bilink/<uuid>.yaml existe: encolar
-  3. Deduplicar por (UUID, raíz de capa, línea de inicio): fragmentos distintos
-     del mismo archivo son nodos separados.
-```
-
-Usa el índice de la capa si está al día, y si no cae al escaneo del directorio.
-
-### Si la capa adyacente no está clonada, el traversal se detiene sin fallar
-
-Si el `.bilink/<uuid>.yaml` de la capa adyacente no existe localmente, el recorrido se detiene ahí en silencio. El nodo actual se muestra con su endpoint `path`, y el comando no falla por eso.
-
-### Una cadena termina en un endpoint que no lleva a ningún lado más
-
-Son tres, y el traversal se detiene en los tres:
-
-| Terminador | Qué es | Cómo se emite |
-|---|---|---|
-| tip estructural | un fragmento de esta capa | el nodo, con su rango |
-| `abstract` | una punta abierta a quien la consuma | un nodo sin destino, estado `OPEN` |
-| repo | un fragmento de otro proyecto | una arista hacia el alias, sin cruzarla |
-
-### El traversal no cruza la frontera
-
-Un endpoint repo se emite como arista y se detiene ahí, aunque el clon del proveedor esté: seguirla significaría recorrer el grafo de otro proyecto, y el consumidor no sabe, ni tiene por qué saber, cuántas capas tiene el proveedor del otro lado.
-
-### `abstract` no es un traversal que falló
-
-Es una punta que nunca va a tener contraparte en su propio repo: quien la consume vive en otro proyecto que este repo no conoce. Emitirla como nodo con estado `OPEN` la distingue de una capa que no se pudo alcanzar, que es lo que un hueco confundiría.
-
-### Un par (UUID, capa) ya visitado se muestra y no se recorre de nuevo
-
-Si el traversal encuentra un par ya visitado lo muestra con `[ya visitado]` y no continúa por ahí.
+Un selector que no encuentra ningún bilink sale con 1, y lo dice por stderr. También sale con 1 una capa con bilinks de la que no sale ninguna arista, como una capa sin `check` corrido, y el mensaje dice que hay que correrlo. Un error, como un UUID que no existe o un bilink que no se puede leer, también sale con 1. Para lattice cualquiera de los tres es un proveedor que no contestó, y no un grafo vacío.
 
 ## Los formatos
 
-### `tree` es el formato por defecto
+### `json` es el único formato, y el que se usa sin `--format`
 
-```
-$ bilinker graph commands/pull.md
-
-commands/pull.md
-│
-├── c0feab23  [OK ↔ OK]
-│   │  link.0  commands/pull.md
-│   │  link.1  >impl
-│   │
-│   └── c0feab23  [OK ↔ OK]  (.stratum/impl)
-│       │  link.0  <
-│       │  link.1  crates/stratum-cli/src/main.rs :: (enum_item ...) @target
-│       │
-└── b95021d2  [OK ↔ OK]
-    └── b95021d2  [OK ↔ OK]  (.stratum/impl)
-        │  link.1  crates/stratum-cli/src/main.rs :: (function_item ...) @target
-        │
-```
-
-### `flat` es una línea por nodo
-
-Para scripting:
-
-```
-$ bilinker graph commands/pull.md --format flat
-
-c0feab23  OK ↔ OK  commands/pull.md  →  >impl  [.]
-c0feab23  OK ↔ OK  <  →  crates/main.rs :: (enum_item ...)  [.stratum/impl]
-```
+`graph` no tiene `tree`, `flat` ni `--depth`: recorrer, limitar la profundidad y renderizar son de `lattice graph`, que muestra además las aristas de los otros proveedores. `--format` sigue existiendo porque es la línea con que lattice invoca al proveedor, y un valor que no es `json` es un error de uso.
 
 ### `json` es el contrato de proveedor hacia lattice
 
-Emite las aristas de bilinker en el modelo de aristas de lattice, con los nodos ya resueltos a forma canónica. Es la forma en que bilinker actúa como proveedor: la resolución de una cadena a través de capas la hace bilinker, porque la topología es conocimiento de su formato; componerla con aristas de otros proveedores es tarea de lattice.
+Emite las aristas de bilinker en el modelo de aristas de lattice, con los nodos ya resueltos a forma canónica.
 
 ```json
 [
-  {
-    "from":      ".::commands/pull.md#312~358",
-    "to":        ".stratum/impl::crates/stratum-cli/src/main.rs#245~389",
-    "kind":      "bilink",
-    "guarantee": "accepted",
-    "provider":  "bilinker",
-    "directed":  false,
-    "ref":       "c0feab23-1b2c-4d5e-8f6a-7b8c9d0e1f2a",
-    "state":     ["OK", "OK"]
-  }
+  {"from":".::commands/pull.md#312~358","to":".stratum/impl::crates/stratum-cli/src/main.rs#245~389","kind":"bilink","guarantee":"accepted","provider":"bilinker","directed":false,"ref":"c0feab23-1b2c-4d5e-8f6a-7b8c9d0e1f2a","state":["OK","OK"],"commit":["81acc9b","93b4582"]}
 ]
 ```
 
-`state` lleva la tupla de estados de los dos tips. Los `kind` emitidos son `bilink` y `task`, los dos con garantía `accepted`. `governs` no se emite: exige el endpoint de tipo bilink, que está especificado y no implementado.
+`state` lleva la tupla de estados de los dos tips, y `commit` el commit en que se aceptó cada uno, que es el baseline de `git log <commit>..HEAD`. Un estado que la cache no tiene sale como `—`. Los `kind` emitidos son `bilink` e `issue`, los dos con garantía `accepted`. `governs` no se emite: exige el endpoint de tipo bilink, que está especificado y no implementado.
 
-Los formatos `dot` y `html` son de `lattice graph`, no de éste. Recorrer una cadena es conocimiento del formato bilink; renderizar el grafo nunca lo fue, y en lattice el visor muestra además las aristas de los otros proveedores.
+La capa de un nodo se nombra relativa a la raíz más externa del ecosistema que contiene a la capa invocada, así que el mismo fragmento tiene la misma forma canónica desde cualquier capa.
+
+## La cadena
 
 ### Una cadena de N nodos emite una arista entre sus dos tips estructurales
 
-No N-1 aristas entre nodos `.bilink`. Los mids son mecanismo interno de bilinker, no conexiones del proyecto.
+No N-1 aristas entre nodos `.bilink`. Los mids son mecanismo interno de bilinker, no conexiones del proyecto. Una cadena que se encuentra desde dos selectores, o desde dos capas con `--recursive`, sale una sola vez.
+
+### Los tips se buscan cruzando capas por los endpoints `path`
+
+Desde el bilink de la capa, cada endpoint `path` lleva al bilink del mismo UUID en la capa vecina, y cada endpoint `capture` es un tip. Si la capa vecina no está clonada, la búsqueda se detiene ahí sin fallar.
+
+Una cadena que no llega a dos tips estructurales no emite arista: una punta `abstract`, un endpoint `repo` —que es un fragmento de otro proyecto, y la búsqueda no cruza la frontera— o una capa vecina que no está clonada.
+
+### El rango de un tip es el que dejó el último `check` en la cache
+
+El rango vigente de un fragmento es derivado, y vive en la cache de su capa. Un tip sin rango en la cache no tiene forma canónica, y su cadena no emite arista: lattice necesita `check` corrido antes de consultar.
+
+### Un rango de varias partes sale como el tramo de la primera a la última
+
+La forma canónica de lattice lleva un solo rango, `inicio~fin`. Un capture de varias partes, como el de `spring-controller`, sale como el tramo que va del inicio de su primera parte al final de la última. El tramo contiene el texto entre las partes, que el fragmento no cubre, así que la contención contra él es más amplia que el fragmento: en un `spring-controller`, arranca en la anotación de ruta de la clase.
 
 ## Invariantes
 
 1. `graph` nunca modifica ningún archivo.
-2. Fragmentos distintos del mismo archivo generan nodos separados, identificados por su línea de inicio.
-3. `--depth 1` muestra sólo los bilinks directamente conectados al selector.
+2. Fragmentos distintos del mismo archivo generan nodos separados, cada uno con su rango.
