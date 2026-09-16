@@ -1147,13 +1147,21 @@ Eliminar? [y/N] ");
                 let file_path   = cwd.join(file);
                 let root        = project_root(&cwd)?;
 
-                let results = bilinker::check::find_by_file(&root, &file_path)?;
+                let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
                 if results.is_empty() {
                     return Ok(());
                 }
+                // Sin rango no se sabe si cubre la posición: una lista vacía
+                // afirmaría que no.
+                let unranged = results.iter().filter(|(_, _, r)| r.is_none()).count();
+                if unranged > 0 {
+                    eprintln!("{unranged} endpoint(s) de {file} sin rango en la cache: puede cubrir la posición alguno.");
+                    eprintln!("  Correr `bilinker check .` para calcularlos.");
+                }
+                let source = std::fs::read_to_string(&file_path).unwrap_or_default();
+                let byte = line_col_to_byte(&source, line, col);
                 for (bilink_path, n, range) in results {
-                    let source = std::fs::read_to_string(&file_path).unwrap_or_default();
-                    let byte = line_col_to_byte(&source, line, col);
+                    let Some(range) = range else { continue };
                     if range.parts().iter().any(|r| byte >= r.start && byte < r.end) {
                         let uuid  = bilink_path.file_stem()
                             .and_then(|s| s.to_str()).unwrap_or("?");
@@ -1166,13 +1174,21 @@ Eliminar? [y/N] ");
                 let file_path = cwd.join(&target);
                 let root      = project_root(&cwd)?;
 
-                let results = bilinker::check::find_by_file(&root, &file_path)?;
+                let results = bilinker::check::find_by_file_unranged(&root, &file_path)?;
+                let mut unranged = false;
                 for (bilink_path, n, range) in results {
                     let uuid  = bilink_path.file_stem()
                         .and_then(|s| s.to_str()).unwrap_or("?");
                     let bl    = bilink_format::BiLink::load(&bilink_path)?;
                     let other = &bl.endpoint.get(1 - n).link;
-                    println!("{uuid}.{n}  {other}  bytes {range}");
+                    match range {
+                        Some(range) => println!("{uuid}.{n}  {other}  bytes {range}"),
+                        None => { unranged = true; println!("{uuid}.{n}  {other}  sin rango"); }
+                    }
+                }
+                if unranged {
+                    eprintln!("hay endpoints sin rango: la cache no los tiene.");
+                    eprintln!("  Correr `bilinker check .` para calcularlos.");
                 }
             }
         }
@@ -2787,13 +2803,19 @@ fn cmd_graph(root: &Path, cwd: &Path, selector: &str, recursive: bool) -> anyhow
         eprintln!("no bilinks found for '{selector}'");
         std::process::exit(1);
     }
-    let edges = graph_json(root, &starts);
+    let (edges, unranged) = graph_json(root, &starts);
     if edges.is_empty() {
         eprintln!("no edges to export for '{selector}': {} bilink(s) without a range in the cache", starts.len());
         eprintln!("  Correr `bilinker check .` para calcularlos.");
         std::process::exit(1);
     }
     println!("[\n{}\n]", edges.join(",\n"));
+    // Lo que salió es cierto, y no es todo: 3 es "no pude verlo todo".
+    if unranged > 0 {
+        eprintln!("{unranged} bilink(s) sin rango en la cache no emiten arista.");
+        eprintln!("  Correr `bilinker check .` para calcularlos.");
+        std::process::exit(3);
+    }
     Ok(())
 }
 
@@ -2834,7 +2856,7 @@ fn find_graph_starts(root: &Path, cwd: &Path, selector: &str, recursive: bool) -
 
     let file_str = selector.splitn(2, ':').next().unwrap_or(selector);
     let file_path = cwd.join(file_str);
-    let results = bilinker::check::find_by_file(root, &file_path)?;
+    let results = bilinker::check::find_by_file_unranged(root, &file_path)?;
 
     Ok(results.into_iter().map(|(bilink_path, _n, _range)| {
         let layer_root = bilink_path.parent().and_then(|p| p.parent())
@@ -2887,12 +2909,14 @@ fn tip_declaration(layer: &Path, cap: &bilink_format::Capture, cached: &bilink_f
     (ranges.to_string() == cached.to_string()).then(|| format!("{}~{}", decl.start, decl.end))
 }
 
-/// Recorre la cadena de `bl` y devuelve sus extremos estructurales.
+/// Recorre la cadena de `bl` y devuelve sus extremos estructurales, y si a alguno
+/// le faltó el rango en la cache.
 ///
 /// Los nodos intermedios son mecanismo interno de bilinker: si lattice los
 /// viera, el grafo se llenaría de nodos `.bilink` que no son contenido del
 /// proyecto. Por eso una cadena de N nodos emite **una** arista entre sus tips.
-fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
+fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> (Vec<TipNode>, bool) {
+    let mut unranged = false;
     let mut tips    = Vec::new();
     let mut visited = std::collections::HashSet::new();
     let mut queue   = vec![layer_root.to_path_buf()];
@@ -2907,7 +2931,7 @@ fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
             let Ok(cap) = bilink_format::Capture::load_in(&layer, id) else { continue };
             // El rango sale de la cache. Con cache fría no hay nodo canónico que
             // emitir: lattice necesita `check` corrido antes de consultar.
-            let Some(range) = cache.capture_ranges(id) else { continue };
+            let Some(range) = cache.capture_ranges(id) else { unranged = true; continue };
             // Un tramo por parte: lo que hay entre dos partes no es del fragmento.
             tips.push(TipNode {
                 canonical: format!("{}::{}#{}", layer_label(base, &layer), cap.file, range),
@@ -2921,14 +2945,16 @@ fn chain_tips(base: &Path, uuid: &str, layer_root: &Path) -> Vec<TipNode> {
             queue.push(adj_layer);
         }
     }
-    tips
+    (tips, unranged)
 }
 
-/// Las aristas de bilinker en el modelo de lattice, una por cadena.
-fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> Vec<String> {
+/// Las aristas de bilinker en el modelo de lattice, una por cadena, y cuántas
+/// cadenas no la emitieron por un tip sin rango en la cache.
+fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> (Vec<String>, usize) {
     use bilink_format::LinkEndpoint;
     let base     = outermost_root(root);
     let mut out  = Vec::new();
+    let mut unranged = 0;
     let mut seen = std::collections::HashSet::new();
 
     for (path, layer_root) in starts {
@@ -2942,8 +2968,11 @@ fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> Vec<String> {
             _ => "bilink",
         };
 
-        let tips = chain_tips(&base, uuid, layer_root);
-        if tips.len() < 2 { continue; }
+        let (tips, missing) = chain_tips(&base, uuid, layer_root);
+        if tips.len() < 2 {
+            if missing { unranged += 1; }
+            continue;
+        }
         let (a, b) = (&tips[0], &tips[1]);
 
         // La declaración sale sólo si algún tip la tiene: sin ella, la arista es
@@ -2963,7 +2992,7 @@ fn graph_json(root: &Path, starts: &[(PathBuf, PathBuf)]) -> Vec<String> {
         ));
     }
 
-    out
+    (out, unranged)
 }
 
 fn layer_label(root: &Path, layer_root: &Path) -> String {

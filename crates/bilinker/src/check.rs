@@ -823,11 +823,22 @@ fn git_fragment_vanished(layer_root: &Path, file: &str, hash: Option<&str>) -> b
 /// Finds all bilinks referencing `file_path` across all layers under `root`.
 /// Returns `(bilink_path, endpoint_index, absolute_range)`.
 /// Uses `.bilink/.index` per layer when valid; falls back to O(N) scan.
-/// Los endpoints que referencian un archivo, con el rango que la cache tiene.
+/// Los endpoints que referencian un archivo y tienen rango en la cache.
 ///
-/// El rango es un derivado: con la cache fría no está, y este comando cae a vacío
-/// en vez de resolver. Quien lo necesite corre `check` primero.
+/// El rango es un derivado: con la cache fría no está, y el endpoint no sale.
+/// Quien necesite saber que faltan usa [`find_by_file_unranged`].
 pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, Ranges)>> {
+    Ok(find_by_file_unranged(root, file_path)?.into_iter()
+        .filter_map(|(path, n, range)| Some((path, n, range?)))
+        .collect())
+}
+
+/// Los endpoints que referencian un archivo, con el rango que la cache tenga.
+///
+/// Qué endpoints referencian el archivo lo dicen los bilinks, y el rango es un
+/// derivado: con la cache fría el endpoint sale igual, sin rango, en vez de
+/// desaparecer. Quien necesite el rango corre `check` primero.
+pub fn find_by_file_unranged(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, Option<Ranges>)>> {
     let mut results = Vec::new();
     for layer_root in crate::index::layer_roots(root) {
         let Ok(rel) = file_path.strip_prefix(&layer_root) else { continue };
@@ -840,9 +851,7 @@ pub fn find_by_file(root: &Path, file_path: &Path) -> Result<Vec<(PathBuf, u8, R
             let bilink_path = bilink_dir.join(format!("{uuid}.yaml"));
             let Ok(bl) = BiLink::load(&bilink_path) else { continue };
             let Some(id) = bl.endpoint.get(n).link.capture_id() else { continue };
-            if let Some(r) = cache.capture_ranges(id) {
-                results.push((bilink_path, n, r));
-            }
+            results.push((bilink_path, n, cache.capture_ranges(id)));
         }
     }
     Ok(results)
