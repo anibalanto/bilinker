@@ -340,17 +340,11 @@ impl Repo {
         }
 
         let index = self.fresh_index(&absorbed)?;
-        let mut found = false;
-        for (mode, oid, p) in self.bilink_entries(&ref_tip)? {
-            if p == path {
-                found = true;
-                continue;
-            }
-            self.git_indexed(
-                &index,
-                &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{p}")],
-            )?;
-        }
+        let (gone, kept): (Vec<_>, Vec<_>) = self.bilink_entries(&ref_tip)?
+            .into_iter()
+            .partition(|(_, _, p)| p == path);
+        self.index_entries(&index, &kept)?;
+        let found = !gone.is_empty();
         if !found {
             return Ok(Commit { sha: ref_tip, absorbed: None, wrote: false });
         }
@@ -597,15 +591,8 @@ impl Repo {
             }
         }
 
-        for (mode, oid, path) in &in_ref {
-            if take.contains(path) {
-                continue;
-            }
-            self.git_indexed(
-                &index,
-                &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{path}")],
-            )?;
-        }
+        let kept: Vec<_> = in_ref.iter().filter(|(_, _, path)| !take.contains(path)).cloned().collect();
+        self.index_entries(&index, &kept)?;
         let files: Vec<String> = take.into_iter().collect();
         for chunk in files.chunks(500) {
             let mut args = vec!["add".to_string(), "-f".into(), "--".into()];
@@ -623,12 +610,7 @@ impl Repo {
     /// a materializar antes de saber si el commit se puede escribir.
     pub fn build_tree_inheriting(&self, base: &str, bilinks_from: &str) -> Result<String> {
         let index = self.fresh_index(base)?;
-        for (mode, oid, path) in self.bilink_entries(bilinks_from)? {
-            self.git_indexed(
-                &index,
-                &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{path}")],
-            )?;
-        }
+        self.index_entries(&index, &self.bilink_entries(bilinks_from)?)?;
         Ok(self.git_indexed(&index, &["write-tree"])?.trim().to_string())
     }
 
@@ -1042,6 +1024,39 @@ impl Repo {
         run(Command::new("git").args(args).current_dir(&self.root), args)
     }
 
+    /// Agrega entradas `(modo, oid, path)` al índice en un solo proceso.
+    ///
+    /// Cada `update-index --cacheinfo` lee y reescribe el índice entero, que en un
+    /// proyecto grande es el árbol completo: de a una, el costo crece con cada entrada.
+    /// `--index-info` las toma todas por stdin.
+    fn index_entries(&self, index: &Path, entries: &[(String, String, String)]) -> Result<()> {
+        use std::io::Write;
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let args = ["update-index", "--add", "-z", "--index-info"];
+        let mut child = Command::new("git")
+            .args(args)
+            .current_dir(&self.root)
+            .env("GIT_INDEX_FILE", index)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("corriendo git {}", args.join(" ")))?;
+        {
+            let stdin = child.stdin.as_mut().context("sin stdin para git update-index")?;
+            for (mode, oid, path) in entries {
+                stdin.write_all(format!("{mode} {oid}\t{path}\0").as_bytes())?;
+            }
+        }
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!("git {} falló: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+
     fn git_indexed(&self, index: &Path, args: &[&str]) -> Result<String> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.git_indexed_owned(index, &owned)
@@ -1375,6 +1390,37 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {}",
                 String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Varias entradas de `.bilink/` entran al índice juntas, y el árbol es el mismo
+    /// que agregándolas de a una.
+    #[test]
+    fn entries_are_indexed_together_into_the_same_tree() {
+        let (_t, repo, _b, x, _cut) = cut_repo();
+        let blob = |content: &str| {
+            let out = Command::new("git").current_dir(&repo.root)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
+                .spawn().expect("git");
+            use std::io::Write;
+            out.stdin.as_ref().unwrap().write_all(content.as_bytes()).unwrap();
+            String::from_utf8_lossy(&out.wait_with_output().unwrap().stdout).trim().to_string()
+        };
+        let files = [
+            (".bilink/a.yaml", blob("a\n")),
+            (".bilink/capture/b.yaml", blob("b\n")),
+            (".bilink/con espacio.yaml", blob("c\n")),
+        ];
+        let expected = tree_with(&repo.root, &x,
+            &files.iter().map(|(p, b)| (*p, b.as_str())).collect::<Vec<_>>());
+
+        let index = repo.fresh_index(&x).unwrap();
+        let entries: Vec<(String, String, String)> = files.iter()
+            .map(|(p, b)| ("100644".to_string(), b.clone(), p.to_string())).collect();
+        repo.index_entries(&index, &entries).unwrap();
+        let got = repo.git_indexed(&index, &["write-tree"]).unwrap().trim().to_string();
+
+        assert_eq!(got, expected);
     }
 
     /// El corte se reconoce solo: padre único, y del proyecto.
