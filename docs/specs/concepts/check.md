@@ -428,6 +428,10 @@ Los pasos 1–2 resuelven el capture; los pasos 3–8 comparan contra `accepted`
 3. ¿accepted ausente?  → PENDING
 4. ¿link ≠ accepted.link?  → RELOCATED     ← ubicación: dos ids,
                                               sin abrir ningún archivo
+   ¿Hay dimensiones, declaradas o aprobadas?
+   SÍ → los pasos 5–8 corren por cada parte, y no por el fragmento:
+        la palabra es la de la más severa, y las que no están OK
+        la califican (ver "Las partes del contenido")
 5. ¿Hash matchea en el range?  → OK
 6. Recuperar el texto aceptado T (ver "Recuperar el texto aceptado").
    ¿F contiene T verbatim y es más grande?  → EXPANDED
