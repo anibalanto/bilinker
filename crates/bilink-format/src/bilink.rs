@@ -104,6 +104,17 @@ pub struct Endpoint {
     /// cuando la firma cambia, y qué tipo entró sólo lo sabe un language server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<DeclaredN>,
+    /// Las partes del fragmento que se vigilan, **declaradas**: por nombre, la query
+    /// que encuentra cada una. Las escribe el generador que capturó el extremo.
+    ///
+    /// **El nombre es una etiqueta opaca**: se compara con el de la decisión y no se
+    /// interpreta, así que ningún nombre es desconocido. No hay un conjunto de
+    /// partes que valga para toda gramática, y por eso el vocabulario es de cada
+    /// generador y no del formato.
+    ///
+    /// Vacío es lo mismo que ausente, y no se escribe.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, DeclaredDimension>,
     /// Las decisiones sobre este endpoint. **Una lista, y más de una es un estado.**
     ///
     /// La lista vacía es `PENDING`. Con exactamente una, valen las comparaciones de
@@ -335,6 +346,29 @@ pub struct DeclaredLevel {
     pub link: LevelLink,
 }
 
+/// Una dimensión declarada: la query que encuentra la parte.
+///
+/// **Se evalúa desde el nodo que el capture fijó**, no sobre el archivo: nombra partes
+/// de ese nodo y de sus ancestros, y nunca busca un nodo por su cuenta. Si el capture
+/// no resuelve, no hay desde dónde evaluarla.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredDimension {
+    pub query: String,
+}
+
+/// Lo que se aprobó de una dimensión: los dos hashes de la parte, que van juntos o
+/// no van — la misma forma que un nivel del vecindario.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedDimension {
+    /// SHA-256 del texto de la parte. **Obligatorio**: un `hash_ast` suelto no parsea.
+    pub hash: String,
+    /// Sólo donde el AST discrimina contenido.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_ast: Option<String>,
+}
+
 /// Lo que alguien aprobó: una ubicación y un contenido, y quiénes lo aprobaron.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -368,6 +402,9 @@ pub struct Accepted {
     /// **Un campo con tres estados**, y los niveles adentro. Ver `N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<N>,
+    /// Lo que se aprobó de cada parte declarada, por nombre.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, AcceptedDimension>,
 }
 
 /// El vecindario, con sus tres estados — y el tercero es que este campo no esté.
@@ -475,6 +512,7 @@ impl Accepted {
             && self.hash == other.hash
             && self.hash_ast == other.hash_ast
             && self.n == other.n
+            && self.dimensions == other.dimensions
     }
 }
 
@@ -492,8 +530,8 @@ impl BiLink {
         Self {
             kind: None,
             endpoint: Endpoints {
-                zero: Endpoint { link: link0, n: None, accepted: Vec::new(), name: None, r#as: None },
-                one:  Endpoint { link: link1, n: None, accepted: Vec::new(), name: None, r#as: None },
+                zero: Endpoint { link: link0, n: None, accepted: Vec::new(), name: None, r#as: None, dimensions: BTreeMap::new() },
+                one:  Endpoint { link: link1, n: None, accepted: Vec::new(), name: None, r#as: None, dimensions: BTreeMap::new() },
             },
         }
     }
@@ -591,6 +629,7 @@ mod tests {
             hash: "c00e0760".into(),
             hash_ast: Some("1b9e44a2".into()),
             n: None,
+            dimensions: Default::default(),
         }];
         let p = BiLink::path_in(dir.path(), "7f3d8e9a");
         bl.write(&p).unwrap();
@@ -815,5 +854,114 @@ mod level_link_tests {
             assert!(err.contains("unknown") || err.contains("capture"),
                     "'{raw}' falla sin decir qué se esperaba: {err}");
         }
+    }
+}
+
+/// Las dimensiones: qué partes del fragmento se vigilan, declaradas por nombre y
+/// aprobadas por nombre.
+#[cfg(test)]
+mod dimensions_tests {
+    use super::*;
+
+    const DECLARED_AND_ACCEPTED: &str = "\
+endpoint:
+  0:
+    link: capture a
+    dimensions:
+      parameters:
+        query: '(method_declaration parameters: (formal_parameters) @target)'
+      return:
+        query: '(method_declaration type: (_) @target)'
+    accepted:
+    - link: capture a
+      hash: h
+      dimensions:
+        parameters:
+          hash: hp
+          hash_ast: ap
+        return:
+          hash: hr
+  1:
+    link: path >impl
+";
+
+    /// La declaración lleva la query de cada parte, y la decisión sus hashes.
+    #[test]
+    fn a_dimension_is_a_query_declared_and_a_hash_accepted() {
+        let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
+        let e = &bl.endpoint.zero;
+        assert_eq!(e.dimensions["parameters"].query,
+                   "(method_declaration parameters: (formal_parameters) @target)");
+        let acc = &e.accepted[0].dimensions;
+        assert_eq!(acc["parameters"], AcceptedDimension { hash: "hp".into(), hash_ast: Some("ap".into()) });
+        assert_eq!(acc["return"],     AcceptedDimension { hash: "hr".into(), hash_ast: None });
+    }
+
+    #[test]
+    fn dimensions_round_trip() {
+        let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
+        let back: BiLink = serde_yaml_ng::from_str(&bl.to_yaml().unwrap()).unwrap();
+        assert_eq!(back, bl);
+    }
+
+    /// Las claves salen ordenadas por nombre, sin importar cómo se escribieron.
+    #[test]
+    fn dimensions_are_written_sorted_by_name() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions:\n      route: {query: r}\n      body: {query: b}\n  1: {link: capture b}\n";
+        let y = serde_yaml_ng::from_str::<BiLink>(raw).unwrap().to_yaml().unwrap();
+        assert!(y.find("body:").unwrap() < y.find("route:").unwrap(), "{y}");
+    }
+
+    /// **El nombre es una etiqueta opaca**: cualquiera parsea, y ninguno es un error.
+    #[test]
+    fn an_unknown_name_is_not_an_error() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions:\n      qué-sé-yo: {query: q}\n    accepted:\n    - {hash: h, dimensions: {qué-sé-yo: {hash: x}}}\n  1: {link: capture b}\n";
+        let bl: BiLink = serde_yaml_ng::from_str(raw).unwrap();
+        assert!(bl.endpoint.zero.dimensions.contains_key("qué-sé-yo"));
+    }
+
+    /// Ausente y vacío son lo mismo, y ninguno se escribe.
+    #[test]
+    fn no_dimensions_is_not_written() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions: {}\n    accepted:\n    - {hash: h, dimensions: {}}\n  1: {link: capture b}\n";
+        let bl: BiLink = serde_yaml_ng::from_str(raw).unwrap();
+        assert!(bl.endpoint.zero.dimensions.is_empty());
+        let y = bl.to_yaml().unwrap();
+        assert!(!y.contains("dimensions"), "{y}");
+    }
+
+    /// **Un `hash_ast` sin su `hash` no es una dimensión**, y no se puede escribir.
+    #[test]
+    fn an_accepted_dimension_without_hash_is_rejected() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {hash_ast: ab}}}\n  1: {link: capture b}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
+        assert!(err.contains("hash"), "{err}");
+    }
+
+    /// Una dimensión declarada sin query no dice qué parte es.
+    #[test]
+    fn a_declared_dimension_without_query_is_rejected() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions: {body: {}}\n  1: {link: capture b}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
+        assert!(err.contains("query"), "{err}");
+    }
+
+    /// Adentro de una dimensión, un campo desconocido se rechaza con su nombre:
+    /// el nombre es opaco, la forma no.
+    #[test]
+    fn an_unknown_field_inside_a_dimension_is_rejected() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {hash: x, range: 1~2}}}\n  1: {link: capture b}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
+        assert!(err.contains("range"), "{err}");
+    }
+
+    /// Dos entradas que difieren sólo en una dimensión aprueban cosas distintas.
+    #[test]
+    fn the_dimensions_are_part_of_the_values() {
+        let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
+        let a = bl.endpoint.zero.accepted[0].clone();
+        let mut b = a.clone();
+        b.dimensions.get_mut("return").unwrap().hash = "otro".into();
+        assert!(!a.same_values(&b));
     }
 }

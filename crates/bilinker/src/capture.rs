@@ -1070,6 +1070,7 @@ mod tests {
             hash: "deadbeef".into(),
             hash_ast: None,
             n: None,
+            dimensions: Default::default(),
         }];
         bl.write(&bilink_format::BiLink::path_in(layer, "uuid1")).unwrap();
 
@@ -1137,6 +1138,7 @@ mod prune_neighbourhood_tests {
                 hash: h.into(),
                 hash_ast: None,
             })),
+            dimensions: Default::default(),
         };
 
         let mut bl = BiLink::new(format!("capture {frag}").parse().unwrap(), LinkEndpoint::Abstract);
@@ -1153,6 +1155,7 @@ mod prune_neighbourhood_tests {
         let a = Accepted {
             agree: Default::default(), link: None,
             hash: "h".into(), hash_ast: None, n: Some(N::declined()),
+            dimensions: Default::default(),
         };
         assert!(accepted_neighbours(&a).is_empty());
     }

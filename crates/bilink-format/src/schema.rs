@@ -194,7 +194,14 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // ejemplo de un doc comment, que schemars publica como `description`. El formato
     // no cambió, y subir el major por una corrección de comentario habría dicho que
     // sí.
-    ("4.1.0", "f1e4b6097c4841906baf7a62e23867a7369115907a5c6ed4c5843aefb829a89b"),
+    //
+    // **Y se corrigió otra vez, ahora por un campo**: `dimensions`, en el endpoint y
+    // en cada entrada de `accepted`, con las partes del fragmento que se vigilan. Es
+    // aditivo —ningún archivo lo lleva, y ausente es lo mismo que vacío— y 4.1.0
+    // sigue sin salir: sin release y sin tag, en local y en el remoto. Un parser que
+    // no lo conoce falla explícito, porque `Endpoint` y `Accepted` tienen
+    // `deny_unknown_fields`.
+    ("4.1.0", "a5dc7494c9dc7d59d4f6d2015e5ba4f083dbeab4cd57767c99f05ebc1f6f7039"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {
