@@ -357,11 +357,17 @@ pub struct DeclaredDimension {
     pub query: String,
 }
 
-/// Lo que se aprobó de una dimensión: los dos hashes de la parte, que van juntos o
-/// no van — la misma forma que un nivel del vecindario.
+/// Lo que se aprobó de una dimensión: la query con que se resolvió la parte, y los
+/// dos hashes de esa parte.
+///
+/// La query es la mitad aprobada de un eje cuya otra mitad es la declarada, como
+/// `link` y `accepted.link`: sin ella, una query cambiada que sigue dando el mismo
+/// texto pasaría por aprobada.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptedDimension {
+    /// La query que resolvió la parte aprobada. **Obligatoria**, como `hash`.
+    pub query: String,
     /// SHA-256 del texto de la parte. **Obligatorio**: un `hash_ast` suelto no parsea.
     pub hash: String,
     /// Sólo donde el AST discrimina contenido.
@@ -877,24 +883,33 @@ endpoint:
       hash: h
       dimensions:
         parameters:
+          query: '(method_declaration parameters: (formal_parameters) @target) @anchor'
           hash: hp
           hash_ast: ap
         return:
+          query: '(method_declaration type: (_) @target) @anchor'
           hash: hr
   1:
     link: path >impl
 ";
 
-    /// La declaración lleva la query de cada parte, y la decisión sus hashes.
+    /// La declaración lleva la query de cada parte, y la decisión la query con que
+    /// se aprobó y sus hashes.
     #[test]
-    fn a_dimension_is_a_query_declared_and_a_hash_accepted() {
+    fn a_dimension_is_a_query_declared_and_a_query_and_hash_accepted() {
         let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
         let e = &bl.endpoint.zero;
         assert_eq!(e.dimensions["parameters"].query,
                    "(method_declaration parameters: (formal_parameters) @target)");
         let acc = &e.accepted[0].dimensions;
-        assert_eq!(acc["parameters"], AcceptedDimension { hash: "hp".into(), hash_ast: Some("ap".into()) });
-        assert_eq!(acc["return"],     AcceptedDimension { hash: "hr".into(), hash_ast: None });
+        assert_eq!(acc["parameters"], AcceptedDimension {
+            query: "(method_declaration parameters: (formal_parameters) @target) @anchor".into(),
+            hash: "hp".into(), hash_ast: Some("ap".into()),
+        });
+        assert_eq!(acc["return"], AcceptedDimension {
+            query: "(method_declaration type: (_) @target) @anchor".into(),
+            hash: "hr".into(), hash_ast: None,
+        });
     }
 
     #[test]
@@ -915,7 +930,7 @@ endpoint:
     /// **El nombre es una etiqueta opaca**: cualquiera parsea, y ninguno es un error.
     #[test]
     fn an_unknown_name_is_not_an_error() {
-        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions:\n      qué-sé-yo: {query: q}\n    accepted:\n    - {hash: h, dimensions: {qué-sé-yo: {hash: x}}}\n  1: {link: capture b}\n";
+        let raw = "endpoint:\n  0:\n    link: capture a\n    dimensions:\n      qué-sé-yo: {query: q}\n    accepted:\n    - {hash: h, dimensions: {qué-sé-yo: {query: q, hash: x}}}\n  1: {link: capture b}\n";
         let bl: BiLink = serde_yaml_ng::from_str(raw).unwrap();
         assert!(bl.endpoint.zero.dimensions.contains_key("qué-sé-yo"));
     }
@@ -933,9 +948,37 @@ endpoint:
     /// **Un `hash_ast` sin su `hash` no es una dimensión**, y no se puede escribir.
     #[test]
     fn an_accepted_dimension_without_hash_is_rejected() {
-        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {hash_ast: ab}}}\n  1: {link: capture b}\n";
+        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {query: q, hash_ast: ab}}}\n  1: {link: capture b}\n";
         let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
         assert!(err.contains("hash"), "{err}");
+    }
+
+    /// **Una dimensión aceptada sin la query con que se aprobó** no dice qué se
+    /// aprobó vigilar, y se rechaza como una sin `hash`.
+    #[test]
+    fn an_accepted_dimension_without_query_is_rejected() {
+        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {hash: x}}}\n  1: {link: capture b}\n";
+        let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
+        assert!(err.contains("query"), "{err}");
+    }
+
+    /// La query va primero, como en la declaración.
+    #[test]
+    fn the_accepted_query_is_written_before_the_hashes() {
+        let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
+        let y = bl.to_yaml().unwrap();
+        let acc = &y[y.find("accepted:").unwrap()..];
+        assert!(acc.find("query:").unwrap() < acc.find("hash: hp").unwrap(), "{y}");
+    }
+
+    /// Dos entradas que difieren sólo en la query aprobada aprueban cosas distintas.
+    #[test]
+    fn the_accepted_query_is_part_of_the_values() {
+        let bl: BiLink = serde_yaml_ng::from_str(DECLARED_AND_ACCEPTED).unwrap();
+        let a = bl.endpoint.zero.accepted[0].clone();
+        let mut b = a.clone();
+        b.dimensions.get_mut("return").unwrap().query = "otra".into();
+        assert!(!a.same_values(&b));
     }
 
     /// Una dimensión declarada sin query no dice qué parte es.
@@ -950,7 +993,7 @@ endpoint:
     /// el nombre es opaco, la forma no.
     #[test]
     fn an_unknown_field_inside_a_dimension_is_rejected() {
-        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {hash: x, range: 1~2}}}\n  1: {link: capture b}\n";
+        let raw = "endpoint:\n  0:\n    link: capture a\n    accepted:\n    - {hash: h, dimensions: {body: {query: q, hash: x, range: 1~2}}}\n  1: {link: capture b}\n";
         let err = serde_yaml_ng::from_str::<BiLink>(raw).unwrap_err().to_string();
         assert!(err.contains("range"), "{err}");
     }

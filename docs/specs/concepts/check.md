@@ -333,6 +333,7 @@ Cada dimensión se compara como un fragmento, con la tabla de [EXPANDED](#expand
 | difiere en texto y coincide en `hash_ast` | `RESTYLED` |
 | nada de lo anterior | `ALTERED` |
 | está de un solo lado: declarada y no aprobada, o aprobada y no declarada | `ALTERED` |
+| su query declarada difiere de la aprobada | `ALTERED` |
 | no resuelve, o su query no es una dimensión | `ALTERED` |
 
 La ubicación se decide antes, como siempre: un `RELOCATED` no mira ninguna parte. Y el vecindario se evalúa sólo cuando todas las partes dicen `OK`.
@@ -340,6 +341,12 @@ La ubicación se decide antes, como siempre: un `RELOCATED` no mira ninguna part
 Un endpoint sin dimensiones compara el fragmento entero, igual que antes de que existieran.
 
 Una parte que no resuelve no corta la verificación de las demás, ni la del resto de la capa: se reporta en su dimensión.
+
+### Una query declarada distinta de la aprobada es `ALTERED`
+
+Antes que el texto de una parte se compara su query: la que declara el endpoint contra la que guarda la aceptación ([bilink.md](bilink.md#la-aceptación-de-una-dimensión-guarda-la-query-con-que-se-aprobó)). Si difieren, la dimensión es `ALTERED`, con su nombre entre paréntesis, aunque la parte siga dando el texto aprobado: cambió qué se vigila, y nadie aprobó ese cambio. Es la misma regla que una parte de un solo lado.
+
+Se comparan como texto, byte a byte. Dos queries que matchean lo mismo y se escriben distinto no son la misma para `check`: decidir que son equivalentes es aprobarlas, y eso lo hace `accept`.
 
 ### La dimensión califica al estado, y no lo reemplaza
 

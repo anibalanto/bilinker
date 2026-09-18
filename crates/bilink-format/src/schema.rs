@@ -201,7 +201,13 @@ pub const SCHEMA_HASHES: &[(&str, &str)] = &[
     // sigue sin salir: sin release y sin tag, en local y en el remoto. Un parser que
     // no lo conoce falla explícito, porque `Endpoint` y `Accepted` tienen
     // `deny_unknown_fields`.
-    ("4.1.0", "a5dc7494c9dc7d59d4f6d2015e5ba4f083dbeab4cd57767c99f05ebc1f6f7039"),
+    //
+    // **Y una tercera vez**: cada dimensión de `accepted` lleva la `query` con que se
+    // aprobó, obligatoria como su `hash`. No es aditivo —una dimensión aceptada sin
+    // query deja de parsear— y aun así no sube: 4.1.0 sigue sin release y sin tag, y
+    // los únicos archivos con dimensiones son los de sge, migrados por la `004` sin
+    // empujar, que se vuelven a migrar desde antes de ella.
+    ("4.1.0", "b7bbddeb3bf01331ed9858d6173e4501d247bedce2a61ed3c9c908af10c70a77"),
 ];
 
 pub fn registered_hash(version: &str) -> Option<&'static str> {

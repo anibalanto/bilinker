@@ -589,7 +589,8 @@ fn ast_hash_of(layer: &Path, cap: &Capture, source: &str) -> Result<Option<Strin
         .map(|f| hash::sha256(f.sexp.as_bytes())))
 }
 
-/// Los hashes de cada dimensión declarada, resueltas desde el nodo del capture.
+/// La query y los hashes de cada dimensión declarada, resueltas desde el nodo del
+/// capture.
 ///
 /// Una que no resuelve hace fallar: no se puede aprobar una parte que no se pudo
 /// localizar, y escribir las demás sin ella aprobaría menos de lo que el endpoint
@@ -612,6 +613,7 @@ fn dimensions_of(
             .with_context(|| format!("la dimensión {name} no resuelve en {}: no se puede aprobar \
                                       una parte que no se pudo localizar", cap.file))?;
         Ok((name.clone(), AcceptedDimension {
+            query: d.query.clone(),
             hash: hash::sha256(part.ranges.text(source).as_bytes()),
             hash_ast: discriminates.then(|| hash::sha256(part.sexp.as_bytes())),
         }))

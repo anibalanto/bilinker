@@ -552,20 +552,24 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 fn print_dimension_diff(file: &str, d: &bilinker::get::DimensionDiff) {
     use bilinker::get::DimensionChange::*;
     let span = d.lines.iter().map(|(a, b)| format!("{a}–{b}")).collect::<Vec<_>>().join(", ");
+    let name = if d.query_changed { format!("{} · query cambiada", d.name) } else { d.name.clone() };
     match &d.change {
         Same(text) => {
-            eprintln!("# {} · {file}  lines {span}", d.name);
+            eprintln!("# {name} · {file}  lines {span}");
             println!("{text}");
         }
         Changed(diff) => {
-            eprintln!("# {} · {file}  lines {span}", d.name);
+            eprintln!("# {name} · {file}  lines {span}");
             print!("{diff}");
         }
         Unresolved(q) => {
-            eprintln!("# {} · no resuelve", d.name);
+            eprintln!("# {name} · no resuelve");
             eprintln!("query: {q}");
         }
-        Undeclared => eprintln!("# {} · aprobada y ya no declarada", d.name),
+        Undeclared(diff) => {
+            eprintln!("# {name} · aprobada y ya no declarada");
+            print!("{diff}");
+        }
     }
 }
 

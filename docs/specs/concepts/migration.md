@@ -147,9 +147,11 @@ Medido el 2026-09-18 sobre sge, rama `bilinks-front-back`: los 509 endpoints `sp
 |---|---|
 | `link` y `accepted.link` | el capture del nodo |
 | `dimensions` | las que declara el generador, con su query |
-| `accepted.dimensions` | el `hash` y el `hash_ast` de cada parte, leídos del archivo |
+| `accepted.dimensions` | la query de cada parte, la misma que declara, y el `hash` y el `hash_ast`, leídos del archivo |
 | `accepted.hash` y `accepted.hash_ast` | los del nodo entero, como los escribe `accept` con dimensiones |
 | `agree`, `n`, `as`, `name`, `kind` | igual |
+
+La query aceptada de cada parte es la que la migración acuña, porque migra sólo endpoints `OK`: la parte que esa query resuelve es un pedazo de lo que ya estaba aprobado.
 
 El `hash` viejo no se conserva: `hash` es siempre el del fragmento, y ahora el fragmento es el nodo. Queda en la historia de la ref, y la migración lo verificó antes de reemplazarlo.
 

@@ -58,7 +58,8 @@ pub fn qualified(state: EndpointState, names: &[&str]) -> String {
 /// comparar.
 ///
 /// **Una parte de un lado solo es `ALTERED`**, declarada y no aprobada o al revés:
-/// cambió qué se vigila, y nadie aprobó ese cambio. Y una que no se encuentra
+/// cambió qué se vigila, y nadie aprobó ese cambio. Lo mismo una cuya query
+/// declarada no es la aprobada, aunque dé el mismo texto. Y una que no se encuentra
 /// también: lo aprobado ya no está donde estaba. Una query que no es una dimensión
 /// —sin `@anchor` o sin `@target`— tampoco se encuentra, y no corta la verificación
 /// de las demás.
@@ -86,6 +87,10 @@ pub(crate) fn compare(
             out.push((name.clone(), EndpointState::Altered));
             continue;
         };
+        if d.query != a.query {
+            out.push((name.clone(), EndpointState::Altered));
+            continue;
+        }
         let Ok(Some(f)) = query::dimension(language.clone(), &source, &d.query, anchor) else {
             out.push((name.clone(), EndpointState::Altered));
             continue;
@@ -225,6 +230,7 @@ mod tests {
         names.iter().map(|(n, q)| {
             let f = query::dimension(language.clone(), source, q, (node.start(), node.end())).unwrap().unwrap();
             (n.to_string(), AcceptedDimension {
+                query: q.to_string(),
                 hash: hash::sha256(f.ranges.text(source).as_bytes()),
                 hash_ast: Some(hash::sha256(f.sexp.as_bytes())),
             })
@@ -284,6 +290,14 @@ mod tests {
                    dims(&[("body", Altered), ("parameters", Ok)]));
     }
 
+    /// Una query distinta de la aprobada no está aprobada, aunque dé el mismo texto.
+    #[test]
+    fn a_declared_query_other_than_the_accepted_one_is_altered() {
+        let acc = approved(SRC, BOTH);
+        let other = &[("body", "(function_item body: (_) @target) @anchor"), ("parameters", PARAMS)];
+        assert_eq!(run(SRC, other, &acc), dims(&[("body", Altered), ("parameters", Ok)]));
+    }
+
     #[test]
     fn a_part_that_is_not_found_is_altered() {
         let only = &[("return", "(function_item return_type: (_) @target) @anchor")];
@@ -298,8 +312,9 @@ mod tests {
     fn a_query_that_is_not_a_dimension_is_altered_and_the_rest_is_checked() {
         let acc = approved(SRC, &[("parameters", PARAMS)]);
         let mut acc2 = acc.clone();
-        acc2.insert("body".into(), AcceptedDimension { hash: "x".into(), hash_ast: None });
-        let decl = &[("body", "(function_item body: (block) @target)"), ("parameters", PARAMS)];
+        let not_a_dimension = "(function_item body: (block) @target)";
+        acc2.insert("body".into(), AcceptedDimension { query: not_a_dimension.into(), hash: "x".into(), hash_ast: None });
+        let decl = &[("body", not_a_dimension), ("parameters", PARAMS)];
         assert_eq!(run(SRC, decl, &acc2), dims(&[("body", Altered), ("parameters", Ok)]));
     }
 }

@@ -302,9 +302,11 @@ $ bilinker get 67ba7217.0 --diff
 (@RequestHeader("user-token") String userToken)
 ```
 
-El texto aceptado de cada parte se recupera resolviendo su query contra el `commit` del endpoint, desde el nodo del capture en ese commit, y se verifica contra el `hash` de esa dimensión. Si no verifica, se muestra igual lo que resolvió ahí: para un diff informativo, algo aproximado es mejor que nada, igual que con el fragmento entero. Si no resuelve, el lado aceptado queda vacío.
+El texto aceptado de cada parte se recupera resolviendo la query que guarda su aceptación —no la declarada, que puede ser otra— contra el `commit` del endpoint, desde el nodo del capture en ese commit, y se verifica contra el `hash` de esa dimensión. Si no verifica, se muestra igual lo que resolvió ahí: para un diff informativo, algo aproximado es mejor que nada, igual que con el fragmento entero. Si no resuelve, el lado aceptado queda vacío.
 
-Una dimensión que no cambió se muestra sin diff. Una declarada y no aprobada sale entera como agregada. Una aprobada y ya no declarada se nombra, `# <nombre> · aprobada y ya no declarada`, y no lleva texto: lo aprobado guarda sólo el `hash`, y la query que la resolvía se fue con la declaración. Las dos son las que `check` da `ALTERED` por estar de un solo lado.
+Una dimensión que no cambió se muestra sin diff. Una declarada y no aprobada sale entera como agregada. Una aprobada y ya no declarada se nombra, `# <nombre> · aprobada y ya no declarada`, y sale entera como quitada: su texto es el que resuelve la query aprobada en el commit. Las dos son las que `check` da `ALTERED` por estar de un solo lado.
+
+Una dimensión cuya query declarada difiere de la aprobada compara el texto que resuelve cada una, y su encabezado lo dice, después del nombre: `# <nombre> · query cambiada · <archivo>  lines …`. Si las dos dan el mismo texto, sale sin diff y con ese encabezado, porque lo que `check` reporta como `ALTERED` es la query, no el texto.
 
 Con `--dimension`, sale sólo el diff de esa.
 
