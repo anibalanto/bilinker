@@ -54,8 +54,11 @@ Dos ejes por endpoint, y cada uno con su declaración y su decisión. El fragmen
 |---|---|---|
 | el fragmento | `link` | `accepted[].link` |
 | su vecindario | `n.1.link` | `accepted[].n.1.link` |
+| sus partes | `dimensions.<nombre>.query` | `accepted[].dimensions.<nombre>` |
 
-`apply` escribe las declaraciones. `accept` escribe las decisiones. `check` no escribe nada en el bilink. La frontera no es una convención de nombres: es estructura.
+Las [dimensiones](#las-dimensiones-parten-el-contenido-del-fragmento) no son un eje más: parten el contenido del fragmento.
+
+`apply` escribe las declaraciones de `link` y de `n`, y el generador que capturó el extremo, la de `dimensions`. `accept` escribe las decisiones. `check` no escribe nada en el bilink. La frontera no es una convención de nombres: es estructura.
 
 `accepted` es una lista, porque dos personas pueden haber aprobado versiones distintas del mismo fragmento y ninguna de las dos se descarta. Más de una entrada es un estado, `CONSENSUS_DIVERGED`, y no un modo de operación.
 
@@ -84,6 +87,57 @@ Que un `link` ausente ya parsee no lo habilita como sustituto. La ausencia ya si
 Dos `unknown` no son la misma ubicación. El eje se decide comparando dos ids y acá no hay ids de ninguno de los dos lados: la comparación no se puede hacer, y no hacerla no es que coincida. Ese eje no queda limpio, y cómo lo nombra `check` va con su reporte ([check.md](check.md)), no con el formato.
 
 No comparte grilla con los prefijos de un endpoint. Los cinco de "Tipos de endpoint" contestan *dónde*, y ahí `unknown` no entra: un endpoint sin ubicación conocida no tiene contenido aprobado que proteger, así que su forma de decirlo es no tener `accepted`.
+
+### Las dimensiones parten el contenido del fragmento
+
+`dimensions` dice qué partes del fragmento se vigilan, cada una con un nombre. Va en el endpoint y no en el [capture](capture.md): qué se vigila de un fragmento es una decisión, y el capture es una ubicación y nada más. Dos bilinks sobre el mismo capture pueden vigilar partes distintas.
+
+```yaml
+endpoint:
+  0:
+    link: capture 67ba7217e0334051becd4921b55a7872
+    dimensions:
+      parameters:
+        query: |-
+          (method_declaration parameters: (formal_parameters) @target)
+      return:
+        query: |-
+          (method_declaration type: (_) @target)
+    accepted:
+    - agree:
+      - pablo
+      link: capture 67ba7217e0334051becd4921b55a7872
+      hash: c00e07602bd560755096b57df1ddb9ed49d816fb8af58a4ec9cde82f21f38db3
+      hash_ast: 1b9e44a2f0c8d3e7a5b1c9d4e2f6a8b0c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3
+      dimensions:
+        parameters:
+          hash: 5d0c8a13e7f2b94c61a0d38e25f7b1c9a4e6d0f3b8c2a57e19d4f6b0c3a8e2d7
+          hash_ast: 9a31f0c7b2e84d15a6c9e3f07b1d2a48c5e9f6b3d0a7c1e48f2b5d9a6c3e0f17
+        return:
+          hash: e27b4f91c0a3d68e25b7f1c4a9d03e6b8f2c5a17d9e4b0f3c6a8e1d27b5f9c04
+          hash_ast: 3c7e0a9d5f1b84e26c0d9a7f3e5b1c48d2a6f0e9b7c3d15a8e4f2b6c0d9a7e31
+    as: spring-controller
+```
+
+La declaración lleva, por nombre, la `query` que encuentra la parte: una query tree-sitter de la gramática del archivo, con sus `@target`. La decisión lleva, por nombre, el `hash` y el `hash_ast` de lo que se aprobó de esa parte, con la forma de un nivel del vecindario: `hash` es el SHA-256 del texto de la parte y es obligatorio, y `hash_ast` va sólo donde el AST discrimina contenido. Un `hash_ast` sin su `hash` no es una dimensión, y se rechaza.
+
+La query va escrita en el endpoint y no se deduce del [`as`](#as): resolver una dimensión no pide el generador instalado, igual que un `as` que nombra uno ausente no es un error.
+
+Ausente y vacío son lo mismo, en la declaración y en la decisión: el endpoint no declara partes. Las claves se escriben ordenadas por nombre.
+
+### El nombre de una dimensión es una etiqueta opaca
+
+Los nombres son del generador —`route`, `parameters`, `body`—, y el formato no tiene una tabla de ellos: no hay un conjunto de partes que valga para toda gramática. En un método de Java las excepciones son una parte suelta, en una función de Rust van adentro del retorno, y en TypeScript no existen.
+
+bilinker los compara y no los interpreta. Una dimensión de la declaración se empareja con la de la decisión que lleva su mismo nombre, y el nombre no dice nada más. Por eso **un nombre desconocido no es un error**: no hay lista contra la cual desconocerlo. No contradice que los campos desconocidos se rechacen, porque el nombre no es un campo: es una clave que el archivo elige, como el uuid de un bilink.
+
+Es lo que deja a las dimensiones cruzar la frontera: un consumidor que no tiene el plugin del generador compara nombres y hashes igual que el proveedor.
+
+### Una dimensión resuelve relativa al nodo del capture, y nunca ancla por su cuenta
+
+La query de una dimensión no se evalúa sobre el archivo: se evalúa desde el nodo que el capture fijó. Puede nombrar partes de ese nodo y de sus ancestros —*"el `@RequestMapping` de la clase que contiene a este método"*—, porque no busca de qué método se trata: eso ya lo dijo el capture.
+
+Por eso ninguna dimensión ancla. Si el capture no resuelve, no hay nodo desde el cual evaluarlas, y ninguna resuelve. Y la dimensión no depende de nada adentro de la query del capture, ni de sus nombres de captura ni de su forma: sólo del nodo que esa query identifica.
 
 ### Más de un `accepted` es un estado, no una forma de trabajar
 
@@ -466,6 +520,7 @@ Y por eso `check` no propaga nada: refrescar la cache no cambia ningún valor ac
 - Los campos desconocidos se rechazan, con el nombre del campo. Descartarlos en silencio es cómo un binario viejo vaciaría las aceptaciones de uno nuevo.
 - La aridad es fija: exactamente `0` y `1` bajo `endpoint`. Tres endpoints se rechaza; que falte el `1` también. No es algo que haya que verificar: es algo que no se puede escribir.
 - `accepted` sin `hash` se rechaza. Un `hash` suelto fuera del bloque, también.
+- Una dimensión aceptada sin `hash` se rechaza, aunque lleve `hash_ast`. Una dimensión declarada sin `query`, también.
 - Las claves `0:` y `1:` matchean por nombre, no por posición, y no llevan comillas.
 - El archivo usa UTF-8 sin BOM.
 
@@ -530,7 +585,7 @@ Cada endpoint `path` copia los dos valores del endpoint estructural de su vecino
 7. Un endpoint `issue` se hashea como el contenido del archivo del ítem. No tiene capture, así que su `accepted` no lleva `link`.
 8. `state.N = OK` si y sólo si hay exactamente una entrada en `accepted`, y para ella `link` == `accepted[0].link` y el hash actual == `accepted[0].hash`. Con más de una entrada, `state.N = CONSENSUS_DIVERGED`, sin evaluar los otros ejes. El vecindario se compara igual y un nivel más abajo: `n.1.link` contra `accepted[0].n.1.link`, y el fold de hoy contra `accepted[0].n.1.hash`. Sin proveedor ese eje degrada y los otros se deciden igual.
 9. El `link` de un endpoint estructural referencia exactamente un capture de su misma capa. Un `n.1.link` referencia cero o más, todos de su misma capa, o es `unknown`, que no referencia ninguno y no es lo mismo que cero.
-10. Un bilink no contiene `file`, `query` ni `range`: los dos primeros viven en el capture y el tercero en la cache. Vale igual para los captures de `n.1.link`.
+10. Un bilink no contiene `file` ni `range`: el primero vive en el capture y el segundo en la cache. La única `query` que lleva es la de una dimensión, que no ubica nada. Vale igual para los captures de `n.1.link`.
 11. Un bilink no contiene `state`, `commit` ni ningún derivado: viven en la cache.
 12. La topología de la cadena es lineal: sin ciclos ni bifurcaciones.
 13. Sólo se puede aceptar un endpoint sobre un fragmento commiteado.
@@ -539,3 +594,6 @@ Cada endpoint `path` copia los dos valores del endpoint estructural de su vecino
 16. Ningún `accept` descarta una entrada de `accepted` cuyos valores coincidan con los que se están aprobando: se une el `agree`. Sólo se descartan las entradas que aprobaban otros valores.
 17. Un capture referenciado por un `n.1.link` —de la declaración o de una decisión— cuenta como referenciado para `prune`.
 18. `unknown` en un `n.N.link` —de la declaración o de una decisión— significa que el nivel está adquirido y su ubicación no se sabe. Es incomparable: dos `unknown` no coinciden, y el eje de la ubicación de ese nivel no queda limpio. El eje del contenido se compara igual, contra el `hash` conservado.
+19. El nombre de una dimensión es una etiqueta opaca: se compara, no se interpreta, y un nombre desconocido no es un error. Una dimensión de la declaración se empareja con la de la decisión por su nombre.
+20. Una dimensión resuelve desde el nodo que el capture fijó, y nunca ancla por su cuenta: si el capture no resuelve, ninguna dimensión resuelve.
+21. Una dimensión aceptada lleva `hash`, y `hash_ast` sólo con él.
