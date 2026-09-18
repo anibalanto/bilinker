@@ -1,0 +1,6 @@
+file: docs/decisions/2026-09-17.capture-ancla-y-dimensiones.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "7. La query de una dimensión se escribe en el endpoint, y la aceptación guarda la que aprobó"))) @target)
