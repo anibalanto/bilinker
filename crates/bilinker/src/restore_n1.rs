@@ -224,6 +224,7 @@ mod tests {
             link: Some(format!("capture {}", "a".repeat(32)).parse().unwrap()),
             hash: live_hash.into(), hash_ast: None,
             n: if live_n.is_empty() { None } else { serde_yaml_ng::from_str(live_n).unwrap() },
+            dimensions: Default::default(),
         }];
         bl.write(&BiLink::path_in(d.path(), uuid)).unwrap();
         d

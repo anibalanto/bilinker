@@ -415,6 +415,7 @@ fn compute(
                 // no tiene firma resoluble. La regla que las gobierna es que no
                 // preguntar nunca baja la cobertura.
                 n: neighbourhood,
+                dimensions: Default::default(),
             };
 
             // `commit` es el commit **del contenido**, no el HEAD de quien acepta.
@@ -493,6 +494,7 @@ fn compute(
                     // Un ítem de worklist no tiene firma: no hay tipos que resolver.
                     // La ausencia de `n1` dice exactamente eso, y no una renuncia.
                     n: None,
+                    dimensions: Default::default(),
                 },
                 crate::git::try_head_commit_for_file(&root, &rel),
             ))
@@ -627,6 +629,7 @@ mod n1_tests {
             hash: hash.into(),
             hash_ast: None,
             n: n1.map(|h| N::of_level_1(Neighbourhood { link: Default::default(), hash: h.into(), hash_ast: None })),
+            dimensions: Default::default(),
         }
     }
 

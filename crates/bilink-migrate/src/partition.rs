@@ -177,6 +177,7 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
             // El cierre de firma es posterior al formato 1: no hay nada que traer,
             // y fabricarlo pediría resolver tipos, que una migración no hace.
             n: None,
+            dimensions: Default::default(),
         }),
         None => { p.pending += 1; None }
     };
@@ -197,6 +198,7 @@ fn endpoint(layer: &Path, old: &v1::bilink::BiLinkFile, n: u8, p: &mut Plan) -> 
         accepted: accepted.into_iter().collect(),
         name: name.clone(),
         r#as: None,
+        dimensions: Default::default(),
     })
 }
 
