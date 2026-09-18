@@ -12,6 +12,6 @@ endpoint:
     link: capture 7453717799e0719db0b83addbc10b981
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture 7453717799e0719db0b83addbc10b981
-      hash: b724f66d4c2e1b7c454fee295cc47b61b2b4bc276a285393dc41131237d7beeb
+      hash: d7e43e64ce43181673d1e5dfc0a9f57342f4fb9c0c16b82ddebac4fadf1e6838
