@@ -54,7 +54,7 @@ Dos ejes por endpoint, y cada uno con su declaración y su decisión. El fragmen
 |---|---|---|
 | el fragmento | `link` | `accepted[].link` |
 | su vecindario | `n.1.link` | `accepted[].n.1.link` |
-| sus partes | `dimensions.<nombre>.query` | `accepted[].dimensions.<nombre>` |
+| sus partes | `dimensions.<nombre>.query` | `accepted[].dimensions.<nombre>.query` |
 
 Las [dimensiones](#las-dimensiones-parten-el-contenido-del-fragmento) no son un eje más: parten el contenido del fragmento.
 
@@ -111,19 +111,33 @@ endpoint:
       hash_ast: 1b9e44a2f0c8d3e7a5b1c9d4e2f6a8b0c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3
       dimensions:
         parameters:
+          query: |-
+            (method_declaration parameters: (formal_parameters) @target) @anchor
           hash: 5d0c8a13e7f2b94c61a0d38e25f7b1c9a4e6d0f3b8c2a57e19d4f6b0c3a8e2d7
           hash_ast: 9a31f0c7b2e84d15a6c9e3f07b1d2a48c5e9f6b3d0a7c1e48f2b5d9a6c3e0f17
         type:
+          query: |-
+            (method_declaration type: (_) @target) @anchor
           hash: e27b4f91c0a3d68e25b7f1c4a9d03e6b8f2c5a17d9e4b0f3c6a8e1d27b5f9c04
           hash_ast: 3c7e0a9d5f1b84e26c0d9a7f3e5b1c48d2a6f0e9b7c3d15a8e4f2b6c0d9a7e31
     as: spring-controller
 ```
 
-La declaración lleva, por nombre, la `query` que encuentra la parte: una query tree-sitter de la gramática del archivo, con sus `@target`. La decisión lleva, por nombre, el `hash` y el `hash_ast` de lo que se aprobó de esa parte, con la forma de un nivel del vecindario: `hash` es el SHA-256 del texto de la parte y es obligatorio, y `hash_ast` va sólo donde el AST discrimina contenido. Un `hash_ast` sin su `hash` no es una dimensión, y se rechaza.
+La declaración lleva, por nombre, la `query` que encuentra la parte: una query tree-sitter de la gramática del archivo, con sus `@target`. La decisión lleva, por nombre, la `query` con que se resolvió la parte que se aprobó, y el `hash` y el `hash_ast` de esa parte: `hash` es el SHA-256 del texto de la parte y es obligatorio, y `hash_ast` va sólo donde el AST discrimina contenido. Un `hash_ast` sin su `hash` no es una dimensión, y se rechaza.
 
 La query va escrita en el endpoint y no se deduce del [`as`](#as): resolver una dimensión no pide el generador instalado, igual que un `as` que nombra uno ausente no es un error.
 
 Ausente y vacío son lo mismo, en la declaración y en la decisión: el endpoint no declara partes. Las claves se escriben ordenadas por nombre.
+
+### La aceptación de una dimensión guarda la query con que se aprobó
+
+`dimensions.<nombre>.query` es la query vigente, la que el generador escribió por última vez. `accepted[].dimensions.<nombre>.query` es la que resolvió la parte cuyo `hash` se aprobó. Son las dos mitades de un eje, igual que `link` y `accepted[].link`: la declaración dice qué se vigila hoy, y la decisión qué se aprobó vigilar.
+
+Sin la query aprobada, el `hash` no alcanza. Un generador que cambia su query sin que la parte cambie de texto daría el mismo `hash`, y el endpoint seguiría `OK` con una query que nadie aprobó. Por eso una query declarada distinta de la aprobada no es una dimensión aprobada ([check.md](check.md#una-query-declarada-distinta-de-la-aprobada-es-altered)).
+
+Y con ella la parte aprobada se puede volver a mostrar aunque ya no se declare: [`get --diff`](get.md#con-dimensiones---diff-da-un-diff-por-dimensión) la resuelve con la query que guarda la aceptación.
+
+Una dimensión aceptada sin `query` se rechaza, como una sin `hash`.
 
 ### Sin dimensiones, el fragmento entero es la única, implícita
 
