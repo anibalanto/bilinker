@@ -167,7 +167,7 @@ La granularidad sigue al objeto y no al acto, por tres razones. Atribución por 
 
 El árbol del commit de `accept` y de `apply` es el del commit anterior de la ref, más el `.bilink/<uuid>.yaml` del endpoint que nombra su mensaje, más los captures que ese archivo referencia y la ref todavía no tiene, y los archivos de la capa —`version`, `.gitignore`— que la ref tampoco tiene. Otro cambio del `.bilink/` —un bilink borrado, un capture suelto, una edición en curso— no entra: queda en el árbol de trabajo, y `bilinker diff` lo sigue mostrando.
 
-Un borrado se publica con `remove` ([chain.md](chain.md)). `relayer` y `restore-n1` escriben el `.bilink/` entero, porque su comando nombra un conjunto y no un endpoint.
+Un borrado se publica con `remove` ([chain.md](chain.md)). `relayer`, `restore-n1` y `migrate` escriben el `.bilink/` entero, porque su comando nombra un conjunto y no un endpoint.
 
 Deshacer una aceptación no necesita `git revert`: es reescribir su `accepted` con los valores anteriores, un commit nuevo, leídos de `refs/bilink/<branch>~n`. La unidad de movimiento es el contenido del archivo, no el commit.
 
@@ -184,6 +184,7 @@ accept  [--place|--content] <uuid>.<N>          ← tipo 2
 apply   <uuid>.<N> <capture-nuevo>              ← tipo 2
 relayer <capa>                                  ← tipo 2
 remove  <uuid>                                  ← tipo 2
+migrate <migración>                             ← tipo 2
 adopt   <rama>                                  ← tipo 3.a
 pull    <remoto>                                ← tipo 3.b
 ```

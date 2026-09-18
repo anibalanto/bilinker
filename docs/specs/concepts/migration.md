@@ -16,7 +16,7 @@ bilinker migrate [<path>] [--recursive] [--dry-run]
 | `--recursive` | Migra también todas las capas descendientes encontradas en `.stratum/`. |
 | `--dry-run` | Muestra qué haría sin escribir nada. |
 
-Es idempotente: correrlo dos veces no hace nada la segunda. `--dry-run` no escribe ni captures, ni bilinks, ni ledger. No commitea: se revisa con `git diff` y se commitea a mano. Y no resuelve: no corre tree-sitter ni git, así que después se corre `bilinker check .`.
+Es idempotente: correrlo dos veces no hace nada la segunda. `--dry-run` no escribe ni captures, ni bilinks, ni ledger. Lo que escribe en `.bilink/` lo commitea el corte en la ref, donde los bilinks viven ahí; si no, se revisa con `git diff` y se commitea a mano, como el ledger. Y no calcula estados, así que después se corre `bilinker check .`.
 
 ### Correr `--recursive` no es opcional cuando un repo tiene varias capas
 
@@ -29,8 +29,13 @@ El ledger es por repo y las migraciones corren por capa. Si un repo contiene var
 | `bilinker-001-capture-split` | retirada | Extrajo la ubicación de cada endpoint estructural a un capture y reemplazó `link.N` por `capture <id>`. |
 | `bilinker-002-file-partition` | vigente | Reescribe cada bilink a YAML, con los endpoints bajo `endpoint.0`/`endpoint.1` y el tipo de cada `link` explícito. Lo derivable sale a la cache. |
 | `bilinker-003-accepted-list` | vigente | `accepted` pasa de objeto a lista, y el vecindario adquirido pasa a `declined`. |
+| `bilinker-004-dimensions` | vigente | Cada capture que un generador compuso pasa a ser el ancla del nodo, con las partes como dimensiones del endpoint, y su aceptación se parte sin volver a aceptar. |
 
 `001` corrió en todos los repos que existían y su id sigue en cada ledger —quitarlo sería reescribir lo que pasó—, pero su código ya no está: `002` lee la forma embebida directamente, así que un repo que nunca corrió `001` se migra igual, en un paso. Es la asimetría que hace útil al ledger: registra qué le pasó a este repo, no qué sabe hacer este binario.
+
+### Una migración no toca una capa que ya declara un formato posterior
+
+El runner le pasa a cada capa las migraciones que su ledger no registra, y una capa que nació en un formato posterior no registra las que puentean los anteriores: nunca las necesitó. Cada una mira `.bilink/version` y no hace nada si la capa ya está más adelante: la `002` si hay versión declarada, la `003` si es 4 o más.
 
 ## Las migraciones
 
@@ -101,6 +106,64 @@ Una renuncia masiva escrita sin decirlo sería indistinguible de 113 personas qu
 El formato 1 pedía un crate propio —`bilink-format-v1`— porque era otra serialización entera. 3.8 y 4.0 son el mismo YAML y difieren en dos lugares: un crate para eso sería más código que el puente.
 
 Y lo que no cambia no se enumera: se lee crudo y se copia. Listar los campos que quedan igual es lo que hace que una migración se rompa con el próximo campo aditivo.
+
+### `bilinker-004-dimensions`: un capture compuesto pasa a ancla y dimensiones
+
+Un capture escrito cuando la query componía el fragmento lleva varios `@target`, y su `hash` aceptado es el de su concatenación. Esta migración lo reescribe en la forma de hoy: el capture del nodo, y las partes como [dimensiones](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento) del endpoint. Los archivos son `4.1.0` antes y después.
+
+### Migra los endpoints cuya query compone y cuyo `as` nombra un generador
+
+Un endpoint entra si su capture tiene más de un `@target` y su `as` nombra un generador que este binario conoce. El generador vuelve a correr sobre el nodo y declara sus dimensiones, como lo haría `chain new --as` hoy. Un capture de un solo `@target` ya es un ancla, y no se toca.
+
+Un endpoint con un capture compuesto y sin `as`, o con un `as` que nombra un generador ausente, no tiene quién declare sus partes: la migración se niega, como con un endpoint que no está `OK`.
+
+### El nodo es el que la query vieja nombraba
+
+El ancla nueva es el nodo cuyo nombre fijaba el último predicado `#eq?` de la query vieja: el método, no la clase cuyo `@RequestMapping` también entraba en el fragmento. Su capture es el del núcleo, así que dos endpoints que componían partes distintas del mismo método terminan compartiendo uno.
+
+### Migra sólo si todos los endpoints compuestos de la capa están `OK`
+
+La migración no acepta: parte una aceptación que ya existe. Eso sólo vale si lo que hay en el archivo es lo que se aprobó, y por eso cada endpoint que entra tiene que cumplir tres cosas:
+
+| | |
+|---|---|
+| una sola aceptación | con más de una no hay un `hash` contra el cual comparar |
+| `accepted.link` igual a `link` | la ubicación es la aprobada |
+| el fragmento de la query vieja hashea al `accepted.hash` | el contenido es el aprobado |
+
+Y la aceptación tiene que ser sólo de esta capa. Si la otra punta del bilink es `path`, `repo` o `abstract`, otra capa u otro repo lleva una copia de esta aceptación, y partirla acá la dejaría `CHAIN_DIRTY` del otro lado.
+
+Si alguno no las cumple, no escribe nada, nombra cada `<uuid>.<N>` con lo que le falta y sale con 1. Se lo mira, se lo acepta o se lo arregla, y se vuelve a migrar. Con esa entrada, cada endpoint migrado sale `OK`, sin nada que re-aceptar.
+
+### Las dimensiones concatenadas reproducen el fragmento viejo byte a byte
+
+Antes de escribir, la migración junta las partes de todas las dimensiones en orden de archivo, unidas con `\n`, y las compara con el texto del fragmento viejo. Si difieren, el generador de hoy vigila otra cosa que el de entonces, y la aceptación no se puede partir: se niega, igual que con un endpoint no-`OK`.
+
+Medido el 2026-09-18 sobre sge, rama `bilinks-front-back`: los 509 endpoints `spring-controller` reproducen su fragmento byte a byte, con el mismo `hash` y el mismo `hash_ast`.
+
+### Escribe la aceptación partida, y deja lo demás como estaba
+
+| Campo | Queda |
+|---|---|
+| `link` y `accepted.link` | el capture del nodo |
+| `dimensions` | las que declara el generador, con su query |
+| `accepted.dimensions` | el `hash` y el `hash_ast` de cada parte, leídos del archivo |
+| `accepted.hash` y `accepted.hash_ast` | los del nodo entero, como los escribe `accept` con dimensiones |
+| `agree`, `n`, `as`, `name`, `kind` | igual |
+
+El `hash` viejo no se conserva: `hash` es siempre el del fragmento, y ahora el fragmento es el nodo. Queda en la historia de la ref, y la migración lo verificó antes de reemplazarlo.
+
+El capture viejo queda sin referentes, y lo saca `capture prune`.
+
+### Resuelve con tree-sitter y no consulta git
+
+Acuñar el ancla y resolver las partes es parsear los archivos de la capa, que dan lo mismo en cualquier máquina que tenga ese commit. Es la única migración que resuelve queries. Lo que sigue sin hacer es consultar git: un endpoint que no está `OK` no se migra caminando la historia hasta su commit aceptado, porque el resultado dependería de qué historia alcanza cada clon.
+
+### Corre sobre una capa de formato 4, y el corte lo elige su carpeta
+
+No mueve la versión, así que `.bilink/version` no dice si le toca. En una capa de formato 4 el corte es el de esta migración si su carpeta, `.bilink-migrate-004-dimensions/`, existe. Lo anterior queda en `.bilink-formato-4-compuesto/`.
+
+En un repo cuyos bilinks viven en la ref, el corte escribe en ella un commit `migrate bilinker-004-dimensions` con el `.bilink/` entero ([ref.md](ref.md)), y cuántos bilinks y captures escribió va en la prosa.
 
 ## El problema de bootstrap
 
