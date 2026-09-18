@@ -149,15 +149,7 @@ pub fn accepted_text(
     commit:        &str,
     expected_hash: Option<&str>,
 ) -> Option<String> {
-    // `git show <commit>:<path>` resuelve el path contra la **raíz del repo**, no
-    // contra el `-C`. Cuando la capa no es la raíz —una capa de specs dentro de
-    // un repo mayor— pasar el path relativo a la capa hace fallar el comando.
-    let repo_rel = git_path_from_repo_root(layer, &cap.file);
-    let out = std::process::Command::new("git")
-        .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{repo_rel}")])
-        .output().ok()?;
-    if !out.status.success() { return None; }
-    let old_source = String::from_utf8(out.stdout).ok()?;
+    let old_source = source_at(layer, cap, commit)?;
 
     let text = match &cap.query {
         None => old_source.clone(),
@@ -174,6 +166,19 @@ pub fn accepted_text(
         Some(h) if hash::sha256(text.as_bytes()) != h => None,
         _ => Some(text),
     }
+}
+
+/// El archivo del capture tal como estaba en `commit`.
+pub(crate) fn source_at(layer: &Path, cap: &Capture, commit: &str) -> Option<String> {
+    // `git show <commit>:<path>` resuelve el path contra la **raíz del repo**, no
+    // contra el `-C`. Cuando la capa no es la raíz —una capa de specs dentro de
+    // un repo mayor— pasar el path relativo a la capa hace fallar el comando.
+    let repo_rel = git_path_from_repo_root(layer, &cap.file);
+    let out = std::process::Command::new("git")
+        .args(["-C", &layer.to_string_lossy(), "show", &format!("{commit}:{repo_rel}")])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    String::from_utf8(out.stdout).ok()
 }
 
 /// El commit donde el fragmento tenía el contenido aceptado, derivado de git.

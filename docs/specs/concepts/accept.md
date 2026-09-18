@@ -62,6 +62,7 @@ endpoint:
 | `hash` | SHA-256 del fragmento aprobado: la concatenación de los `@target` ([capture.md](capture.md)). |
 | `hash_ast` | SHA-256 de su s-expression, y de las de todos sus nodos unidas por `\n` cuando hay más de uno. Opcional: ausente donde no hay gramática. |
 | `n` | El vecindario, por nivel: un capture por vecino y sus dos folds. Tres estados, ver abajo. |
+| `dimensions` | Por nombre, el `hash` y el `hash_ast` de cada parte del fragmento que el endpoint declara. Ausente donde no declara ninguna. Ver "Las dimensiones del fragmento". |
 
 `accepted` es una lista, y el eje del vecindario tiene la misma forma que el del fragmento: declaración afuera, decisión adentro. Por qué más de una entrada es un estado y cómo colapsa está en [bilink.md](bilink.md).
 
@@ -108,6 +109,39 @@ Escribirla adentro del nivel 1 —`n1: declined`— diría *"el nivel 1 fue renu
 | de dónde sale | tree-sitter y git, siempre | un language server, que puede no estar |
 
 Adentro del mapa, `n: {}` sería una aceptación sin contenido aprobado y `n: {0: declined}` sería escribible sin querer decir nada. La regularidad se paga con dos estados inválidos, y no vale.
+
+## Las dimensiones del fragmento
+
+Las [dimensiones](bilink.md) de un endpoint son las partes de su fragmento que se vigilan por nombre —el retorno, los parámetros, el cuerpo—. No son un eje más, como la ubicación y el contenido de arriba: parten el contenido.
+
+### `dimensions` parte el nivel 0, y `n` se queda con el nivel ≥1
+
+Las dimensiones son del fragmento y el vecindario es de un salto para afuera. Se escriben en campos distintos de la misma entrada —`accepted[].dimensions` y `accepted[].n`— y ninguno lleva al otro adentro: una dimensión no es un nivel de `n`, y un nivel de `n` no es una dimensión.
+
+No comparten campo por la misma razón por la que el nivel 0 no entra en el mapa de `n`: salen de lugares distintos y tienen garantías distintas.
+
+| | `dimensions` | `n` |
+|---|---|---|
+| de qué es | partes del fragmento, nivel 0 | los tipos que la firma menciona, nivel ≥1 |
+| de dónde sale | tree-sitter y git, siempre | un language server, que puede no estar |
+| quién lo declara | el generador que capturó el extremo | `apply`, con el proveedor |
+| se puede renunciar | no: aceptar es hashearlas | sí, con `--decline-n1` |
+
+Juntas en un campo, una renuncia al vecindario se llevaría puestas las partes del fragmento, y la falta de daemon dejaría sin respuesta una pregunta que no se le hace a ningún daemon.
+
+### Adquirir las dimensiones no pide daemon, y por eso no hay flags para ellas
+
+`accept` las calcula con la gramática del archivo, sin proveedor y sin red: cada dimensión declarada se resuelve desde el nodo del capture y se hashea con el mismo recorte de bordes que el fragmento. Un `accept` sin daemon, con `--no-ask-n1` o con `--decline-n1` escribe las mismas dimensiones que uno con daemon.
+
+No hay un `--no-ask-dimensions`, porque no hay a quién no preguntarle. Y no hay un `--decline-dimensions`, porque la ausencia ya es inequívoca: un endpoint sin `dimensions` es un endpoint que no declara partes, y eso lo dice su declaración, no el ambiente. Lo que obligó a marcar la renuncia del vecindario —que el mismo fragmento en el mismo estado escribiera `n` o no según hubiera un language server prendido— acá no puede pasar.
+
+Una dimensión declarada que no resuelve hace fallar `accept`, como un capture que no resuelve: no se puede aprobar una parte que no se pudo localizar.
+
+### Se aprueban todas las dimensiones juntas
+
+`accept` aprueba el contenido entero, y las dimensiones informan cuál cambió. No hay un selector por dimensión: `--content`, y un `accept` sin flags, escriben el `hash` del fragmento y el de cada dimensión declarada en el mismo acto, y `--place` conserva las que había, igual que conserva el `hash`.
+
+Con eso no existe un endpoint con una dimensión aprobada y otra pendiente, y el estado no necesita combinar aprobaciones parciales: sigue siendo una palabra, que las dimensiones califican ([check.md](check.md)).
 
 ## El cierre de firma
 
@@ -361,7 +395,7 @@ La última es el caso que motivó todo: el método intacto, el DTO movido.
 
 Como los valores direccionan por contenido, *"estar de acuerdo"* no es ambiguo: es haber aprobado este hash, esta ubicación y este vecindario, y no otros.
 
-La identidad de una entrada es su tupla entera: `link`, `hash`, `hash_ast` y `n`. Dos personas que aprueban el mismo fragmento con vecindarios distintos no comparten entrada: son dos contratos, y por lo tanto dos entradas ([bilink.md](bilink.md)). Y no hay endoso parcial de una entrada: con firma resoluble y sin proveedor `accept` se niega, así que *"aprobé la firma y el vecindario no lo miré"* no es un estado alcanzable.
+La identidad de una entrada es su tupla entera: `link`, `hash`, `hash_ast`, `dimensions` y `n`. Dos personas que aprueban el mismo fragmento con vecindarios distintos no comparten entrada: son dos contratos, y por lo tanto dos entradas ([bilink.md](bilink.md)). Y no hay endoso parcial de una entrada: con firma resoluble y sin proveedor `accept` se niega, así que *"aprobé la firma y el vecindario no lo miré"* no es un estado alcanzable.
 
 Por endpoint y local, nunca copiado. En un endpoint estructural están los que aprobaron ese fragmento; en un endpoint `path` o `repo`, los que aprobaron esa copia. Quién aprobó del otro lado de la cadena es un hecho de la otra capa, y traerlo acá sería atribuir mal. Los dos endpoints de un bilink pueden tener listas distintas, y es lo normal.
 
@@ -459,7 +493,7 @@ bilinker accept <path>
 |-----------|-------------|
 | `<uuid>.<N>` | Endpoint a aceptar: UUID del bilink + índice (0 o 1). |
 | `--place` | Aprueba sólo la ubicación: escribe `accepted.link` y deja `accepted.hash` como estaba. |
-| `--content` | Aprueba sólo el contenido: escribe `accepted.hash` y `accepted.hash_ast`. |
+| `--content` | Aprueba sólo el contenido: escribe `accepted.hash`, `accepted.hash_ast` y `accepted.dimensions`. |
 | `--no-ask-n1` | No le pregunta al daemon: conserva el `n` que se puede conservar, y falla donde no. |
 | `--decline-n1` | Acepta renunciando al vecindario entero, del nivel 1 para arriba: escribe `n: declined` en vez de los niveles. |
 | `--force` | Sólo junto a `--decline-n1`, y sólo donde éste baja un nivel 1 adquirido. |
@@ -473,9 +507,9 @@ Sin flags, aprueba las dos dimensiones.
 2. Si el capture no resuelve, fallar: no se puede aprobar contenido que no se pudo localizar.
 3. Si el fragmento no está commiteado, fallar (ver "Exige el fragmento commiteado").
 4. Si el tip de la rama del proyecto no está absorbido, absorberlo en un commit propio sobre [`refs/bilink/<branch>`](ref.md): un merge que sólo trae código, con el diff de `.bilink/` vacío. Es la misma forma que `sync`.
-5. Calcular el hash del fragmento actual y su `hash_ast` si hay gramática.
+5. Calcular el hash del fragmento actual y su `hash_ast` si hay gramática, y los de cada dimensión declarada. Si una dimensión no resuelve, fallar.
 6. Si el fragmento tiene firma resoluble, pedirle el vecindario al daemon y escribir el calculado; con `--no-ask-n1` o `--decline-n1`, resolver según la tabla de "El `n` previo tiene tres valores". Nunca borrarlo en silencio.
-7. Escribir `accepted` en el endpoint: `link` con el id del capture vigente, `hash`, `hash_ast`, el `n` que corresponda —adquirido, `declined`, o ausente—, y `agree` con quien acepta agregado al set.
+7. Escribir `accepted` en el endpoint: `link` con el id del capture vigente, `hash`, `hash_ast`, `dimensions`, el `n` que corresponda —adquirido, `declined`, o ausente—, y `agree` con quien acepta agregado al set.
 8. Calcular el `commit` del contenido y escribirlo en [la cache](cache.md).
 9. Cerrar la aceptación con un commit sobre la ref, de un solo padre. Nunca un merge: sobre la ref un commit hace una cosa. Su mensaje es el comando canónico de esta aceptación —`accept [--place|--content] <uuid>.<N>`— y no lo que la persona tipeó, que va como trailer `Invocation:`.
 
@@ -590,3 +624,6 @@ Un `accept .` sobre una capa recién cambiada fabrica aprobaciones que nadie mir
 10. Un commit sobre la ref sólo agrega a su propio autor a un `agree`. Sacar no está restringido: agregar es lo único que afirma algo sobre otra persona.
 11. Ningún `accept` reduce la cobertura de un endpoint sin que alguien lo haya pedido con `--decline-n1`. Sin daemon nunca se borra un `n` adquirido: `accept` falla, o con `--no-ask-n1` lo conserva.
 12. Un `accepted` sin `n` afirma que el fragmento no tiene firma resoluble. La renuncia se escribe, no se omite.
+13. `dimensions` y `n` no comparten campo: las dimensiones son del nivel 0 y el vecindario del ≥1.
+14. Aceptar dimensiones no pide proveedor, y el mismo fragmento con las mismas dimensiones declaradas escribe los mismos valores con daemon o sin él, con `--no-ask-n1` o con `--decline-n1`.
+15. Las dimensiones se aprueban todas juntas, con el contenido: no hay un `accepted` con unas aprobadas y otras no.

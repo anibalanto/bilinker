@@ -3,13 +3,13 @@
 //! Aceptar es decir *"revisé esto y lo apruebo"*, y hay **dos cosas que aprobar**:
 //! dónde está el fragmento y qué dice. Se pueden aprobar juntas o por separado.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
 use bilink_format::bilink::bilink_files;
-use bilink_format::{Accepted, BiLink, Capture, LinkEndpoint, N};
+use bilink_format::{Accepted, AcceptedDimension, BiLink, Capture, DeclaredDimension, LinkEndpoint, N};
 
 use crate::cache::Cache;
 use crate::state::EndpointState;
@@ -119,8 +119,8 @@ pub fn accept(
     // tomó; donde queda su aprobación es donde siempre quedó — en el commit que la
     // escribió.
     //
-    // La identidad de una entrada es su **tupla entera**: `link`, `hash`, `hash_ast` y
-    // `n`. Dos personas que aprueban el mismo fragmento con vecindarios distintos no
+    // La identidad de una entrada es su **tupla entera**: `link`, `hash`, `hash_ast`,
+    // `dimensions` y `n`. Dos personas que aprueban el mismo fragmento con vecindarios distintos no
     // comparten entrada: son dos contratos.
     let firmante = signer(layer)?;
     let previas = &bl.endpoint.get(n).accepted;
@@ -347,6 +347,13 @@ fn compute(
             let fragment = range.text(&source);
             let content_hash = hash::sha256(fragment.as_bytes());
             let ast_hash = ast_hash_of(layer, &cap, &source)?;
+            // Las dimensiones salen de la gramática y no del proveedor: se calculan
+            // igual con daemon o sin él, y con cualquier flag del vecindario.
+            let dimensions = if what.content {
+                dimensions_of(&cap, &e.dimensions, &source, &range)?
+            } else {
+                previous.map(|a| a.dimensions.clone()).unwrap_or_default()
+            };
 
             // El vecindario, si hay quien lo resuelva y el fragmento tiene uno **al
             // que se llegue**. Las posiciones las pone la gramática: preguntar donde
@@ -415,7 +422,9 @@ fn compute(
                 // no tiene firma resoluble. La regla que las gobierna es que no
                 // preguntar nunca baja la cobertura.
                 n: neighbourhood,
-                dimensions: Default::default(),
+                // Todas juntas, con el contenido: `--place` conserva las que había,
+                // igual que conserva el `hash`.
+                dimensions,
             };
 
             // `commit` es el commit **del contenido**, no el HEAD de quien acepta.
@@ -578,6 +587,35 @@ fn ast_hash_of(layer: &Path, cap: &Capture, source: &str) -> Result<Option<Strin
     let Ok(language) = grammar::for_language(lang) else { return Ok(None) };
     Ok(query::find_fragment(language, source, q)?
         .map(|f| hash::sha256(f.sexp.as_bytes())))
+}
+
+/// Los hashes de cada dimensión declarada, resueltas desde el nodo del capture.
+///
+/// Una que no resuelve hace fallar: no se puede aprobar una parte que no se pudo
+/// localizar, y escribir las demás sin ella aprobaría menos de lo que el endpoint
+/// declara.
+fn dimensions_of(
+    cap: &Capture,
+    declared: &BTreeMap<String, DeclaredDimension>,
+    source: &str,
+    range: &bilink_format::Ranges,
+) -> Result<BTreeMap<String, AcceptedDimension>> {
+    if declared.is_empty() { return Ok(BTreeMap::new()); }
+    let lang = grammar::language_for_file(&cap.file);
+    let language = grammar::for_language(lang)
+        .with_context(|| format!("{} no tiene gramática, y sus dimensiones no se pueden resolver", cap.file))?;
+    let discriminates = grammar::ast_discriminates_content(lang);
+
+    declared.iter().map(|(name, d)| {
+        let part = query::dimension(language.clone(), source, &d.query, (range.start(), range.end()))
+            .with_context(|| format!("la dimensión {name}"))?
+            .with_context(|| format!("la dimensión {name} no resuelve en {}: no se puede aprobar \
+                                      una parte que no se pudo localizar", cap.file))?;
+        Ok((name.clone(), AcceptedDimension {
+            hash: hash::sha256(part.ranges.text(source).as_bytes()),
+            hash_ast: discriminates.then(|| hash::sha256(part.sexp.as_bytes())),
+        }))
+    }).collect()
 }
 
 /// El bilink cuyo uuid empieza con el prefijo dado.
