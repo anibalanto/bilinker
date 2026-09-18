@@ -62,7 +62,7 @@ endpoint:
 | `hash` | SHA-256 del fragmento aprobado: la concatenación de los `@target` ([capture.md](capture.md)). |
 | `hash_ast` | SHA-256 de su s-expression, y de las de todos sus nodos unidas por `\n` cuando hay más de uno. Opcional: ausente donde no hay gramática. |
 | `n` | El vecindario, por nivel: un capture por vecino y sus dos folds. Tres estados, ver abajo. |
-| `dimensions` | Por nombre, el `hash` y el `hash_ast` de cada parte del fragmento que el endpoint declara. Ausente donde no declara ninguna. Ver "Las dimensiones del fragmento". |
+| `dimensions` | Por nombre, la `query` con que se resolvió cada parte del fragmento que el endpoint declara, y su `hash` y su `hash_ast`. Ausente donde no declara ninguna. Ver "Las dimensiones del fragmento". |
 
 `accepted` es una lista, y el eje del vecindario tiene la misma forma que el del fragmento: declaración afuera, decisión adentro. Por qué más de una entrada es un estado y cómo colapsa está en [bilink.md](bilink.md).
 
@@ -131,7 +131,7 @@ Juntas en un campo, una renuncia al vecindario se llevaría puestas las partes d
 
 ### Adquirir las dimensiones no pide daemon, y por eso no hay flags para ellas
 
-`accept` las calcula con la gramática del archivo, sin proveedor y sin red: cada dimensión declarada se resuelve desde el nodo del capture y se hashea con el mismo recorte de bordes que el fragmento. Un `accept` sin daemon, con `--no-ask-n1` o con `--decline-n1` escribe las mismas dimensiones que uno con daemon.
+`accept` las calcula con la gramática del archivo, sin proveedor y sin red: cada dimensión declarada se resuelve desde el nodo del capture y se hashea con el mismo recorte de bordes que el fragmento, y su query se escribe al lado de sus hashes: lo que se aprueba de una parte es qué se vigila y qué decía. Un `accept` sin daemon, con `--no-ask-n1` o con `--decline-n1` escribe las mismas dimensiones que uno con daemon.
 
 No hay un `--no-ask-dimensions`, porque no hay a quién no preguntarle. Y no hay un `--decline-dimensions`, porque la ausencia ya es inequívoca: un endpoint sin `dimensions` es un endpoint que no declara partes, y eso lo dice su declaración, no el ambiente. Lo que obligó a marcar la renuncia del vecindario —que el mismo fragmento en el mismo estado escribiera `n` o no según hubiera un language server prendido— acá no puede pasar.
 
@@ -493,7 +493,7 @@ bilinker accept <path>
 |-----------|-------------|
 | `<uuid>.<N>` | Endpoint a aceptar: UUID del bilink + índice (0 o 1). |
 | `--place` | Aprueba sólo la ubicación: escribe `accepted.link` y deja `accepted.hash` como estaba. |
-| `--content` | Aprueba sólo el contenido: escribe `accepted.hash`, `accepted.hash_ast` y `accepted.dimensions`. |
+| `--content` | Aprueba sólo el contenido: escribe `accepted.hash`, `accepted.hash_ast` y `accepted.dimensions`, con la query de cada una. |
 | `--no-ask-n1` | No le pregunta al daemon: conserva el `n` que se puede conservar, y falla donde no. |
 | `--decline-n1` | Acepta renunciando al vecindario entero, del nivel 1 para arriba: escribe `n: declined` en vez de los niveles. |
 | `--force` | Sólo junto a `--decline-n1`, y sólo donde éste baja un nivel 1 adquirido. |

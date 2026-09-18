@@ -246,6 +246,9 @@ endpoint:
         assert_eq!(a.link.as_ref(), Some(&e.link));
         assert_eq!(a.dimensions.keys().collect::<Vec<_>>(), ["parameters", "route", "type"]);
         assert_eq!(a.dimensions["type"].hash, hash::sha256(b"List<PublicAuthorityDto>"));
+        for (name, d) in &e.dimensions {
+            assert_eq!(a.dimensions[name].query, d.query, "la query aprobada de {name} es la declarada");
+        }
         assert_eq!(a.agree.iter().collect::<Vec<_>>(), ["anibal"]);
         assert!(a.n.is_some(), "el vecindario queda como estaba");
         assert_eq!(e.r#as.as_deref(), Some("spring-controller"));

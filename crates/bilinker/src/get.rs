@@ -147,6 +147,9 @@ pub struct DimensionDiff {
     pub name: String,
     /// Dónde está hoy, 1-based e inclusivo. Vacío si hoy no está.
     pub lines: Vec<(usize, usize)>,
+    /// La query declarada no es la aprobada. Puede que el texto no cambie, y aun así
+    /// la dimensión no está aprobada.
+    pub query_changed: bool,
     pub change: DimensionChange,
 }
 
@@ -157,9 +160,9 @@ pub enum DimensionChange {
     Changed(String),
     /// Está declarada y hoy no resuelve: su query.
     Unresolved(String),
-    /// Está aprobada y ya no declarada. **No hay texto que mostrar**: lo aprobado
-    /// guarda sólo el `hash`, y la query que la resolvía se fue con la declaración.
-    Undeclared,
+    /// Está aprobada y ya no declarada: el unified diff que la quita entera, con el
+    /// texto que resuelve su query aprobada en el commit.
+    Undeclared(String),
 }
 
 /// El fragmento que un endpoint referencia.
@@ -378,8 +381,9 @@ fn diff_structural(
 
 /// Un diff por dimensión: cada parte aprobada contra la de hoy, por nombre.
 ///
-/// El texto aprobado se recupera resolviendo la query de la dimensión en `commit`,
-/// desde el nodo del capture en ese commit, igual que la resuelve `check` para
+/// El texto aprobado se recupera resolviendo la query aprobada de la dimensión en
+/// `commit` —no la declarada, que puede ser otra—, desde el nodo del capture en ese
+/// commit, igual que la resuelve `check` para
 /// `EXPANDED`. Si su hash no coincide con el aprobado se muestra igual: para un diff
 /// informativo algo aproximado es mejor que nada. Y si no resuelve, el lado aprobado
 /// queda vacío.
@@ -413,15 +417,29 @@ fn diff_dimensions(
         names.sort();
     }
 
+    // Lo que la query aprobada resolvía en el commit, o vacío si no resuelve ahí.
+    let approved_text = |a: &bilink_format::AcceptedDimension| then.and_then(|(o, node)| {
+        query::dimension(language.clone(), o, &a.query, node).ok().flatten().map(|f| f.ranges.text(o))
+    }).unwrap_or_default();
+    // Una parte no termina en salto de línea, y sin él cada diff cargaría con un
+    // `\ No newline at end of file` que no dice nada del cambio.
+    let line = |t: &str| if t.is_empty() { String::new() } else { format!("{t}\n") };
+
     let mut out = Vec::new();
     for name in names {
         let Some(d) = declared.get(name) else {
-            out.push(DimensionDiff { name: name.clone(), lines: Vec::new(), change: DimensionChange::Undeclared });
+            let before = accepted.get(name).map(approved_text).unwrap_or_default();
+            out.push(DimensionDiff {
+                name: name.clone(), lines: Vec::new(), query_changed: false,
+                change: DimensionChange::Undeclared(unified_diff(&line(&before), "", commit)),
+            });
             continue;
         };
+        let query_changed = accepted.get(name).is_some_and(|a| a.query != d.query);
         let Some(today) = query::dimension(language.clone(), &source, &d.query, now).ok().flatten() else {
             out.push(DimensionDiff {
-                name: name.clone(), lines: Vec::new(), change: DimensionChange::Unresolved(d.query.clone()),
+                name: name.clone(), lines: Vec::new(), query_changed,
+                change: DimensionChange::Unresolved(d.query.clone()),
             });
             continue;
         };
@@ -429,22 +447,19 @@ fn diff_dimensions(
         let lines = spans_of(&source, &parts, 0, 0, last_line);
         let text = today.ranges.text(&source);
 
-        let approved = accepted.get(name).map(|a| {
-            let old_text = then.and_then(|(o, node)| {
-                query::dimension(language.clone(), o, &d.query, node).ok().flatten().map(|f| f.ranges.text(o))
-            });
-            (a, old_text.unwrap_or_default())
-        });
-        // Una parte no termina en salto de línea, y sin él cada diff cargaría con un
-        // `\ No newline at end of file` que no dice nada del cambio.
-        let line = |t: &str| if t.is_empty() { String::new() } else { format!("{t}\n") };
-        let change = match approved {
-            Some((a, _)) if crate::hash::sha256(text.as_bytes()) == a.hash => DimensionChange::Same(text),
-            Some((_, before)) if before.trim_end() == text.trim_end() => DimensionChange::Same(text),
-            Some((_, before)) => DimensionChange::Changed(unified_diff(&line(&before), &line(&text), commit)),
+        let change = match accepted.get(name) {
+            Some(a) if crate::hash::sha256(text.as_bytes()) == a.hash => DimensionChange::Same(text),
+            Some(a) => {
+                let before = approved_text(a);
+                if before.trim_end() == text.trim_end() {
+                    DimensionChange::Same(text)
+                } else {
+                    DimensionChange::Changed(unified_diff(&line(&before), &line(&text), commit))
+                }
+            }
             None => DimensionChange::Changed(unified_diff("", &line(&text), commit)),
         };
-        out.push(DimensionDiff { name: name.clone(), lines, change });
+        out.push(DimensionDiff { name: name.clone(), lines, query_changed, change });
     }
     Ok(out)
 }

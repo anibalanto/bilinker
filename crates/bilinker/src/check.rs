@@ -1055,6 +1055,7 @@ mod tests {
             e.dimensions.insert(name.into(), bilink_format::DeclaredDimension { query: q.into() });
             let f = query::dimension(language.clone(), before, q, node).unwrap().unwrap();
             approved.insert(name.to_string(), bilink_format::AcceptedDimension {
+                query: q.into(),
                 hash: hash::sha256(f.ranges.text(before).as_bytes()),
                 hash_ast: Some(hash::sha256(f.sexp.as_bytes())),
             });
