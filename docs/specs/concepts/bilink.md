@@ -125,6 +125,14 @@ La query va escrita en el endpoint y no se deduce del [`as`](#as): resolver una 
 
 Ausente y vacío son lo mismo, en la declaración y en la decisión: el endpoint no declara partes. Las claves se escriben ordenadas por nombre.
 
+### Sin dimensiones, el fragmento entero es la única, implícita
+
+Un endpoint que no declara `dimensions` vigila una sola parte, implícita y sin nombre: el fragmento entero. Es la que firman `accepted.hash` y `accepted.hash_ast`, y la que [`check`](check.md#con-dimensiones-el-estado-del-contenido-sale-de-ellas) compara, con la tabla de estados de siempre y sin calificarlos: un cambio en el fragmento es `ALTERED`, sin nombre entre paréntesis, porque no hay una parte que nombrar.
+
+Por eso las dimensiones no son un formato aparte. Un endpoint sin ellas es el caso de una sola parte, se lee y se verifica igual que un endpoint que nunca las conoció, y no hay nada que migrar para que siga funcionando.
+
+`accepted` sin `hash` se rechaza, con dimensiones o sin ellas. `hash` es siempre el del fragmento entero: lo que cambia cuando el endpoint declara partes es que deja de decidir el estado, no que deje de estar.
+
 ### El nombre de una dimensión es una etiqueta opaca
 
 Los nombres son del generador —`route`, `parameters`, `body`—, y el formato no tiene una tabla de ellos: no hay un conjunto de partes que valga para toda gramática. En un método de Java las excepciones son una parte suelta, en una función de Rust van adentro del retorno, y en TypeScript no existen.
