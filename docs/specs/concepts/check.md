@@ -318,6 +318,59 @@ Introducir una medida difusa en un sistema construido sobre hashes exactos neces
 
 `CHAIN_DIRTY` no tiene auto-fix directo: se resuelve ejecutando `bilinker accept` en el endpoint `path`. Esto evita dependencia circular: aceptar un endpoint `path` nunca modifica el archivo adyacente, así que no hay cascadas. La propagación es unidireccional desde el endpoint estructural que cambió.
 
+## Las partes del contenido
+
+### Con dimensiones, el estado del contenido sale de ellas
+
+Un endpoint que declara [dimensiones](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento) no compara el fragmento entero: compara cada parte contra lo que se aprobó de ella, por nombre. `accepted.hash` sigue siendo el del fragmento, y deja de decidir el estado. Lo que cambia afuera de toda parte declarada no avisa, porque nadie pidió vigilarlo.
+
+Cada dimensión se compara como un fragmento, con la tabla de [EXPANDED](#expanded-creció-alrededor-de-lo-aceptado) y las mismas condiciones para `RESTYLED`:
+
+| La parte | Estado de la dimensión |
+|---|---|
+| hashea a lo aprobado | `OK` |
+| contiene lo aprobado verbatim y algo más | `EXPANDED` |
+| difiere en texto y coincide en `hash_ast` | `RESTYLED` |
+| nada de lo anterior | `ALTERED` |
+| está de un solo lado: declarada y no aprobada, o aprobada y no declarada | `ALTERED` |
+| su query no encuentra la parte | `ALTERED` |
+
+La ubicación se decide antes, como siempre: un `RELOCATED` no mira ninguna parte. Y el vecindario se evalúa sólo cuando todas las partes dicen `OK`.
+
+Un endpoint sin dimensiones compara el fragmento entero, igual que antes de que existieran.
+
+### Una dimensión se busca adentro del nodo del capture
+
+La query de la dimensión se evalúa sobre el archivo y se queda con el primer match cuyos `@target` caen todos adentro del fragmento que resolvió el capture. Así una parte nunca sale de otro método del mismo archivo.
+
+Una parte que está afuera del nodo —la anotación de la clase que contiene al método— hoy no se encuentra, y su dimensión da `ALTERED`.
+
+### La dimensión califica al estado, y no lo reemplaza
+
+El estado de un endpoint sigue siendo una palabra, y del vocabulario de siempre. Las dimensiones que no están `OK` van al lado, entre paréntesis y por nombre: `ALTERED(body)`, `ALTERED(parameters, route)`.
+
+La palabra es lo que consumen el filtro por estado, el código de salida y el agrupado de `status`, y por eso no cambia. Los nombres de dimensión son del generador: un estado por dimensión dejaría el vocabulario abierto, y un filtro no podría validar nada contra él.
+
+### Varias dimensiones dan la palabra más severa
+
+Cuando difiere más de una parte, la palabra es la de la más severa, en este orden:
+
+1. `ALTERED`: pide revisar, y falla.
+2. `EXPANDED`: pide revisar, y no falla.
+3. `RESTYLED`: sólo pide aceptar.
+4. `OK`.
+
+Y el reporte las lista a todas, cada una con su estado. Un endpoint con el cuerpo sólo reformateado y la ruta cambiada es `ALTERED(body, route)`, y la línea del endpoint dice cuál es cuál:
+
+```
+$ bilinker check .
+
+3a4b5c6d  (ALTERED(body, route), OK)
+  endpoint.0  body RESTYLED · route ALTERED
+```
+
+`body` está en la calificación aunque no haga fallar a nadie: aceptar el endpoint aprueba todas las partes juntas, así que quien revisa tiene que saber que también cambió.
+
 ## Recuperar el texto aceptado
 
 ### El texto aceptado se resuelve con la query contra el contenido del commit
@@ -586,7 +639,7 @@ concepts/
   bilink.md   1e318d3a  (OK, OK)
 ```
 
-Cada línea muestra el nombre del archivo (solo en la primera aparición), el UUID corto (8 chars) y el estado de ambos endpoints: `(state.0, state.1)`. Los bilinks se agrupan por el directorio del endpoint estructural. Un bilink sin endpoint estructural —los dos son `path`— aparece bajo `(layer)`.
+Cada línea muestra el nombre del archivo (solo en la primera aparición), el UUID corto (8 chars) y el estado de ambos endpoints: `(state.0, state.1)`, cada uno con sus [dimensiones](#la-dimensión-califica-al-estado-y-no-lo-reemplaza) al lado cuando las tiene. Los bilinks se agrupan por el directorio del endpoint estructural. Un bilink sin endpoint estructural —los dos son `path`— aparece bajo `(layer)`.
 
 Es sólo lectura: no modifica ningún archivo, ni siquiera la cache, y no re-ejecuta queries. Sale siempre con 0.
 
