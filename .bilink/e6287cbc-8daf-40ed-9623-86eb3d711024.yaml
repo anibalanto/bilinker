@@ -13,8 +13,12 @@ endpoint:
         link: capture 7cc643f368df4c2542776b81b19cc2a0
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture 92711556d740702ea46b525b7e0674c9
       hash: 620cb2ab3577cac365eecd7fb32e31b8a61331e15a52d188dd73195b9a8d2ff6
       hash_ast: 95db6a66d25a07b9da9c137484c1ef212f453176301a19068adf153d4aaa96ca
-      n: declined
+      n:
+        1:
+          link: capture 7cc643f368df4c2542776b81b19cc2a0
+          hash: d8853d2819320891ebae8a599bb6e8bf1884a19562331ae3028603da1355494c
+          hash_ast: fa0f6fe731cd712cbe221062abc4d1ea4e19c9707cf953a3835cb9e727fbf2f2
