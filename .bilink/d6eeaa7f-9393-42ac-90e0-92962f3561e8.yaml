@@ -10,4 +10,15 @@ endpoint:
     name: acc-417
   1:
     link: capture 400c3a3e58028531751754f8033f2197
+    accepted:
+    - agree:
+      - anibal
+      link: capture 400c3a3e58028531751754f8033f2197
+      hash: 0c543d82bc6bf4052f535f1d60d0a5bf3245b93db7707be85e892a8eea6c54e3
+      hash_ast: 280942aa527cc9a46d08890bba18300125e374615828fd93288da7847ec1ccf9
+      n:
+        1:
+          link: capture 09a312ed2ed2f7f7f7d5734151c0d6e3
+          hash: 3e92722b291bca2d3002c602f24cc20cee5cf9b986e241d349f8d17d8bc34fee
+          hash_ast: 4cf2994fa1ce827904f39624b7be0a63f47edaa96736f447c957fc7f8672ab09
     name: acc-417
