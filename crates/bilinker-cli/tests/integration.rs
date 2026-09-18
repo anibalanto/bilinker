@@ -346,9 +346,9 @@ fn check_qualifies_the_state_with_the_parts_that_changed() {
     let dims = concat!(
         "    dimensions:\n",
         "      body:\n",
-        "        query: '(method_declaration body: (block) @target)'\n",
+        "        query: '(method_declaration body: (block) @target) @anchor'\n",
         "      parameters:\n",
-        "        query: '(method_declaration parameters: (formal_parameters) @target)'\n",
+        "        query: '(method_declaration parameters: (formal_parameters) @target) @anchor'\n",
     );
     let at = yaml.find("  1:\n").expect("el endpoint 1") + "  1:\n".len();
     let at = at + yaml[at..].find('\n').unwrap() + 1;
@@ -819,6 +819,110 @@ fn without_a_daemon_the_commands_fail_before_working_and_never_raise_one() {
     assert!(stderr.contains("--no-n1"), "{stderr}");
 
     assert!(!marker.exists(), "nadie ejecutó lspd:\n{}", fs::read_to_string(&marker).unwrap_or_default());
+}
+
+/// **Aceptar dimensiones no pide daemon.** Salen de tree-sitter, así que `accept` las
+/// escribe con `--decline-n1` y con `--no-ask-n1` por igual, y los valores son los
+/// mismos: el ambiente no decide qué queda escrito.
+///
+/// Corre con un `lspd` de mentira que deja una marca si alguien lo ejecuta. Las
+/// dimensiones se declaran a mano, porque todavía no hay generador que las escriba.
+#[cfg(unix)]
+#[test]
+fn accepting_dimensions_needs_no_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+
+    let (bilink, uuid) = only_bilink(&root);
+    let yaml = fs::read_to_string(&bilink).unwrap();
+    let at = yaml.find("  1:\n    link: capture ").expect("la punta del código");
+    let eol = at + "  1:\n".len();
+    let eol = eol + yaml[eol..].find('\n').unwrap() + 1;
+    let dimensions = concat!(
+        "    dimensions:\n",
+        "      body:\n",
+        "        query: '(method_declaration body: (block) @target) @anchor'\n",
+        "      parameters:\n",
+        "        query: '(method_declaration parameters: (formal_parameters) @target) @anchor'\n",
+        "      route:\n",
+        "        query: '(class_declaration (modifiers [(annotation) (marker_annotation)] @target) body: (class_body (method_declaration) @anchor))'\n",
+    );
+    fs::write(&bilink, format!("{}{dimensions}{}", &yaml[..eol], &yaml[eol..])).unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let git = String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout).unwrap();
+    std::os::unix::fs::symlink(git.trim(), bin.path().join("git")).unwrap();
+    let marker = home.path().join("raised");
+    let lspd = bin.path().join("lspd");
+    fs::write(&lspd, format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", marker.display())).unwrap();
+    fs::set_permissions(&lspd, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |args: &[&str]| {
+        let out = bilinker_cmd()
+            .current_dir(&root)
+            .env("PATH", bin.path())
+            .env("HOME", home.path())
+            .args(args)
+            .output()
+            .unwrap();
+        (String::from_utf8_lossy(&out.stderr).into_owned(), out.status.success())
+    };
+    let accepted_dimensions = || {
+        let bl = bilink_format::BiLink::load(&bilink).unwrap();
+        bl.endpoint.one.accepted[0].dimensions.clone()
+    };
+
+    let target = format!("{uuid}.1");
+    let (stderr, ok) = run(&["accept", &target, "--decline-n1"]);
+    assert!(ok, "{stderr}");
+    let declined = accepted_dimensions();
+
+    let sha = |s: &str| bilinker::hash::sha256(s.as_bytes());
+    assert_eq!(declined.keys().collect::<Vec<_>>(), ["body", "parameters", "route"]);
+    assert_eq!(declined["parameters"].hash, sha("(String token)"));
+    assert_eq!(declined["body"].hash, sha("{\n        return svc.permissionsOf(token);\n    }"));
+    assert_eq!(declined["route"].hash, sha("@RestController\n@RequestMapping(\"/public-api/user\")"));
+    assert!(declined.values().all(|d| d.hash_ast.is_some()), "java discrimina contenido: {declined:?}");
+
+    // Sin preguntar escribe lo mismo: las dimensiones no dependen de a quién se le pregunta.
+    let (stderr, ok) = run(&["accept", &target, "--no-ask-n1"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(accepted_dimensions(), declined);
+
+    // `--place` no aprueba contenido, y conserva las dimensiones como conserva el `hash`.
+    let (stderr, ok) = run(&["accept", &target, "--place"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(accepted_dimensions(), declined);
+
+    assert!(!marker.exists(), "nadie ejecutó lspd:\n{}", fs::read_to_string(&marker).unwrap_or_default());
+}
+
+/// Una dimensión que no resuelve hace fallar `accept`: no se puede aprobar una parte
+/// que no se pudo localizar.
+#[test]
+fn a_dimension_that_does_not_resolve_fails_the_accept() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let (bilink, uuid) = only_bilink(&root);
+    let yaml = fs::read_to_string(&bilink).unwrap();
+    let at = yaml.find("  1:\n    link: capture ").expect("la punta del código");
+    let eol = at + "  1:\n".len();
+    let eol = eol + yaml[eol..].find('\n').unwrap() + 1;
+    let dimensions = "    dimensions:\n      throws:\n        query: '(method_declaration (throws) @target) @anchor'\n";
+    fs::write(&bilink, format!("{}{dimensions}{}", &yaml[..eol], &yaml[eol..])).unwrap();
+
+    let (_, stderr, ok) = run_in(&root, &["accept", &format!("{uuid}.1"), "--decline-n1"]);
+    assert!(!ok, "aceptó una parte que no existe");
+    assert!(stderr.contains("throws"), "nombra la dimensión:\n{stderr}");
+    assert!(!fs::read_to_string(&bilink).unwrap().contains("accepted"), "no escribió nada");
 }
 
 /// El único bilink de un workspace de prueba, y su UUID.

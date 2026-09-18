@@ -1030,12 +1030,12 @@ mod tests {
     /// `a`, aprobados sobre `before`, y el archivo reescrito con `today`.
     fn dimensioned_layer(before: &str, today: &str) -> (tempfile::TempDir, String) {
         const FN_A: &str = r#"(function_item name: (identifier) @n0 (#eq? @n0 "a")) @target"#;
-        let parts = [("body", "(function_item body: (block) @target)"),
-                     ("parameters", "(function_item parameters: (parameters) @target)")];
+        let parts = [("body", "(function_item body: (block) @target) @anchor"),
+                     ("parameters", "(function_item parameters: (parameters) @target) @anchor")];
         let d = tempdir().unwrap();
         let language = grammar::for_language("rust").unwrap();
         let whole = query::find_fragment(language.clone(), before, FN_A).unwrap().unwrap();
-        let within = bilink_format::ByteRange { start: whole.ranges.start(), end: whole.ranges.end() };
+        let node = (whole.ranges.start(), whole.ranges.end());
 
         let cap = Capture { file: "lib.rs".into(), query: Some(FN_A.into()) };
         cap.write_in(d.path()).unwrap();
@@ -1045,7 +1045,7 @@ mod tests {
         let mut approved = std::collections::BTreeMap::new();
         for (name, q) in parts {
             e.dimensions.insert(name.into(), bilink_format::DeclaredDimension { query: q.into() });
-            let f = query::find_fragment_within(language.clone(), before, q, &within).unwrap().unwrap();
+            let f = query::dimension(language.clone(), before, q, node).unwrap().unwrap();
             approved.insert(name.to_string(), bilink_format::AcceptedDimension {
                 hash: hash::sha256(f.ranges.text(before).as_bytes()),
                 hash_ast: Some(hash::sha256(f.sexp.as_bytes())),

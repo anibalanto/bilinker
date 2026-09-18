@@ -11,7 +11,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use bilink_format::{AcceptedDimension, ByteRange, Capture, DeclaredDimension, Ranges};
+use bilink_format::{AcceptedDimension, Capture, DeclaredDimension, Ranges};
 
 use crate::check::CommitSource;
 use crate::state::EndpointState;
@@ -53,12 +53,15 @@ pub fn qualified(state: EndpointState, names: &[&str]) -> String {
 /// Compara cada dimensión contra lo que se aprobó de ella, por nombre, en el orden
 /// de los nombres.
 ///
-/// `range` es el fragmento que resolvió el capture, y cada parte se busca adentro:
-/// su query no dice de qué método se trata, porque eso ya lo dijo el capture.
+/// `range` es el nodo que resolvió el capture, y cada parte se resuelve desde él,
+/// por su `@anchor`: igual que la resuelve `accept`, o los hashes no se podrían
+/// comparar.
 ///
 /// **Una parte de un lado solo es `ALTERED`**, declarada y no aprobada o al revés:
 /// cambió qué se vigila, y nadie aprobó ese cambio. Y una que no se encuentra
-/// también: lo aprobado ya no está donde estaba.
+/// también: lo aprobado ya no está donde estaba. Una query que no es una dimensión
+/// —sin `@anchor` o sin `@target`— tampoco se encuentra, y no corta la verificación
+/// de las demás.
 pub(crate) fn compare(
     layer: &Path,
     cap: &Capture,
@@ -70,11 +73,11 @@ pub(crate) fn compare(
     let source = std::fs::read_to_string(layer.join(&cap.file))?;
     let lang = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
-    let within = ByteRange { start: range.start(), end: range.end() };
+    let anchor = (range.start(), range.end());
 
     // El archivo en el commit aceptado, para EXPANDED: se busca una vez, y sólo si
     // alguna parte difiere.
-    let mut then: Option<Option<(String, ByteRange)>> = None;
+    let mut then: Option<Option<(String, (usize, usize))>> = None;
 
     let names: BTreeSet<&String> = declared.keys().chain(accepted.keys()).collect();
     let mut out = Vec::new();
@@ -83,7 +86,7 @@ pub(crate) fn compare(
             out.push((name.clone(), EndpointState::Altered));
             continue;
         };
-        let Some(f) = query::find_fragment_within(language.clone(), &source, &d.query, &within)? else {
+        let Ok(Some(f)) = query::dimension(language.clone(), &source, &d.query, anchor) else {
             out.push((name.clone(), EndpointState::Altered));
             continue;
         };
@@ -95,17 +98,17 @@ pub(crate) fn compare(
 
         let then = then.get_or_insert_with(|| {
             let old = crate::capture::source_at(layer, cap, &(commit.derive)()?)?;
-            let hull = match &cap.query {
-                None => ByteRange { start: 0, end: old.len() },
+            let node = match &cap.query {
+                None => (0, old.len()),
                 Some(q) => {
                     let r = query::find_fragment(language.clone(), &old, q).ok()??.ranges;
-                    ByteRange { start: r.start(), end: r.end() }
+                    (r.start(), r.end())
                 }
             };
-            Some((old, hull))
+            Some((old, node))
         });
-        let approved = then.as_ref().and_then(|(old, hull)| {
-            let f = query::find_fragment_within(language.clone(), old, &d.query, hull).ok()??;
+        let approved = then.as_ref().and_then(|(old, node)| {
+            let f = query::dimension(language.clone(), old, &d.query, *node).ok()??;
             let t = f.ranges.text(old);
             (hash::sha256(t.as_bytes()) == a.hash).then_some(t)
         });
@@ -137,8 +140,8 @@ mod tests {
 
     const SRC: &str = "fn a(x: u8) -> u8 { x + 1 }\n\nfn b(y: u16) -> u16 { y }\n";
     const FN_A: &str = r#"(function_item name: (identifier) @n0 (#eq? @n0 "a")) @target"#;
-    const PARAMS: &str = "(function_item parameters: (parameters) @target)";
-    const BODY: &str = "(function_item body: (block) @target)";
+    const PARAMS: &str = "(function_item parameters: (parameters) @target) @anchor";
+    const BODY: &str = "(function_item body: (block) @target) @anchor";
 
     fn dims(pairs: &[(&str, EndpointState)]) -> DimensionStates {
         pairs.iter().map(|(n, s)| (n.to_string(), *s)).collect()
@@ -201,10 +204,9 @@ mod tests {
     /// Lo que se aprobó de cada parte, sobre `source`.
     fn approved(source: &str, names: &[(&str, &str)]) -> BTreeMap<String, AcceptedDimension> {
         let language = grammar::for_language("rust").unwrap();
-        let within = resolve(source, FN_A);
-        let within = ByteRange { start: within.start(), end: within.end() };
+        let node = resolve(source, FN_A);
         names.iter().map(|(n, q)| {
-            let f = query::find_fragment_within(language.clone(), source, q, &within).unwrap().unwrap();
+            let f = query::dimension(language.clone(), source, q, (node.start(), node.end())).unwrap().unwrap();
             (n.to_string(), AcceptedDimension {
                 hash: hash::sha256(f.ranges.text(source).as_bytes()),
                 hash_ast: Some(hash::sha256(f.sexp.as_bytes())),
@@ -246,7 +248,7 @@ mod tests {
         assert_eq!(run(&today, only, &acc), dims(&[("parameters", Ok)]));
     }
 
-    /// Una parte se busca adentro del nodo: la de `b` no es la de `a`.
+    /// Una parte se resuelve desde el nodo del capture: la de `b` no es la de `a`.
     #[test]
     fn a_part_is_looked_for_inside_the_captured_node() {
         let only = &[("parameters", PARAMS)];
@@ -267,9 +269,20 @@ mod tests {
 
     #[test]
     fn a_part_that_is_not_found_is_altered() {
-        let only = &[("return", "(function_item return_type: (_) @target)")];
+        let only = &[("return", "(function_item return_type: (_) @target) @anchor")];
         let acc = approved(SRC, only);
         let today = SRC.replace("fn a(x: u8) -> u8", "fn a(x: u8)");
         assert_eq!(run(&today, only, &acc), dims(&[("return", Altered)]));
+    }
+
+    /// Una query que no es una dimensión da `ALTERED` en esa parte, y las demás se
+    /// verifican igual.
+    #[test]
+    fn a_query_that_is_not_a_dimension_is_altered_and_the_rest_is_checked() {
+        let acc = approved(SRC, &[("parameters", PARAMS)]);
+        let mut acc2 = acc.clone();
+        acc2.insert("body".into(), AcceptedDimension { hash: "x".into(), hash_ast: None });
+        let decl = &[("body", "(function_item body: (block) @target)"), ("parameters", PARAMS)];
+        assert_eq!(run(SRC, decl, &acc2), dims(&[("body", Altered), ("parameters", Ok)]));
     }
 }

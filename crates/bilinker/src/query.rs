@@ -111,16 +111,6 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
     Ok(fragments(language, source, query_str, true)?.into_iter().next().map(|m| m.fragment))
 }
 
-/// El fragmento que la query nombra **adentro de `within`**: el primer match cuyos
-/// `@target` caen todos en ese rango.
-///
-/// Es como se busca una parte de un fragmento que ya se resolvió: la query de la
-/// parte no nombra de qué método se trata —eso lo dijo el capture—, así que sin
-/// acotarla encontraría la del primer método del archivo.
-pub fn find_fragment_within(language: Language, source: &str, query_str: &str, within: &ByteRange) -> Result<Option<Fragment>> {
-    Ok(fragments_in(language, source, query_str, true, Some(within))?.into_iter().next().map(|m| m.fragment))
-}
-
 /// Todos los matches del patrón, cada uno con **todas** sus partes.
 ///
 /// Es lo que usa la verificación al generar una query: un patrón que matchea dos
@@ -183,12 +173,6 @@ pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Re
 }
 
 fn fragments(language: Language, source: &str, query_str: &str, first_only: bool) -> Result<Vec<TargetMatch>> {
-    fragments_in(language, source, query_str, first_only, None)
-}
-
-fn fragments_in(
-    language: Language, source: &str, query_str: &str, first_only: bool, within: Option<&ByteRange>,
-) -> Result<Vec<TargetMatch>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(source, None).context("parse failed")?;
@@ -205,7 +189,6 @@ fn fragments_in(
     let name_idx = last_name_capture(&query);
 
     let mut cursor = QueryCursor::new();
-    if let Some(w) = within { cursor.set_byte_range(w.start..w.end); }
     let root = tree.root_node();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
     let mut out = Vec::new();
@@ -229,17 +212,12 @@ fn fragments_in(
             .collect::<Vec<_>>()
             .join(FRAGMENT_SEPARATOR);
 
-        let parts: Vec<ByteRange> = nodes.iter()
+        let parts = nodes.iter()
             .map(|n| {
                 let (start, end) = trim_edges(source, n.start_byte(), n.end_byte());
                 ByteRange { start, end }
             })
             .collect();
-        // El rango del cursor deja pasar los matches que lo tocan, no sólo los que
-        // caen adentro: un patrón que empieza en un ancestro lo toca siempre.
-        if let Some(w) = within {
-            if parts.iter().any(|p| p.start < w.start || p.end > w.end) { continue; }
-        }
 
         out.push(TargetMatch {
             fragment: Fragment {
@@ -251,6 +229,72 @@ fn fragments_in(
         if first_only { break; }
     }
     Ok(out)
+}
+
+/// La parte que una dimensión nombra, relativa al nodo que ocupa `anchor`.
+///
+/// La query no busca de qué nodo se trata: lo nombra con `@anchor`, y de todos sus
+/// matches cuentan sólo los que tienen ese nodo como `@anchor`. Por eso puede
+/// nombrar una parte del nodo y una de sus ancestros por igual, y dos métodos
+/// hermanos no se confunden: el `@anchor` de un match es un nodo, y sólo uno es el
+/// del capture.
+///
+/// La parte son los `@target` de esos matches, juntos, en orden de archivo y
+/// recortados uno por uno, igual que un fragmento. `None` si ningún match tiene ese
+/// `@anchor`; una query sin `@anchor` o sin `@target` es un error, porque no es una
+/// dimensión.
+pub fn dimension(
+    language: Language, source: &str, query_str: &str, anchor: (usize, usize),
+) -> Result<Option<Fragment>> {
+    let mut parser = Parser::new();
+    parser.set_language(&language).context("set language")?;
+    let tree = parser.parse(source, None).context("parse failed")?;
+    let query = Query::new(&language, query_str)
+        .with_context(|| format!("invalid query:\n{query_str}"))?;
+    let anchor_idx = query.capture_index_for_name("anchor")
+        .context("la query de una dimensión no tiene @anchor")?;
+    let target_idx = query.capture_index_for_name("target")
+        .context("la query de una dimensión no tiene @target")?;
+
+    // Los nodos que ocupan el rango exacto, y el `@anchor` elige cuál. Un nodo y su
+    // único hijo pueden tener el mismo rango, y también un nodo y la raíz de un
+    // archivo que no tiene más que él: quedarse con uno de antemano deja sin
+    // resolver la query que nombra al otro. El rango de un capture viene recortado,
+    // así que se compara contra el del nodo recortado.
+    let trimmed = |n: Node| trim_edges(source, n.start_byte(), n.end_byte());
+    let Some(mut node) = tree.root_node().descendant_for_byte_range(anchor.0, anchor.1)
+        else { return Ok(None) };
+    if trimmed(node) != anchor { return Ok(None); }
+    let mut occupants = vec![node.id()];
+    while let Some(p) = node.parent().filter(|p| trimmed(*p) == anchor) {
+        occupants.push(p.id());
+        node = p;
+    }
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut nodes: Vec<Node> = Vec::new();
+    while let Some(m) = matches.next() {
+        if !m.captures.iter().any(|c| c.index == anchor_idx && occupants.contains(&c.node.id())) {
+            continue;
+        }
+        nodes.extend(m.captures.iter().filter(|c| c.index == target_idx).map(|c| c.node));
+    }
+    if nodes.is_empty() { return Ok(None); }
+
+    nodes.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    nodes.dedup_by_key(|n| (n.start_byte(), n.end_byte()));
+    let sexp = nodes.iter()
+        .map(|n| shape_and_tokens(*n, source))
+        .collect::<Vec<_>>()
+        .join(FRAGMENT_SEPARATOR);
+    let parts = nodes.iter()
+        .map(|n| {
+            let (start, end) = trim_edges(source, n.start_byte(), n.end_byte());
+            ByteRange { start, end }
+        })
+        .collect();
+    Ok(Some(Fragment { ranges: Ranges::new(parts).expect("hay al menos un @target"), sexp }))
 }
 
 /// El texto de un nombre, listo para entrar en un predicado `(#eq? @nK "...")`.
@@ -466,6 +510,78 @@ mod tests {
     fn relax_leaves_query_without_predicates_intact() {
         let q = "(source_file) @target";
         assert_eq!(relax_name_predicates(q), q);
+    }
+}
+
+#[cfg(test)]
+mod dimension_tests {
+    use super::*;
+
+    const SERVICE: &str = concat!(
+        "@RestController\n",
+        "@RequestMapping(\"/user\")\n",
+        "public class Service {\n",
+        "    public Dto one(String token) { return a(token); }\n",
+        "    public Dto two(int id) { return b(id); }\n",
+        "}\n",
+    );
+
+    fn java() -> Language { crate::grammar::for_language("java").unwrap() }
+
+    /// El rango del método `name`, como lo dejaría un capture que lo resolvió.
+    fn method(name: &str) -> (usize, usize) {
+        let start = SERVICE.find(&format!("public Dto {name}")).unwrap();
+        let end = start + SERVICE[start..].find('}').unwrap() + 1;
+        (start, end)
+    }
+
+    fn text(f: &Fragment) -> String { f.ranges.text(SERVICE) }
+
+    /// Los dos métodos matchean el patrón, y cuenta el que es el nodo del capture.
+    #[test]
+    fn a_part_of_the_anchor_and_not_of_its_sibling() {
+        let q = "(method_declaration parameters: (formal_parameters) @target) @anchor";
+        let one = dimension(java(), SERVICE, q, method("one")).unwrap().unwrap();
+        let two = dimension(java(), SERVICE, q, method("two")).unwrap().unwrap();
+        assert_eq!(text(&one), "(String token)");
+        assert_eq!(text(&two), "(int id)");
+    }
+
+    /// Una parte de un ancestro: las anotaciones de la clase cuyo cuerpo contiene al
+    /// método. Cada anotación es un match, y la parte son todas, en orden de archivo.
+    #[test]
+    fn a_part_of_an_ancestor_joins_every_match_of_the_anchor() {
+        let q = "(class_declaration \
+                   (modifiers [(annotation) (marker_annotation)] @target) \
+                   body: (class_body (method_declaration) @anchor))";
+        let f = dimension(java(), SERVICE, q, method("two")).unwrap().unwrap();
+        assert_eq!(text(&f), "@RestController\n@RequestMapping(\"/user\")");
+        assert!(f.sexp.contains("marker_annotation"), "{}", f.sexp);
+    }
+
+    /// Un archivo que no tiene más que el nodo: la raíz ocupa el mismo rango, y el
+    /// `@anchor` sigue siendo el nodo que la query nombra.
+    #[test]
+    fn a_node_that_is_the_whole_file_still_resolves() {
+        let src = "fn a(x: u8) -> u8 { x + 1 }\n";
+        let rust = crate::grammar::for_language("rust").unwrap();
+        let q = "(function_item parameters: (parameters) @target) @anchor";
+        let f = dimension(rust, src, q, (0, src.trim_end().len())).unwrap().unwrap();
+        assert_eq!(f.ranges.text(src), "(x: u8)");
+    }
+
+    #[test]
+    fn a_query_without_a_match_on_the_anchor_does_not_resolve() {
+        let q = "(method_declaration (throws) @target) @anchor";
+        assert!(dimension(java(), SERVICE, q, method("one")).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_query_without_anchor_or_target_is_an_error() {
+        let sin_anchor = "(method_declaration parameters: (_) @target)";
+        let sin_target = "(method_declaration parameters: (_)) @anchor";
+        assert!(dimension(java(), SERVICE, sin_anchor, method("one")).is_err());
+        assert!(dimension(java(), SERVICE, sin_target, method("one")).is_err());
     }
 }
 

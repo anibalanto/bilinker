@@ -99,10 +99,10 @@ endpoint:
     dimensions:
       parameters:
         query: |-
-          (method_declaration parameters: (formal_parameters) @target)
+          (method_declaration parameters: (formal_parameters) @target) @anchor
       return:
         query: |-
-          (method_declaration type: (_) @target)
+          (method_declaration type: (_) @target) @anchor
     accepted:
     - agree:
       - pablo
@@ -135,9 +135,51 @@ Es lo que deja a las dimensiones cruzar la frontera: un consumidor que no tiene 
 
 ### Una dimensión resuelve relativa al nodo del capture, y nunca ancla por su cuenta
 
-La query de una dimensión no se evalúa sobre el archivo: se evalúa desde el nodo que el capture fijó. Puede nombrar partes de ese nodo y de sus ancestros —*"el `@RequestMapping` de la clase que contiene a este método"*—, porque no busca de qué método se trata: eso ya lo dijo el capture.
+La query de una dimensión no busca en el archivo: nombra al nodo que el capture fijó con una captura reservada, `@anchor`, y de todos sus matches cuentan sólo los que tienen ese nodo como `@anchor`. La parte son los `@target` de esos matches, en orden de archivo y recortados como un fragmento ([capture.md](capture.md)), y su texto es la concatenación que el `hash` firma.
+
+Así puede nombrar partes del nodo y de sus ancestros, porque no busca de qué método se trata: eso ya lo dijo el capture.
+
+```
+(method_declaration parameters: (formal_parameters) @target) @anchor
+
+(class_declaration
+  (modifiers (annotation) @target)
+  body: (class_body (method_declaration) @anchor))
+```
+
+La primera es la lista de parámetros del método; la segunda, las anotaciones de la clase cuyo cuerpo lo contiene —*"el `@RequestMapping` de la clase que contiene a este método"*—. Dos métodos hermanos no se confunden: el `@anchor` de un match es un nodo, y sólo uno es el del capture.
+
+El nodo del capture es el que ocupa su rango. Si más de uno lo ocupa —un nodo y su único hijo, o un nodo y la raíz de un archivo que no tiene más que él—, el `@anchor` elige entre ellos: la query nombra el tipo de nodo que quiere, y cualquiera de los que ocupan el rango es el del capture.
+
+Una query sin `@anchor` o sin `@target` no es una dimensión, y resolverla es un error. Una que no tiene ningún match con ese `@anchor` no resuelve.
 
 Por eso ninguna dimensión ancla. Si el capture no resuelve, no hay nodo desde el cual evaluarlas, y ninguna resuelve. Y la dimensión no depende de nada adentro de la query del capture, ni de sus nombres de captura ni de su forma: sólo del nodo que esa query identifica.
+
+### Una dimensión de varios `@target` es su concatenación, en orden de archivo
+
+La query de una dimensión puede llevar más de un `@target`: la ruta de un endpoint sale de dos anotaciones —`@RequestMapping` en la clase, `@GetMapping` en el método—, que como texto completo no existe en ningún nodo. El texto de la dimensión es la concatenación de sus rangos en el orden en que aparecen en el archivo, no en el que la query los nombra, que es un detalle de cómo se escribió el patrón y no del documento.
+
+Cada rango se recorta en sus bordes por separado, antes de concatenar, igual que el del [capture](capture.md). Recortar la concatenación dejaría los bordes internos a merced de dónde termina un nodo y empieza el otro, que es justo el contexto del que el recorte existe para independizar.
+
+### Las partes de una dimensión se unen con `\n`
+
+Los rangos no son contiguos, así que hay que decidir qué va entre uno y el siguiente, y eso entra en el `hash`:
+
+| | |
+|---|---|
+| nada | dos capturas pegadas producen un texto que no existe en ningún archivo |
+| `\n` | elegido: legible, y estable frente a cuánto espacio haya en el medio |
+| el texto intermedio | es el archivo tal cual, pero entonces lo que queda en el medio —el cuerpo, entre dos anotaciones— entra por la ventana |
+
+Y no se vuelve a tocar. Cambiarlo movería de una vez el hash de todas las partes compuestas, y pasarían a `ALTERED` sin que nadie tocara el código.
+
+`hash_ast` sigue la misma regla: las s-expressions de los nodos, en el mismo orden, unidas por `\n`.
+
+### Ninguna parte de una dimensión contiene a otra
+
+El texto de una dimensión es la concatenación de sus partes, así que una parte adentro de otra se contaría dos veces y el hash pasaría a depender de un solapamiento que nadie quiso. Los rangos de una dimensión son disjuntos.
+
+Dos partes sí pueden compartir una línea, y es el caso normal: en `public Dto get(String t)` el tipo de retorno y los parámetros son rangos disjuntos de la misma línea, con el nombre del método en el medio y afuera. Mostrarlos no es imprimirlos uno detrás del otro, porque esa línea saldría repetida: es problema de quien lo muestra, y lo resuelve [`get`](get.md). El `hash` no cambia.
 
 ### Más de un `accepted` es un estado, no una forma de trabajar
 
@@ -595,5 +637,5 @@ Cada endpoint `path` copia los dos valores del endpoint estructural de su vecino
 17. Un capture referenciado por un `n.1.link` —de la declaración o de una decisión— cuenta como referenciado para `prune`.
 18. `unknown` en un `n.N.link` —de la declaración o de una decisión— significa que el nivel está adquirido y su ubicación no se sabe. Es incomparable: dos `unknown` no coinciden, y el eje de la ubicación de ese nivel no queda limpio. El eje del contenido se compara igual, contra el `hash` conservado.
 19. El nombre de una dimensión es una etiqueta opaca: se compara, no se interpreta, y un nombre desconocido no es un error. Una dimensión de la declaración se empareja con la de la decisión por su nombre.
-20. Una dimensión resuelve desde el nodo que el capture fijó, y nunca ancla por su cuenta: si el capture no resuelve, ninguna dimensión resuelve.
+20. Una dimensión resuelve desde el nodo que el capture fijó, y nunca ancla por su cuenta: cuentan sólo los matches cuyo `@anchor` es ese nodo, y si el capture no resuelve, ninguna dimensión resuelve.
 21. Una dimensión aceptada lleva `hash`, y `hash_ast` sólo con él.
