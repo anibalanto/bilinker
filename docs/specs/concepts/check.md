@@ -322,7 +322,7 @@ Introducir una medida difusa en un sistema construido sobre hashes exactos neces
 
 ### Con dimensiones, el estado del contenido sale de ellas
 
-Un endpoint que declara [dimensiones](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento) no compara el fragmento entero: compara cada parte contra lo que se aprobó de ella, por nombre. `accepted.hash` sigue siendo el del fragmento, y deja de decidir el estado. Lo que cambia afuera de toda parte declarada no avisa, porque nadie pidió vigilarlo.
+Un endpoint que declara [dimensiones](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento) no compara el fragmento entero: compara cada parte contra lo que se aprobó de ella, por nombre. Cada parte se resuelve desde el nodo del capture por su `@anchor`, como la resuelve `accept` ([bilink.md](bilink.md#una-dimensión-resuelve-relativa-al-nodo-del-capture-y-nunca-ancla-por-su-cuenta)). `accepted.hash` sigue siendo el del fragmento, y deja de decidir el estado. Lo que cambia afuera de toda parte declarada no avisa, porque nadie pidió vigilarlo.
 
 Cada dimensión se compara como un fragmento, con la tabla de [EXPANDED](#expanded-creció-alrededor-de-lo-aceptado) y las mismas condiciones para `RESTYLED`:
 
@@ -333,17 +333,13 @@ Cada dimensión se compara como un fragmento, con la tabla de [EXPANDED](#expand
 | difiere en texto y coincide en `hash_ast` | `RESTYLED` |
 | nada de lo anterior | `ALTERED` |
 | está de un solo lado: declarada y no aprobada, o aprobada y no declarada | `ALTERED` |
-| su query no encuentra la parte | `ALTERED` |
+| no resuelve, o su query no es una dimensión | `ALTERED` |
 
 La ubicación se decide antes, como siempre: un `RELOCATED` no mira ninguna parte. Y el vecindario se evalúa sólo cuando todas las partes dicen `OK`.
 
 Un endpoint sin dimensiones compara el fragmento entero, igual que antes de que existieran.
 
-### Una dimensión se busca adentro del nodo del capture
-
-La query de la dimensión se evalúa sobre el archivo y se queda con el primer match cuyos `@target` caen todos adentro del fragmento que resolvió el capture. Así una parte nunca sale de otro método del mismo archivo.
-
-Una parte que está afuera del nodo —la anotación de la clase que contiene al método— hoy no se encuentra, y su dimensión da `ALTERED`.
+Una parte que no resuelve no corta la verificación de las demás, ni la del resto de la capa: se reporta en su dimensión.
 
 ### La dimensión califica al estado, y no lo reemplaza
 
