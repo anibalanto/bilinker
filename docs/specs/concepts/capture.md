@@ -77,6 +77,8 @@ Que la query componga es lo que la vuelve frágil, porque tree-sitter matchea el
 
 El fragmento de un capture es el rango del nodo que marca su `@target`, recortado en los bordes. Es lo que se lee cuando un endpoint no declara dimensiones, y es de donde las dimensiones parten cuando las declara.
 
+Una query con varios `@target` no la escribe ningún comando. Si un capture escrito antes la lleva, su fragmento es la concatenación de sus rangos, en orden de archivo y unidos por `\n`, que es la regla del texto de una [dimensión](bilink.md): así se siguen leyendo igual los que ya existen.
+
 ### Dos endpoints que vigilan partes distintas de la misma ubicación comparten el capture
 
 El id sale de la ubicación, y la query nombra la ubicación y nada más, así que dos bilinks que miran el mismo método referencian el mismo capture aunque uno vigile los parámetros y otro el cuerpo. Lo que los distingue son sus dimensiones, que viven en cada endpoint, y no el capture.
@@ -380,13 +382,15 @@ revisar con `bilinker get 430a5d51.0` y aceptar con `bilinker accept 430a5d51.0`
 
 El id del capture va a stdout para poder usarlo en pipes; el resto a stderr.
 
-### `--as` regenera la query con un generador, y el endpoint lo anota
+### `--as` declara las dimensiones con un generador, y el endpoint lo anota
 
 ```
 bilinker recapture <uuid>.<N> <file> <pos> --as <modo>
 ```
 
-La posición se resuelve igual que en [`chain new --as`](chain.md): el generador escribe la query de lo que se señaló, y el endpoint anota en `as` con qué se capturó. Un modo que no existe es un error que lista los que hay, y no repunta nada.
+La posición se resuelve igual que en [`chain new --as`](chain.md): el capture es el del núcleo, el endpoint anota en `as` con qué se capturó, y en `dimensions` lo que el generador declara. Un modo que no existe es un error que lista los que hay, y no repunta nada.
+
+Sobre el nodo al que el endpoint ya apunta, el capture es el mismo: `recapture --as` no repunta, y reescribe `as` y `dimensions`. Es cómo un endpoint sin dimensiones pasa a vigilar partes, y cómo pasa a vigilar una parte que el nodo no tenía al capturarlo, como un `throws` nuevo. Si el endpoint ya declaraba exactamente eso, no hay nada que escribir, y es un error.
 
 Es cómo un capture escrito con otra regla pasa a la de hoy sin crear otro bilink. Un bilink nuevo tendría otro UUID, y un endpoint `abstract` es exactamente un UUID del que otro repo está colgado.
 
@@ -412,8 +416,8 @@ Para lo que sí tiene auto-fix —`MOVED` y `REANCHORED`— corresponde [`apply`
 
 | Código | Condición |
 |---|---|
-| 0 | Endpoint repuntado. |
-| 1 | UUID no encontrado, endpoint no estructural, el `link` ya apuntaba a ese capture, o el fragmento nuevo no se pudo capturar. |
+| 0 | Endpoint repuntado, o con sus dimensiones declaradas de nuevo. |
+| 1 | UUID no encontrado, endpoint no estructural, el `link` ya apuntaba a ese capture sin dimensiones nuevas que declarar, o el fragmento nuevo no se pudo capturar. |
 
 ## Invariantes
 

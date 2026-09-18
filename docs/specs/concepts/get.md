@@ -252,7 +252,7 @@ $ bilinker get 67ba7217.0
 22:   @RequestMapping("/public-api/user")                                              ‹route›
  ⋮
 36:   	@GetMapping(value = "/info/from-token")                                          ‹route›
-37:   	... PublicUserInfoDto ... (@RequestHeader("user-token") String userToken) ...  ‹return · parameters›
+37:   	... PublicUserInfoDto ... (@RequestHeader("user-token") String userToken) ...  ‹type · parameters›
 ```
 
 El texto de la línea no se toca: con los `...` se ve dónde termina una parte y empieza la otra, y los nombres dicen de quién es cada una, en orden. Un bloque por dimensión no sirve, porque el retorno y los parámetros comparten línea y esa línea saldría dos veces.
@@ -270,7 +270,7 @@ Un nombre que el endpoint no declara es un error, y el mensaje lista los que sí
 ```
 $ bilinker get 67ba7217.0 --dimension body
 Error: el endpoint no declara la dimensión `body`.
-  Declara: parameters, return, route.
+  Declara: parameters, route, type.
 ```
 
 Sobre un endpoint sin dimensiones, `--dimension` falla igual, y dice que el endpoint no declara ninguna.
