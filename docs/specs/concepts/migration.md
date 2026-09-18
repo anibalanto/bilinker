@@ -197,6 +197,12 @@ La idempotencia tiene dos regímenes. Antes del corte, `migrate` siempre regener
 
 Si se escribiera al generar, el repo quedaría marcado como migrado mientras sigue corriendo el formato viejo. Se registra cuando el estado es verdadero, no cuando el trabajo empezó.
 
+### Un corte que no tiene nada que cortar falla y no escribe el ledger
+
+`migrate --cut` sobre capas donde ninguna tiene un corte que le toque —una capa de formato 4 sin `.bilink-migrate-004-dimensions/`, o una al día— no mueve ninguna carpeta, no escribe el ledger y sale con 1, diciendo que primero se genera con `bilinker migrate`. Si escribiera el ledger, la capa quedaría en el formato viejo y el `migrate` siguiente la daría por `ya aplicada`.
+
+Un corte que corta alguna capa escribe el ledger como siempre.
+
 ### El corte deja el formato anterior en `.bilink-formato-<N>/`
 
 El corte escribe el formato vigente en `.bilink/` y deja el anterior en `.bilink-formato-<N>/` al lado, y lo dice al terminar. Ese directorio no está en git: lo tapa el glob `.bilink-formato-*` del exclude, así que un clon fresco no lo trae y un árbol limpiado lo pierde. Dónde vive ese backup y cuándo se borra es una decisión abierta del impl.
