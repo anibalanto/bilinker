@@ -251,8 +251,10 @@ fn alias_de(
     let g = crate::capture::generator_named(e.r#as.as_deref()?).ok()?;
     let cap = crate::capture::capture_of(layer, &e.link).ok()??;
     let (_, ranges) = resolved.get(e.link.capture_id()?)?;
+    let ranges = ranges.as_ref()?;
     let source = std::fs::read_to_string(layer.join(&cap.file)).ok()?;
-    g.alias(&source, ranges.as_ref()?, cap.query.as_deref()?)
+    let parts = crate::dimension::resolve_all(&cap.file, &source, &e.dimensions, (ranges.start(), ranges.end()))?;
+    g.alias(&source, &parts)
 }
 
 fn check_endpoint(

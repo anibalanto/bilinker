@@ -165,8 +165,35 @@ fn spans_of(node: &str) -> Vec<(usize, usize)> {
     }).collect()
 }
 
+/// La query de un endpoint de cuatro partes, como las que se escribían cuando la
+/// query componía el fragmento. Ya no la escribe ningún comando, y se sigue leyendo.
+const FOUR_PARTS: &str = r#"(class_declaration
+  (modifiers
+    (_
+          name: (identifier) @n0 (#match? @n0 "^(RequestMapping)$")) @target)
+  body: (class_body
+    (method_declaration
+      (modifiers
+        (_
+          name: (identifier) @n1 (#match? @n1 "^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)$")) @target)
+      type: (_) @target
+      name: (identifier) @n2 (#eq? @n2 "getPermissions")
+      parameters: (_) @target)))"#;
+
+/// Una cadena cuyo tip de código es un capture de cuatro partes.
+fn four_part_chain(root: &Path) -> String {
+    let uuid = chain(root, &["--tip", "src/Service.java:8:37"]);
+    let cap = bilink_format::Capture { file: "src/Service.java".into(), query: Some(FOUR_PARTS.into()) };
+    let (id, _, _) = cap.write_in(root).unwrap();
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let mut bl = bilink_format::BiLink::load(&path).unwrap();
+    bl.endpoint.get_mut(1).link = format!("capture {id}").parse().unwrap();
+    bl.write(&path).unwrap();
+    uuid
+}
+
 fn spring_controller_graph(root: &Path) -> serde_yaml_ng::Value {
-    chain(root, &["--as.1", "spring-controller", "--tip", "src/Service.java:8:37"]);
+    four_part_chain(root);
     code_in(root, &["check", "."]);
     let (stdout, stderr, code) = code_in(root, &["graph", ".", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}");
@@ -217,7 +244,7 @@ fn a_tip_of_one_part_has_no_declaration() {
 #[test]
 fn a_declaration_is_not_emitted_against_stale_spans() {
     let (_tmp, root) = workspace();
-    chain(&root, &["--as.1", "spring-controller", "--tip", "src/Service.java:8:37"]);
+    four_part_chain(&root);
     code_in(&root, &["check", "."]);
     let src = fs::read_to_string(root.join("src/Service.java")).unwrap();
     fs::write(root.join("src/Service.java"), format!("// movido\n{src}")).unwrap();

@@ -5,7 +5,9 @@ use tree_sitter::{Node, Parser, Point};
 use crate::git;
 use crate::grammar::{self, stable_anchor_kinds};
 use crate::hash;
-use bilink_format::{Capture, Ranges};
+use std::collections::BTreeMap;
+
+use bilink_format::{ByteRange, Capture, DeclaredDimension, Ranges};
 use crate::query;
 
 /// La ubicación aprobada de un endpoint, si el endpoint es estructural.
@@ -262,12 +264,16 @@ pub struct CaptureResult {
     pub capture: Capture,
     pub hash: String,
     pub commit: String,
-    /// Los rangos que la query resuelve, en orden de archivo — uno por `@target`.
+    /// Lo que se vigila, en orden de archivo: el nodo entero, o las partes de sus
+    /// dimensiones cuando un generador las declaró.
     ///
-    /// Es lo que se hashea, y es lo que la vista previa marca: sin esto, quien crea
-    /// un capture no tiene con qué ver si la query agarró lo que quería, y un
-    /// capture es opaco después de escrito.
+    /// Es lo que la vista previa marca: sin esto, quien crea un endpoint no tiene
+    /// con qué ver si agarró lo que quería, y un capture es opaco después de escrito.
     pub ranges: Ranges,
+    /// Las dimensiones que declaró el generador, por nombre. Vacío sin `--as`.
+    pub dimensions: BTreeMap<String, DeclaredDimension>,
+    /// Lo que resolvió cada una, en el orden de los nombres.
+    pub parts: Vec<(String, Ranges)>,
 }
 
 pub fn capture(
@@ -276,33 +282,16 @@ pub fn capture(
     start: (usize, usize), // (line, col) 1-based
     end: (usize, usize),
 ) -> Result<CaptureResult> {
-    capture_many(root, file, &[(start, end)])
+    capture_as(root, file, &[(start, end)], None)
 }
 
-/// Un capture de N partes: una query con un `@target` por posición señalada.
+/// El capture del nodo señalado, y las dimensiones que un [`CaptureGenerator`]
+/// declare sobre él.
 ///
-/// **Las posiciones se descartan.** Sirven para *encontrar* los nodos —cada una
-/// resuelve al ancla estable más cercana, igual que una sola— y lo que se guarda es
-/// la query. El orden en que se pasan tampoco se guarda: el fragmento va en orden de
-/// archivo.
-///
-/// **La query se ancla una sola vez**, en el ancla estable que contiene a todas las
-/// partes. Eso es lo que las ancla *entre sí*: `@RequestMapping` **de la clase que
-/// contiene** al método, y no "el primer `@RequestMapping` del archivo". Una lista
-/// de queries independientes perdería justamente eso.
-pub fn capture_many(
-    root: &Path,
-    file: &str,
-    sel:  &[((usize, usize), (usize, usize))],
-) -> Result<CaptureResult> {
-    capture_as(root, file, sel, None)
-}
-
-/// Como [`capture_many`], dejando que un [`CaptureGenerator`] escriba la query.
-///
-/// **Un generador toma una posición.** Genera *la* query de *eso* que se señaló, y
-/// dos cosas señaladas son dos contratos y no uno con dos mitades. Sin generador,
-/// las posiciones son las que sean.
+/// **Las posiciones se descartan.** Sirven para *encontrar* el nodo —cada una
+/// resuelve al ancla estable más cercana— y lo que se guarda es la query. Todas
+/// tienen que caer en el mismo: dos nodos son dos contratos, y un capture es una
+/// ubicación.
 pub fn capture_as(
     root: &Path,
     file: &str,
@@ -310,23 +299,48 @@ pub fn capture_as(
     generator: Option<&dyn CaptureGenerator>,
 ) -> Result<CaptureResult> {
     let commit = git::head_commit_for_file(root, file)?;
-    let (capture, hash, ranges) = compute(root, file, sel, generator)?;
-    Ok(CaptureResult { capture, hash, commit, ranges })
+    let Computed { capture, hash, ranges, dimensions, parts } = compute_as(root, file, sel, generator)?;
+    Ok(CaptureResult { capture, hash, commit, ranges, dimensions, parts })
 }
 
-/// El capture y su hash, **sin preguntarle nada a git**.
+/// El capture, su hash y lo que se vigila, **sin preguntarle nada a git**.
 ///
-/// `capture_as` es esto más el commit del archivo. Van separados porque hay un
-/// llamador que no necesita el commit y **no debería necesitar un repo**: el
-/// [vecindario](crate::neighbours) acuña un capture por vecino sólo para tener su id
-/// y su hash, y pedir git ahí ataría el cálculo del id a que el archivo esté
-/// versionado — que no tiene nada que ver.
+/// Es lo que necesita el [vecindario](crate::neighbours), que acuña un capture por
+/// vecino sólo para tener su id y su hash: pedir git ahí ataría el cálculo del id a
+/// que el archivo esté versionado, que no tiene nada que ver.
 pub fn compute(
     root: &Path,
     file: &str,
     sel:  &[((usize, usize), (usize, usize))],
     generator: Option<&dyn CaptureGenerator>,
-) -> Result<(Capture, String, bilink_format::Ranges)> {
+) -> Result<(Capture, String, Ranges)> {
+    let c = compute_as(root, file, sel, generator)?;
+    Ok((c.capture, c.hash, c.ranges))
+}
+
+/// Lo que sale de señalar un nodo: su capture, y lo que el generador declaró.
+pub struct Computed {
+    pub capture: Capture,
+    /// El hash de lo que se vigila: el nodo, o sus dimensiones concatenadas.
+    pub hash: String,
+    /// Lo que se vigila, en orden de archivo.
+    pub ranges: Ranges,
+    pub dimensions: BTreeMap<String, DeclaredDimension>,
+    /// Lo que resolvió cada dimensión, en el orden de los nombres.
+    pub parts: Vec<(String, Ranges)>,
+}
+
+/// El capture del nodo señalado y, con generador, sus dimensiones verificadas.
+///
+/// **El capture es siempre el del núcleo.** Con `--as` o sin él, el mismo nodo da
+/// la misma query y por lo tanto el mismo archivo: el generador no toca la
+/// ubicación, declara qué se vigila de ella.
+pub fn compute_as(
+    root: &Path,
+    file: &str,
+    sel:  &[((usize, usize), (usize, usize))],
+    generator: Option<&dyn CaptureGenerator>,
+) -> Result<Computed> {
     if sel.is_empty() {
         bail!("un capture con posiciones necesita al menos una");
     }
@@ -343,17 +357,6 @@ pub fn compute(
     let root_node = tree.root_node();
     let anchors   = stable_anchor_kinds(lang);
 
-    if let Some(g) = generator {
-        if sel.len() != 1 {
-            bail!(
-                "`--as {}` toma una posición y se pasaron {}: un generador escribe \
-                 la query de lo que se señaló, y dos cosas señaladas son dos \
-                 contratos.",
-                g.name(), sel.len()
-            );
-        }
-    }
-
     // Cada posición a su nodo, sin repetir: dos posiciones adentro de la misma
     // función son la misma función, no dos partes.
     let mut pointed: Vec<Node> = Vec::new();
@@ -367,51 +370,86 @@ pub fn compute(
     }
     pointed.sort_by_key(|n| (n.start_byte(), n.end_byte()));
 
-    let ctx = GenCtx { source: &source, lang, anchors, standalone };
-    let Generated { query, mut targets } = match generator {
-        Some(g) => g.query(&ctx, pointed[0])?,
-        None    => generate_default(&ctx, &pointed),
-    };
-    targets.sort_by_key(|n| (n.start_byte(), n.end_byte()));
-    targets.dedup_by_key(|n| n.id());
-
-    // La query tiene que identificar a los nodos seleccionados y a ninguno otro. Un
-    // ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`—
-    // matchea el primer nodo de ese tipo del archivo, y el capture apuntaría a
-    // otra cosa sin fallar. Un capture mal anclado es peor que uno roto: reporta
-    // OK sobre una correspondencia que no existe.
-    if let Some((outer, inner)) = nested_pair(&targets) {
+    // **Dos nodos son dos contratos.** La query identifica un nodo y no compone el
+    // fragmento: juntar dos haría que la parte que falte arrastre al ancla que está
+    // intacta.
+    if let [a, b, ..] = pointed.as_slice() {
         bail!(
-            "una parte contiene a la otra: el `{}` de la línea {} está adentro del \
-             `{}` de la línea {}, y el fragmento las contaría dos veces.\n       \
-             Cada posición resuelve al ancla estable más cercana; señalar algo \
-             adentro del ancla externa no la hace más chica.",
-            inner.kind(), inner.start_position().row + 1,
-            outer.kind(), outer.start_position().row + 1,
+            "las posiciones caen en nodos distintos: el `{}` de la línea {} y el `{}` \
+             de la línea {}. Un capture es un nodo.\n       \
+             Señalar uno solo, o vigilar sus partes con `--as`.",
+            a.kind(), a.start_position().row + 1, b.kind(), b.start_position().row + 1,
         );
     }
+    let node = pointed[0];
 
-    let ranges = verify_query_identifies(language.clone(), &source, &query, &targets, file)?;
+    let ctx = GenCtx { source: &source, lang, anchors, standalone };
+    let query = pattern_for(&ctx, node);
 
-    // **La selección elige nodos, no rangos de bytes.**
-    //
-    // Un rango adentro de un nodo se corre con cualquier edición encima suya
-    // dentro del mismo nodo, así que su granularidad es ilusoria: se rompe todo
-    // el tiempo y hay que repuntarlo. Un ancla de nodo entero es estable, y sus
-    // falsas alarmas son honestas — "esto cambió, fijate si tu spec sigue
-    // valiendo". Lo que se pierde es atribución, no detección: `hash` dice que
-    // cambió y `hash_ast` si fue sólo espaciado.
-    //
-    // Así que la selección se usa para **encontrar** los nodos y después se
-    // descarta. Si hace falta más precisión, la respuesta es una query — que nombre
-    // algo más chico, o que nombre varios nodos y deje el resto afuera—, no un
-    // recorte sobre una que nombra algo más grande.
+    // La query tiene que identificar al nodo señalado y a ninguno otro. Un ancla sin
+    // discriminante —un `impl` sin tipo, un comentario, un `use`— matchea el primer
+    // nodo de ese tipo del archivo, y el capture apuntaría a otra cosa sin fallar.
+    // Un capture mal anclado es peor que uno roto: reporta OK sobre una
+    // correspondencia que no existe.
+    let range = verify_query_identifies(language.clone(), &source, &query, node, file)?;
 
-    // El recorte lo aplicó la resolución, parte por parte: el hash tiene que ser el
-    // del fragmento que `check` va a comparar, no el de los nodos crudos.
+    // **La selección elige nodos, no rangos de bytes.** Un rango adentro de un nodo
+    // se corre con cualquier edición encima suya dentro del mismo nodo, así que su
+    // granularidad es ilusoria. Si hace falta más precisión, la respuesta es una
+    // query que nombre algo más chico, o una dimensión que nombre la parte.
+    let capture = Capture { file: file.to_string(), query: Some(query) };
+
+    let Some(g) = generator else {
+        let hash = hash::sha256(range.text(&source).as_bytes());
+        return Ok(Computed { capture, hash, ranges: range, dimensions: BTreeMap::new(), parts: Vec::new() });
+    };
+
+    let mut dimensions = BTreeMap::new();
+    let mut parts = Vec::new();
+    let anchor = (range.start(), range.end());
+    for d in g.dimensions(&ctx, node)? {
+        let resolved = verify_dimension(language.clone(), &source, &d, anchor, file)?;
+        dimensions.insert(d.name.clone(), DeclaredDimension { query: d.query });
+        parts.push((d.name, resolved));
+    }
+    parts.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut all: Vec<ByteRange> = parts.iter().flat_map(|(_, r)| r.parts().to_vec()).collect();
+    all.sort_by_key(|r| (r.start, r.end));
+    all.dedup();
+    let ranges = Ranges::new(all).unwrap_or(range);
     let hash = hash::sha256(ranges.text(&source).as_bytes());
+    Ok(Computed { capture, hash, ranges, dimensions, parts })
+}
 
-    Ok((Capture { file: file.to_string(), query: Some(query) }, hash, ranges))
+/// Una dimensión resuelve contra el nodo del capture, y a las partes que el
+/// generador señaló.
+///
+/// Se verifica acá y no en `check` por lo mismo que la query del capture: acá todavía
+/// se puede no escribir, y una dimensión que vigila otra cosa reporta OK sobre una
+/// parte que nadie aprobó.
+fn verify_dimension(
+    language: tree_sitter::Language,
+    source:   &str,
+    d:        &GeneratedDimension,
+    anchor:   (usize, usize),
+    file:     &str,
+) -> Result<Ranges> {
+    let mut esperado: Vec<(usize, usize)> = d.targets.iter()
+        .map(|t| query::trim_edges(source, t.start_byte(), t.end_byte()))
+        .collect();
+    esperado.sort_unstable();
+    let Some(f) = query::dimension(language, source, &d.query, anchor)? else {
+        bail!("la dimensión `{}` no resuelve en {file}:\n{}", d.name, d.query);
+    };
+    let got: Vec<(usize, usize)> = f.ranges.parts().iter().map(|r| (r.start, r.end)).collect();
+    if got != esperado {
+        bail!(
+            "la dimensión `{}` resuelve a {} y el generador señaló {} en {file}:\n{}",
+            d.name, fmt_ranges(&got), fmt_ranges(&esperado), d.query
+        );
+    }
+    Ok(f.ranges)
 }
 
 /// Lo que un generador necesita saber del archivo, y nada más.
@@ -425,24 +463,23 @@ pub struct GenCtx<'a> {
     pub standalone: bool,
 }
 
-/// La query que un generador escribió, y los nodos que espera que capture.
+/// Una dimensión que un generador declara: su nombre, su query, y los nodos que
+/// espera que resuelva.
 ///
 /// Los nodos viajan con la query para poder **verificar** que resuelve a lo que el
-/// generador quiso. Sin eso, un generador con un error escribe un capture que
-/// apunta a otra cosa y no falla — la falla que este proyecto llama peor que un
-/// capture roto.
-pub struct Generated<'t> {
+/// generador quiso. Sin eso, un generador con un error declara una dimensión que
+/// vigila otra cosa y no falla.
+pub struct GeneratedDimension<'t> {
+    pub name:    String,
     pub query:   String,
     pub targets: Vec<Node<'t>>,
 }
 
-/// Quién escribe la query de un capture.
+/// Quién declara qué se vigila de un nodo.
 ///
-/// **Un generador genera y desaparece.** El capture que queda es una query normal:
-/// no dice quién lo generó, no depende de que el generador exista, y se podría
-/// haber escrito señalando las posiciones a mano. Eso lo fuerza el formato y no la
-/// disciplina — el id es `sha256(file \0 query \0)`, así que no hay dónde dejar el
-/// rastro aunque uno quisiera.
+/// **Un generador declara y desaparece.** El capture es el del núcleo, y las
+/// dimensiones quedan escritas en el endpoint con su query: no dependen de que el
+/// generador exista, y un `as` que nombra uno ausente es un dato que no se pudo usar.
 ///
 /// **Sin carga dinámica.** Plugins `.so` es complejidad que todavía no pidió nadie;
 /// el trait deja la puerta abierta y el registro es un `Vec` que arma el binario.
@@ -455,27 +492,26 @@ pub trait CaptureGenerator {
     /// ¿Este generador tiene algo que decir sobre este nodo?
     ///
     /// **Sólo para sugerir, nunca para elegir.** Un generador que acierta cuando no
-    /// querías ya te escribió otra cosa, y un capture es opaco después.
+    /// querías ya te escribió otra cosa, y lo que un endpoint vigila no se ve sin ir
+    /// a buscarlo.
     fn applies(&self, file: &str, source: &str, node: Node) -> bool;
 
-    /// La query, y los nodos que espera que capture.
-    fn query<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Generated<'t>>;
+    /// Las dimensiones que se vigilan del nodo, cada una con su query y sus nodos.
+    fn dimensions<'t>(&self, ctx: &GenCtx<'_>, node: Node<'t>) -> Result<Vec<GeneratedDimension<'t>>>;
 
-    /// Cómo se llama este fragmento, en el vocabulario de este generador.
+    /// Cómo se llama este endpoint, en el vocabulario de este generador.
     ///
-    /// **Se compone del fragmento, no se guarda.** Un alias guardado es un valor
+    /// **Se compone de lo vigilado, no se guarda.** Un alias guardado es un valor
     /// derivado con vida propia: el día que cambia la ruta sigue diciendo lo viejo, y
     /// lo diría en silencio porque los campos semánticos son inertes. Un rótulo falso
     /// sobre una referencia verificada es peor que no tener rótulo.
     ///
     /// **Y es de cada generador, no del formato.** Un endpoint se nombra por su verbo
     /// y su ruta; una firma, por su método. Un generador que no sepa nombrar devuelve
-    /// `None` y el bilink se muestra por UUID, que es lo que se muestra hoy.
+    /// `None` y el bilink se muestra por UUID.
     ///
-    /// La `query` entra porque a veces el nombre vive ahí y no en el fragmento: donde
-    /// la anotación no lleva literal, el nombre del método es el ancla y **no** es
-    /// contenido capturado.
-    fn alias(&self, _source: &str, _ranges: &Ranges, _query: &str) -> Option<String> { None }
+    /// `parts` es lo que resolvió cada dimensión declarada, por nombre.
+    fn alias(&self, _source: &str, _parts: &[(String, Ranges)]) -> Option<String> { None }
 }
 
 /// Los generadores que este binario conoce.
@@ -515,52 +551,23 @@ pub fn suggest_for(layer: &Path, file: &str, pos: (usize, usize)) -> Result<Vec<
     Ok(suggestions_for(file, &source, node))
 }
 
-/// Sin `--as`: los nodos señalados, enteros.
-fn generate_default<'t>(ctx: &GenCtx<'_>, pointed: &[Node<'t>]) -> Generated<'t> {
-    Generated {
-        query:   pattern_for(ctx, pointed, pointed),
-        targets: pointed.to_vec(),
-    }
-}
-
-/// El patrón que captura `targets`, anclado en lo que contiene a `pointed`.
+/// El patrón que identifica a `node`, anclado en el ancla estable que lo contiene.
 ///
-/// **El ancla la deciden las posiciones señaladas, no las partes.** Con
-/// `--as interface` las partes son hijos del método, y anclar en su ancestro común
-/// daría el método a secas — sin la clase que lo distingue de otro método homónimo
-/// en el mismo archivo. Lo que hay que anclar es lo que se señaló.
-///
-/// **La query se ancla una sola vez**, y eso es lo que ancla las partes *entre sí*:
-/// `@RequestMapping` **de la clase que contiene** al método, y no "el primer
-/// `@RequestMapping` del archivo". Una lista de queries independientes perdería
-/// justamente eso.
-///
-/// Con una posición sola y una parte sola es el ancla de siempre —la que la
-/// envuelve—, y por eso una query de un `@target` sale idéntica a la que salía.
-pub fn pattern_for(ctx: &GenCtx<'_>, pointed: &[Node], targets: &[Node]) -> String {
-    let lca = pointed.iter().copied().reduce(lowest_common_ancestor)
-        .expect("al menos una posición");
-    let pattern_root = if ctx.standalone && pointed.len() == 1 {
-        lca
+/// Es el mismo con `--as` o sin él: la query nombra la ubicación, y lo que se vigila
+/// de ella lo declaran las dimensiones.
+pub fn pattern_for(ctx: &GenCtx<'_>, node: Node) -> String {
+    let pattern_root = if ctx.standalone {
+        node
     } else {
-        let from = if pointed.len() == 1 { lca.parent() } else { Some(lca) };
-        from.and_then(|n| walk_up_to_anchor(n, ctx.anchors)).unwrap_or(lca)
+        node.parent().and_then(|n| walk_up_to_anchor(n, ctx.anchors)).unwrap_or(node)
     };
 
-    // El camino de cada parte, fundido en un árbol: los tramos compartidos se
-    // escriben una vez, que es lo que hace que el patrón sea uno solo.
     let mut kids: std::collections::HashMap<usize, Vec<Node>> = std::collections::HashMap::new();
-    for t in targets {
-        let path = build_path(pattern_root, *t);
-        for pair in path.windows(2) {
-            let entry = kids.entry(pair[0].id()).or_default();
-            if !entry.iter().any(|n| n.id() == pair[1].id()) {
-                entry.push(pair[1]);
-            }
-        }
+    let path = build_path(pattern_root, node);
+    for pair in path.windows(2) {
+        kids.entry(pair[0].id()).or_default().push(pair[1]);
     }
-    let target_ids: std::collections::HashSet<usize> = targets.iter().map(|n| n.id()).collect();
-    emit_pattern(pattern_root, &kids, &target_ids, ctx.source, &mut 0, ctx.lang)
+    emit_pattern(pattern_root, &kids, node.id(), ctx.source, &mut 0, ctx.lang)
 }
 
 /// El nodo que una posición señala: el ancla estable más cercana que la contiene.
@@ -591,94 +598,99 @@ fn target_node_at<'a>(
     }
 }
 
-/// El primer par de partes donde una contiene a la otra, si lo hay.
+/// El patrón de un nodo: su predicado de nombre, los hijos que llevan al target,
+/// y su `@target` si lo es.
 ///
-/// Los nodos vienen ordenados por posición, así que alcanza con comparar cada uno
-/// con los siguientes mientras arranquen antes de que él termine.
-fn nested_pair<'a>(targets: &[Node<'a>]) -> Option<(Node<'a>, Node<'a>)> {
-    for (i, outer) in targets.iter().enumerate() {
-        for inner in &targets[i + 1..] {
-            if inner.start_byte() >= outer.end_byte() { break; }
-            if inner.end_byte() <= outer.end_byte() { return Some((*outer, *inner)); }
-        }
-    }
-    None
-}
-
-/// El ancestro común más profundo de dos nodos.
-fn lowest_common_ancestor<'a>(a: Node<'a>, b: Node<'a>) -> Node<'a> {
-    let mut chain = std::collections::HashSet::new();
-    let mut cur = Some(a);
-    while let Some(n) = cur {
-        chain.insert(n.id());
-        cur = n.parent();
-    }
-    let mut cur = Some(b);
-    while let Some(n) = cur {
-        if chain.contains(&n.id()) { return n; }
-        cur = n.parent();
-    }
-    b
-}
-
-/// El patrón de un nodo: su predicado de nombre, los hijos que llevan a una parte,
-/// y su propio `@target` si lo es.
-///
-/// **Las partes salen en orden de archivo**, y el predicado de nombre con ellas. No
+/// **Los hijos salen en orden de archivo**, y el predicado de nombre con ellos. No
 /// es cosmético: tree-sitter exige que los hijos de un patrón vayan en el orden de
-/// la gramática, y en Java las anotaciones van antes del nombre. Emitir el nombre
-/// primero por costumbre produce un *impossible pattern* en cuanto una parte cae en
-/// los modificadores.
+/// la gramática, y en Java las anotaciones van antes del nombre.
 fn emit_pattern(
     node:    Node,
     kids:    &std::collections::HashMap<usize, Vec<Node>>,
-    targets: &std::collections::HashSet<usize>,
+    target:  usize,
     source:  &str,
     counter: &mut usize,
     lang:    &str,
 ) -> String {
-    let (mut pred, pred_node) = real_name_predicate(node, source, counter, lang);
+    let (pred, pred_node) = real_name_predicate(node, source, counter, lang);
     let pred_pos = pred_node.map(|n| n.start_byte()).unwrap_or(node.start_byte());
-
-    let mut children: Vec<Node> = kids.get(&node.id()).cloned().unwrap_or_default();
-
-    // **El nombre puede ser a la vez el ancla y una parte.** Pasa con
-    // `--as interface`: la firma incluye el nombre, y el nombre es lo que la query
-    // usa para encontrar el nodo. Es un solo nodo del AST, así que lleva las dos
-    // capturas juntas en vez de emitirse dos veces.
-    if let Some(pn) = pred_node {
-        if targets.contains(&pn.id()) {
-            pred = mark_target_in_predicate(&pred);
-            children.retain(|k| k.id() != pn.id());
-        }
-    }
 
     let mut parts: Vec<(usize, String)> = Vec::new();
     if !pred.is_empty() { parts.push((pred_pos, pred)); }
 
-    for kid in children {
+    for kid in kids.get(&node.id()).cloned().unwrap_or_default() {
         let field = field_name_for_child(node, kid.id())
             .map(|f| format!("{f}: "))
             .unwrap_or_default();
-        let inner = emit_pattern(kid, kids, targets, source, counter, lang);
+        let inner = emit_pattern(kid, kids, target, source, counter, lang);
         parts.push((kid.start_byte(), format!("\n  {field}{inner}")));
+    }
+
+    // **Una sobrecarga no se distingue por el nombre**: lo que la distingue son los
+    // tipos de sus parámetros, que van después del nombre en la gramática.
+    if let Some(params) = overload_parameters(node, source, counter, lang) {
+        let at = node.child_by_field_name("parameters").map(|n| n.start_byte()).unwrap_or(pred_pos);
+        parts.push((at, format!("\n  {params}")));
     }
     parts.sort_by_key(|(pos, _)| *pos);
 
     let body: String = parts.into_iter().map(|(_, s)| s).collect();
     let pattern = format!("({}{})", node.kind(), body);
-    if targets.contains(&node.id()) { format!("{pattern} @target") } else { pattern }
+    if node.id() == target { format!("{pattern} @target") } else { pattern }
 }
 
-/// Agrega `@target` a la captura del predicado, antes del `#eq?`.
+/// Los tipos de los parámetros de un método de Java sobrecargado, como predicados.
 ///
-/// Cirugía sobre el string y no una estructura, porque el predicado tiene una sola
-/// forma y la escribe una sola función: `… {cap} (#eq? {cap} "…")`.
-fn mark_target_in_predicate(pred: &str) -> String {
-    match pred.find(" (#eq?") {
-        Some(i) => format!("{} @target{}", &pred[..i], &pred[i..]),
-        None    => pred.to_string(),
+/// **En orden y sin huecos**, con `.` entre hijos: `(Short)` no tiene que matchear
+/// `(Short, Integer)`. **Con `#match?` y no `#eq?`**, para que el último `#eq?` de la
+/// query siga siendo el nombre del método. `None` si el método no se repite en su
+/// clase: ahí el nombre alcanza.
+fn overload_parameters(node: Node, source: &str, counter: &mut usize, lang: &str) -> Option<String> {
+    if lang != "java" || node.kind() != "method_declaration" || !is_overloaded(node, source) {
+        return None;
     }
+    let params = node.child_by_field_name("parameters")?;
+    let mut c = params.walk();
+    let mut hijos = Vec::new();
+    for p in params.named_children(&mut c) {
+        match p.child_by_field_name("type") {
+            Some(t) if p.kind() == "formal_parameter" => {
+                let n = format!("@n{counter}");
+                *counter += 1;
+                hijos.push(format!(
+                    "(formal_parameter type: (_) {n} (#match? {n} \"^{}$\"))",
+                    query::escape_query_string(&regex_literal(&source[t.byte_range()]))));
+            }
+            _ => hijos.push(format!("({})", p.kind())),
+        }
+    }
+    if hijos.is_empty() {
+        return Some("parameters: (formal_parameters)".to_string());
+    }
+    Some(format!("parameters: (formal_parameters\n    .\n    {}\n    .)",
+                 hijos.join("\n    .\n    ")))
+}
+
+/// Si otro método del mismo cuerpo se llama igual: una sobrecarga, que el nombre
+/// solo no distingue.
+fn is_overloaded(method: Node, source: &str) -> bool {
+    let (Some(body), Some(name)) = (method.parent(), method.child_by_field_name("name")) else { return false };
+    let nombre = &source[name.byte_range()];
+    let mut c = body.walk();
+    let repetido = body.children(&mut c)
+        .filter(|n| n.kind() == "method_declaration" && n.id() != method.id())
+        .any(|n| n.child_by_field_name("name").is_some_and(|x| &source[x.byte_range()] == nombre));
+    repetido
+}
+
+/// Un texto como regex que lo matchea literal.
+fn regex_literal(texto: &str) -> String {
+    let mut out = String::with_capacity(texto.len());
+    for ch in texto.chars() {
+        if "\\.^$|?*+()[]{}".contains(ch) { out.push('\\'); }
+        out.push(ch);
+    }
+    out
 }
 
 fn build_path<'a>(ancestor: Node<'a>, descendant: Node<'a>) -> Vec<Node<'a>> {
@@ -706,27 +718,23 @@ fn node_contains(node: Node, target_id: usize) -> bool {
     false
 }
 
-/// La query resuelve a los nodos capturados, exactamente una vez.
+/// La query resuelve al nodo señalado, exactamente una vez.
 ///
 /// Se verifica acá y no en `check` porque acá todavía se puede no escribir: un
 /// capture que apunta al nodo equivocado se acepta en OK y no vuelve a mirarse.
 ///
-/// Devuelve los rangos resueltos —ya recortados— para no volver a correr la query:
-/// son los mismos que `check` va a comparar, y los que la vista previa marca.
+/// Devuelve el rango resuelto —ya recortado— para no volver a correr la query: es el
+/// mismo que `check` va a comparar, y el que la vista previa marca.
 fn verify_query_identifies(
     language:  tree_sitter::Language,
     source:    &str,
     query_str: &str,
-    targets:   &[Node],
+    target:    Node,
     file:      &str,
 ) -> Result<Ranges> {
-    let esperado: Vec<(usize, usize)> = targets.iter()
-        .map(|t| query::trim_edges(source, t.start_byte(), t.end_byte()))
-        .collect();
-
+    let esperado = vec![query::trim_edges(source, target.start_byte(), target.end_byte())];
     let hits = query::find_all_fragments(language, source, query_str)?;
-    let n = targets.len();
-    let kinds = || targets.iter().map(|t| t.kind()).collect::<Vec<_>>().join(", ");
+    let kind = target.kind();
 
     match hits.as_slice() {
         [] => bail!("la query generada no matchea ningún nodo en {file}:\n{query_str}"),
@@ -737,25 +745,18 @@ fn verify_query_identifies(
             if got == esperado {
                 return Ok(f.ranges.clone());
             }
-            if got.len() != n {
-                bail!(
-                    "la query generada captura {} parte(s) y se señalaron {n} en {file}. \
-                     Las anclas `{}` no caen todas bajo un mismo patrón:\n{query_str}",
-                    got.len(), kinds()
-                );
-            }
             bail!(
-                "la query generada apunta a otros nodos: {} en vez de {}. \
-                 El ancla `{}` no tiene con qué distinguirse en {file}:\n{query_str}",
-                fmt_ranges(&got), fmt_ranges(&esperado), kinds()
+                "la query generada apunta a otro nodo: {} en vez de {}. \
+                 El ancla `{kind}` no tiene con qué distinguirse en {file}:\n{query_str}",
+                fmt_ranges(&got), fmt_ranges(&esperado)
             )
         }
         hits => bail!(
-            "la query generada matchea {} veces. El ancla `{}` no tiene con qué \
+            "la query generada matchea {} veces. El ancla `{kind}` no tiene con qué \
              distinguirse en {file}:\n{query_str}\n\n\
              Seleccionar un nodo con nombre propio adentro —una función, un método— \
              da un ancla única sin inventar un criterio.",
-            hits.len(), kinds()
+            hits.len()
         ),
     }
 }
@@ -1013,27 +1014,45 @@ pub fn recapture(
         bail!("el endpoint {n} no es estructural (es {}) — no tiene capture que repuntar", e.link);
     };
 
+    let mut dimensions = None;
     let (new_id, _, reused) = match (pos, generator) {
-        (Some(sel), Some(g)) => compute(layer, file, &[sel], Some(g))?.0.write_in(layer)?,
+        (Some(sel), Some(g)) => {
+            let c = compute_as(layer, file, &[sel], Some(g))?;
+            dimensions = Some(c.dimensions);
+            c.capture.write_in(layer)?
+        }
         (None, Some(g))      => bail!("`--as {}` necesita una posición: genera la query de lo que se señaló", g.name()),
         (Some((start, end)), None) => capture_to_file(layer, file, start, end)?,
         (None, None)         => capture_file_whole(layer, file)?,
     };
-    if old_id == new_id {
-        bail!("el endpoint {n} ya apunta a ese capture — nada que repuntar");
+    // **Sobre el mismo nodo, `--as` no repunta: declara.** El capture es el del
+    // núcleo con generador o sin él, así que es cómo un endpoint pasa a vigilar
+    // partes, o una parte que el nodo no tenía al capturarlo.
+    let same = old_id == new_id;
+    let as_new = generator.map(|g| g.name().to_string());
+    if same && (as_new.is_none()
+        || (e.r#as == as_new && dimensions.as_ref() == Some(&e.dimensions)))
+    {
+        bail!("el endpoint {n} ya apunta a ese capture — nada que repuntar ni que declarar");
     }
 
     let endpoint = bl.endpoint.get_mut(n);
     endpoint.link = format!("capture {new_id}").parse()?;
-    if let Some(g) = generator {
-        endpoint.r#as = Some(g.name().to_string());
+    if as_new.is_some() {
+        endpoint.r#as = as_new;
+    }
+    if let Some(d) = dimensions {
+        endpoint.dimensions = d;
     }
     bl.write(bilink)?;
 
-    // El estado cacheado describía el capture viejo: dejarlo mentiría.
+    // El estado cacheado describía el endpoint de antes: dejarlo mentiría. Con otro
+    // capture la ubicación cambió; con el mismo, cambió qué se vigila, y nadie lo
+    // aprobó.
     let uuid = bilink.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
     let mut cache = crate::cache::Cache::load(layer);
-    cache.set_endpoint_state(&uuid, n, crate::state::EndpointState::Relocated);
+    let state = if same { crate::state::EndpointState::Altered } else { crate::state::EndpointState::Relocated };
+    cache.set_endpoint_state(&uuid, n, state);
     cache.save(layer)?;
 
     // ¿El anterior quedó huérfano? Se informa, no se borra: puede tener otros
@@ -1261,5 +1280,75 @@ Característica: Tableros
     fn the_rule_tells_apart_scenarios_with_the_same_title() {
         let (_, text) = captured(FEATURE, 29, 9).unwrap();
         assert!(text.starts_with("@TAB-U-01"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod one_node_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const DASHBOARD: &str = "\
+public class Dashboard {
+    public AlertaDto alertas(Short idJur) {
+        return svc.alertas(idJur);
+    }
+
+    public List<AccionDto> alertas(Integer idUs, List<Long> anios) {
+        return svc.acciones(idUs, anios);
+    }
+
+    public int otro(int c) {
+        return c;
+    }
+}
+";
+
+    fn layer(src: &str) -> tempfile::TempDir {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("Dashboard.java"), src).unwrap();
+        d
+    }
+
+    /// **La sobrecarga ancla en el núcleo, no en un generador.** Sin `--as`, el
+    /// método se distingue de su hermano por los tipos de sus parámetros, y la query
+    /// sigue teniendo un solo `@target`.
+    #[test]
+    fn an_overloaded_method_anchors_on_its_parameter_types() {
+        let d = layer(DASHBOARD);
+        let (cap, _, ranges) = compute(d.path(), "Dashboard.java", &[((6, 5), (6, 5))], None).unwrap();
+        let q = cap.query.unwrap();
+        assert!(q.contains(r#""^Integer$""#) && q.contains(r#""^List<Long>$""#), "{q}");
+        assert_eq!(q.matches("@target").count(), 1, "un solo nodo:\n{q}");
+        let last_eq = q.lines().filter(|l| l.contains("#eq?")).last().unwrap_or("");
+        assert!(last_eq.contains(r#""alertas""#), "el último #eq? es el nombre:\n{q}");
+        assert!(ranges.text(DASHBOARD).contains("svc.acciones"), "es el método entero");
+    }
+
+    /// Un método que no se repite ancla sólo en su nombre, como siempre.
+    #[test]
+    fn a_method_that_is_not_overloaded_anchors_on_its_name() {
+        let d = layer(DASHBOARD);
+        let (cap, _, _) = compute(d.path(), "Dashboard.java", &[((10, 5), (10, 5))], None).unwrap();
+        assert!(!cap.query.unwrap().contains("#match?"));
+    }
+
+    /// Dos posiciones en nodos distintos son dos contratos, y un capture es uno.
+    #[test]
+    fn positions_in_distinct_nodes_are_refused() {
+        let d = layer(DASHBOARD);
+        let err = compute(d.path(), "Dashboard.java", &[((2, 5), (2, 5)), ((10, 5), (10, 5))], None)
+            .unwrap_err().to_string();
+        assert!(err.contains("nodos distintos"), "{err}");
+        assert!(err.contains("--as"), "el error dice qué hacer:\n{err}");
+    }
+
+    /// Dos posiciones en el mismo nodo son ese nodo, una vez.
+    #[test]
+    fn positions_in_the_same_node_are_that_node() {
+        let d = layer(DASHBOARD);
+        let dos = compute(d.path(), "Dashboard.java", &[((10, 5), (10, 5)), ((11, 9), (11, 9))], None).unwrap();
+        let una = compute(d.path(), "Dashboard.java", &[((10, 5), (10, 5))], None).unwrap();
+        assert_eq!(dos.0.id(), una.0.id());
     }
 }
