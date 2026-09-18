@@ -111,6 +111,16 @@ pub fn find_fragment(language: Language, source: &str, query_str: &str) -> Resul
     Ok(fragments(language, source, query_str, true)?.into_iter().next().map(|m| m.fragment))
 }
 
+/// El fragmento que la query nombra **adentro de `within`**: el primer match cuyos
+/// `@target` caen todos en ese rango.
+///
+/// Es como se busca una parte de un fragmento que ya se resolvió: la query de la
+/// parte no nombra de qué método se trata —eso lo dijo el capture—, así que sin
+/// acotarla encontraría la del primer método del archivo.
+pub fn find_fragment_within(language: Language, source: &str, query_str: &str, within: &ByteRange) -> Result<Option<Fragment>> {
+    Ok(fragments_in(language, source, query_str, true, Some(within))?.into_iter().next().map(|m| m.fragment))
+}
+
 /// Todos los matches del patrón, cada uno con **todas** sus partes.
 ///
 /// Es lo que usa la verificación al generar una query: un patrón que matchea dos
@@ -173,6 +183,12 @@ pub fn find_all_targets(language: Language, source: &str, query_str: &str) -> Re
 }
 
 fn fragments(language: Language, source: &str, query_str: &str, first_only: bool) -> Result<Vec<TargetMatch>> {
+    fragments_in(language, source, query_str, first_only, None)
+}
+
+fn fragments_in(
+    language: Language, source: &str, query_str: &str, first_only: bool, within: Option<&ByteRange>,
+) -> Result<Vec<TargetMatch>> {
     let mut parser = Parser::new();
     parser.set_language(&language).context("set language")?;
     let tree = parser.parse(source, None).context("parse failed")?;
@@ -189,6 +205,7 @@ fn fragments(language: Language, source: &str, query_str: &str, first_only: bool
     let name_idx = last_name_capture(&query);
 
     let mut cursor = QueryCursor::new();
+    if let Some(w) = within { cursor.set_byte_range(w.start..w.end); }
     let root = tree.root_node();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
     let mut out = Vec::new();
@@ -212,12 +229,17 @@ fn fragments(language: Language, source: &str, query_str: &str, first_only: bool
             .collect::<Vec<_>>()
             .join(FRAGMENT_SEPARATOR);
 
-        let parts = nodes.iter()
+        let parts: Vec<ByteRange> = nodes.iter()
             .map(|n| {
                 let (start, end) = trim_edges(source, n.start_byte(), n.end_byte());
                 ByteRange { start, end }
             })
             .collect();
+        // El rango del cursor deja pasar los matches que lo tocan, no sólo los que
+        // caen adentro: un patrón que empieza en un ancestro lo toca siempre.
+        if let Some(w) = within {
+            if parts.iter().any(|p| p.start < w.start || p.end > w.end) { continue; }
+        }
 
         out.push(TargetMatch {
             fragment: Fragment {

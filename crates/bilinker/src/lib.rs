@@ -18,6 +18,7 @@ pub mod capture;
 pub mod chain;
 pub mod check;
 pub mod config;
+pub mod dimension;
 pub mod frontier;
 pub mod generators;
 pub mod get;

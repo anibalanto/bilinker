@@ -326,6 +326,43 @@ fn workspace_with_a_controller() -> (tempfile::TempDir, std::path::PathBuf) {
     (tmp, root)
 }
 
+/// **La palabra sigue siendo una, y las partes van al lado.** Dos dimensiones
+/// declaradas que nadie aprobó son `ALTERED` las dos: `check` imprime la palabra con
+/// sus nombres y una línea con el estado de cada una, y `status` la calificación.
+#[test]
+fn check_qualifies_the_state_with_the_parts_that_changed() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (out, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let (_, stderr, ok) = run_in(&root, &["accept", "--decline-n1", "."]);
+    assert!(ok, "{stderr}");
+    let uuid = out.split_whitespace().find(|w| w.len() == 36 && w.matches('-').count() == 4)
+        .unwrap_or_else(|| panic!("chain new imprime el uuid:\n{out}")).to_string();
+
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let yaml = fs::read_to_string(&path).unwrap();
+    let dims = concat!(
+        "    dimensions:\n",
+        "      body:\n",
+        "        query: '(method_declaration body: (block) @target)'\n",
+        "      parameters:\n",
+        "        query: '(method_declaration parameters: (formal_parameters) @target)'\n",
+    );
+    let at = yaml.find("  1:\n").expect("el endpoint 1") + "  1:\n".len();
+    let at = at + yaml[at..].find('\n').unwrap() + 1;
+    fs::write(&path, format!("{}{dims}{}", &yaml[..at], &yaml[at..])).unwrap();
+
+    let (out, err, code) = code_in(&root, &["check", "."]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(out.contains("(OK, ALTERED(body, parameters))"), "{out}");
+    assert!(out.contains("endpoint.1  body ALTERED · parameters ALTERED"), "{out}");
+
+    let (out, _, _) = run_in(&root, &["status"]);
+    assert!(out.contains("ALTERED(body, parameters)"), "{out}");
+}
+
 /// `--as interface` captura la firma y deja el cuerpo afuera, anclada en la clase.
 #[test]
 fn as_interface_captures_the_signature_without_the_body() {
