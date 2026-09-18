@@ -346,9 +346,9 @@ fn check_qualifies_the_state_with_the_parts_that_changed() {
     let dims = concat!(
         "    dimensions:\n",
         "      body:\n",
-        "        query: '(method_declaration body: (block) @target)'\n",
+        "        query: '(method_declaration body: (block) @target) @anchor'\n",
         "      parameters:\n",
-        "        query: '(method_declaration parameters: (formal_parameters) @target)'\n",
+        "        query: '(method_declaration parameters: (formal_parameters) @target) @anchor'\n",
     );
     let at = yaml.find("  1:\n").expect("el endpoint 1") + "  1:\n".len();
     let at = at + yaml[at..].find('\n').unwrap() + 1;
