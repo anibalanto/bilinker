@@ -139,6 +139,32 @@ La query de una dimensión no se evalúa sobre el archivo: se evalúa desde el n
 
 Por eso ninguna dimensión ancla. Si el capture no resuelve, no hay nodo desde el cual evaluarlas, y ninguna resuelve. Y la dimensión no depende de nada adentro de la query del capture, ni de sus nombres de captura ni de su forma: sólo del nodo que esa query identifica.
 
+### Una dimensión de varios `@target` es su concatenación, en orden de archivo
+
+La query de una dimensión puede llevar más de un `@target`: la ruta de un endpoint sale de dos anotaciones —`@RequestMapping` en la clase, `@GetMapping` en el método—, que como texto completo no existe en ningún nodo. El texto de la dimensión es la concatenación de sus rangos en el orden en que aparecen en el archivo, no en el que la query los nombra, que es un detalle de cómo se escribió el patrón y no del documento.
+
+Cada rango se recorta en sus bordes por separado, antes de concatenar, igual que el del [capture](capture.md). Recortar la concatenación dejaría los bordes internos a merced de dónde termina un nodo y empieza el otro, que es justo el contexto del que el recorte existe para independizar.
+
+### Las partes de una dimensión se unen con `\n`
+
+Los rangos no son contiguos, así que hay que decidir qué va entre uno y el siguiente, y eso entra en el `hash`:
+
+| | |
+|---|---|
+| nada | dos capturas pegadas producen un texto que no existe en ningún archivo |
+| `\n` | elegido: legible, y estable frente a cuánto espacio haya en el medio |
+| el texto intermedio | es el archivo tal cual, pero entonces lo que queda en el medio —el cuerpo, entre dos anotaciones— entra por la ventana |
+
+Y no se vuelve a tocar. Cambiarlo movería de una vez el hash de todas las partes compuestas, y pasarían a `ALTERED` sin que nadie tocara el código.
+
+`hash_ast` sigue la misma regla: las s-expressions de los nodos, en el mismo orden, unidas por `\n`.
+
+### Ninguna parte de una dimensión contiene a otra
+
+El texto de una dimensión es la concatenación de sus partes, así que una parte adentro de otra se contaría dos veces y el hash pasaría a depender de un solapamiento que nadie quiso. Los rangos de una dimensión son disjuntos.
+
+Dos partes sí pueden compartir una línea, y es el caso normal: en `public Dto get(String t)` el tipo de retorno y los parámetros son rangos disjuntos de la misma línea, con el nombre del método en el medio y afuera. Mostrarlos no es imprimirlos uno detrás del otro, porque esa línea saldría repetida: es problema de quien lo muestra, y lo resuelve [`get`](get.md). El `hash` no cambia.
+
 ### Más de un `accepted` es un estado, no una forma de trabajar
 
 Un endpoint sólo puede estar `OK` con exactamente una entrada. Con dos o más el estado es `CONSENSUS_DIVERGED`, y `check` falla.
