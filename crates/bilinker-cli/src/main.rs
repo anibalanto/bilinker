@@ -1214,7 +1214,19 @@ Eliminar? [y/N] ");
                     .filter(|s| **s == bilinker::state::EndpointState::OkN1Unconfirmed).count();
                 if r.state0.is_listed() || r.state1.is_listed() {
                     shown += 1;
-                    println!("{}  ({}, {})", &r.uuid[..8], r.state0, r.state1);
+                    // **La palabra va sola, y las partes al lado**: es la palabra lo que
+                    // decide el código de salida, y las partes dicen qué mirar.
+                    let q = |s: bilinker::state::EndpointState, dims: &bilinker::dimension::DimensionStates| {
+                        let names: Vec<&str> = dims.iter().map(|(n, _)| n.as_str()).collect();
+                        bilinker::dimension::qualified(s, &names)
+                    };
+                    println!("{}  ({}, {})", &r.uuid[..8],
+                             q(r.state0, &r.dimensions[0]), q(r.state1, &r.dimensions[1]));
+                    for (n, dims) in r.dimensions.iter().enumerate() {
+                        if dims.is_empty() { continue; }
+                        let each: Vec<String> = dims.iter().map(|(name, s)| format!("{name} {s}")).collect();
+                        println!("  endpoint.{n}  {}", each.join(" · "));
+                    }
                 }
                 if !r.is_clean() {
                     exit_code = 1;
@@ -2344,7 +2356,7 @@ fn print_chain_status(root: &Path, uuid: &str) -> anyhow::Result<()> {
 }
 
 fn state_label(cache: &bilinker::cache::Cache, uuid: &str, n: u8) -> String {
-    cache.endpoint_state(uuid, n).map(|s| s.to_string()).unwrap_or_else(|| "—".into())
+    cache.qualified_state(uuid, n).unwrap_or_else(|| "—".into())
 }
 
 /// Las capas que tienen un bilink con este uuid.
@@ -2711,10 +2723,7 @@ fn print_status(layer: &Path) -> anyhow::Result<()> {
             None => ("(layer)".into(), uuid.to_string()),
         };
 
-        let label = |n: u8| match cache.endpoint_state(uuid, n) {
-            Some(st) => { st.to_string() }
-            None     => "—".to_string(),
-        };
+        let label = |n: u8| cache.qualified_state(uuid, n).unwrap_or_else(|| "—".to_string());
         let (s0, s1) = (label(0), label(1));
         if cache.endpoint_state(uuid, 0).is_some() { cold = false; }
 

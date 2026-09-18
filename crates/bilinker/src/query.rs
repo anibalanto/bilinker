@@ -256,15 +256,18 @@ pub fn dimension(
     let target_idx = query.capture_index_for_name("target")
         .context("la query de una dimensión no tiene @target")?;
 
-    // El nodo que ocupa el rango: el más afuera de los que lo ocupan exacto. Un
-    // nodo y su único hijo pueden tener el mismo rango, y el que se declara es el
-    // de afuera. El rango de un capture viene recortado, así que se compara contra
-    // el del nodo recortado.
+    // Los nodos que ocupan el rango exacto, y el `@anchor` elige cuál. Un nodo y su
+    // único hijo pueden tener el mismo rango, y también un nodo y la raíz de un
+    // archivo que no tiene más que él: quedarse con uno de antemano deja sin
+    // resolver la query que nombra al otro. El rango de un capture viene recortado,
+    // así que se compara contra el del nodo recortado.
     let trimmed = |n: Node| trim_edges(source, n.start_byte(), n.end_byte());
     let Some(mut node) = tree.root_node().descendant_for_byte_range(anchor.0, anchor.1)
         else { return Ok(None) };
     if trimmed(node) != anchor { return Ok(None); }
+    let mut occupants = vec![node.id()];
     while let Some(p) = node.parent().filter(|p| trimmed(*p) == anchor) {
+        occupants.push(p.id());
         node = p;
     }
 
@@ -272,7 +275,7 @@ pub fn dimension(
     let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
     let mut nodes: Vec<Node> = Vec::new();
     while let Some(m) = matches.next() {
-        if !m.captures.iter().any(|c| c.index == anchor_idx && c.node.id() == node.id()) {
+        if !m.captures.iter().any(|c| c.index == anchor_idx && occupants.contains(&c.node.id())) {
             continue;
         }
         nodes.extend(m.captures.iter().filter(|c| c.index == target_idx).map(|c| c.node));
@@ -554,6 +557,17 @@ mod dimension_tests {
         let f = dimension(java(), SERVICE, q, method("two")).unwrap().unwrap();
         assert_eq!(text(&f), "@RestController\n@RequestMapping(\"/user\")");
         assert!(f.sexp.contains("marker_annotation"), "{}", f.sexp);
+    }
+
+    /// Un archivo que no tiene más que el nodo: la raíz ocupa el mismo rango, y el
+    /// `@anchor` sigue siendo el nodo que la query nombra.
+    #[test]
+    fn a_node_that_is_the_whole_file_still_resolves() {
+        let src = "fn a(x: u8) -> u8 { x + 1 }\n";
+        let rust = crate::grammar::for_language("rust").unwrap();
+        let q = "(function_item parameters: (parameters) @target) @anchor";
+        let f = dimension(rust, src, q, (0, src.trim_end().len())).unwrap().unwrap();
+        assert_eq!(f.ranges.text(src), "(x: u8)");
     }
 
     #[test]

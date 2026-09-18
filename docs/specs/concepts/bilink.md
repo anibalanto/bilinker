@@ -149,6 +149,8 @@ Así puede nombrar partes del nodo y de sus ancestros, porque no busca de qué m
 
 La primera es la lista de parámetros del método; la segunda, las anotaciones de la clase cuyo cuerpo lo contiene —*"el `@RequestMapping` de la clase que contiene a este método"*—. Dos métodos hermanos no se confunden: el `@anchor` de un match es un nodo, y sólo uno es el del capture.
 
+El nodo del capture es el que ocupa su rango. Si más de uno lo ocupa —un nodo y su único hijo, o un nodo y la raíz de un archivo que no tiene más que él—, el `@anchor` elige entre ellos: la query nombra el tipo de nodo que quiere, y cualquiera de los que ocupan el rango es el del capture.
+
 Una query sin `@anchor` o sin `@target` no es una dimensión, y resolverla es un error. Una que no tiene ningún match con ese `@anchor` no resuelve.
 
 Por eso ninguna dimensión ancla. Si el capture no resuelve, no hay nodo desde el cual evaluarlas, y ninguna resuelve. Y la dimensión no depende de nada adentro de la query del capture, ni de sus nombres de captura ni de su forma: sólo del nodo que esa query identifica.

@@ -50,6 +50,11 @@ pub struct EndpointCache {
     /// capture pueden nombrarlo distinto, o uno nombrarlo y el otro no.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Las dimensiones que califican a `state`, cada una con el suyo: las que no
+    /// están `OK`. **`state` sigue siendo una palabra**, y es lo único que leen el
+    /// filtro por estado y el agrupado.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, String>,
 }
 
 /// La cache de una capa. Un archivo, no uno por bilink.
@@ -170,6 +175,30 @@ impl Cache {
     }
 
     /// El alias de un endpoint, si su generador supo nombrarlo en el último `check`.
+    /// Las dimensiones que califican al estado del endpoint, en el orden de sus nombres.
+    pub fn endpoint_dimensions(&self, uuid: &str, n: u8) -> Vec<(String, EndpointState)> {
+        self.endpoints.get(&key(uuid, n))
+            .map(|e| e.dimensions.iter()
+                .filter_map(|(name, s)| Some((name.clone(), s.parse().ok()?)))
+                .collect())
+            .unwrap_or_default()
+    }
+
+    /// Vacío **borra** las que hubiera: una parte que volvió a OK no puede dejar la
+    /// calificación vieja colgada.
+    pub fn set_endpoint_dimensions(&mut self, uuid: &str, n: u8, dims: &[(String, EndpointState)]) {
+        self.endpoints.entry(key(uuid, n)).or_default().dimensions =
+            dims.iter().map(|(name, s)| (name.clone(), s.to_string())).collect();
+    }
+
+    /// El estado del endpoint con sus dimensiones al lado: `ALTERED(body, route)`.
+    pub fn qualified_state(&self, uuid: &str, n: u8) -> Option<String> {
+        let state = self.endpoint_state(uuid, n)?;
+        let dims = self.endpoint_dimensions(uuid, n);
+        let names: Vec<&str> = dims.iter().map(|(name, _)| name.as_str()).collect();
+        Some(crate::dimension::qualified(state, &names))
+    }
+
     pub fn alias(&self, uuid: &str, n: u8) -> Option<&str> {
         self.endpoints.get(&key(uuid, n))?.alias.as_deref()
     }
