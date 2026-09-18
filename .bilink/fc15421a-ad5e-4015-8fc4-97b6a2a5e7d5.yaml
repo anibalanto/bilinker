@@ -8,9 +8,9 @@ endpoint:
       link: capture bea6dd2504ca4553eaa78e1ee141919e
       hash: b941b9c377f18bdb8b948d851aefec3d79b22109e90cf295edf7800a89bcd49c
   1:
-    link: capture 24d6d294a132d8f5312d99d2125dd5b8
+    link: capture c01c0e55fca77074a83bc80fe2996683
     accepted:
     - agree:
       - anibal
-      link: capture 24d6d294a132d8f5312d99d2125dd5b8
-      hash: e02aee89f988dea9a2e068c4440edd86fae0365f5d395c2d86fd49c75a7889c0
+      link: capture c01c0e55fca77074a83bc80fe2996683
+      hash: e3db3bdcab7d8557e1b77ded661d320b329574713f1809dfc94e647cc2f4e4e7
