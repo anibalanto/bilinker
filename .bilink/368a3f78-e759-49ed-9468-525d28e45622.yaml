@@ -3,9 +3,9 @@ endpoint:
     link: capture 9c8c0a1270638b47337d7b1796e16c8a
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture 9c8c0a1270638b47337d7b1796e16c8a
-      hash: 0c1f8343c23321b875ec40e62c900b1e6c5366f8d85123138afd681abf3780ad
+      hash: d4172120009c3f55f8f2244a5d7e6ea54f660ed6f5412956d1b417ec9ecc1d47
   1:
     link: capture 2fa52731c879a97402dcb3729d0d963d
     accepted:
