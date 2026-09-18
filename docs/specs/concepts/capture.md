@@ -57,7 +57,7 @@ query: |-
 | Campo | Descripción |
 |---|---|
 | `file` | Path relativo a la raíz de la capa. |
-| `query` | Query tree-sitter con una o más capturas `@target`. Ausente = el archivo completo. |
+| `query` | Query tree-sitter con una sola captura `@target`. Ausente = el archivo completo. |
 
 Dos campos, y los dos entran en el id. No hay más: ni `range`, ni `state`, ni `resolved_at`. Todo eso se puede reconstruir resolviendo la query, así que vive en [la cache](cache.md) y no en git.
 
@@ -65,56 +65,39 @@ Que el archivo tenga exactamente los campos que lo nombran es lo que hace verifi
 
 ## El fragmento
 
-### El fragmento son los `@target`, en orden de archivo
+### La query identifica un nodo, y no compone el fragmento
 
-Una query puede llevar más de una captura `@target`. El fragmento es la concatenación de sus rangos, en el orden en que aparecen en el archivo, no en el que la query los nombra, que es un detalle de cómo se escribió el patrón y no del documento.
+La query de un capture hace una sola cosa: decir de qué nodo se trata. Sus predicados y su forma lo distinguen de los demás nodos del archivo, y su único `@target` lo marca. No arma un fragmento con partes de varios nodos, ni ordena sus capturas para que alguien lea algo de ellas.
 
-Con un solo `@target` el fragmento es ese nodo y nada más: es el caso de siempre.
+Qué partes de ese nodo se vigilan es de otro lado: de las [dimensiones](bilink.md) del endpoint, que resuelven desde el nodo que el capture fijó. Es una decisión, y las decisiones viven en el bilink.
 
-Con varios se pueden decir dos cosas que un nodo solo no puede:
+Que la query componga es lo que la vuelve frágil, porque tree-sitter matchea el patrón entero o no matchea. Una query que junta la anotación de la clase con la del método pierde el nodo si la anotación se muda de la clase al método, aunque el método no se haya movido: la parte que falta arrastra al ancla, que estaba intacta. Y es lo que rompe la deduplicación, porque dos maneras de mirar el mismo método escriben dos queries distintas y por lo tanto dos captures para una sola ubicación.
 
-| | |
-|---|---|
-| menos que un nodo | la firma de un método sin su cuerpo: se capturan `type`, `name` y `parameters`, y `body` queda afuera |
-| más que un nodo | una ruta que sale de dos anotaciones —`@RequestMapping` en la clase, `@GetMapping` en el método—, que como texto completo no existe en ningún nodo |
+### El fragmento es el nodo entero
 
-Y sigue siendo estructural: son nodos, no rangos de bytes. Si el código se mueve, la query lo vuelve a encontrar, que es la propiedad por la que un capture existe.
+El fragmento de un capture es el rango del nodo que marca su `@target`, recortado en los bordes. Es lo que se lee cuando un endpoint no declara dimensiones, y es de donde las dimensiones parten cuando las declara.
 
-Ninguna parte contiene a otra. El fragmento es la concatenación, así que una parte adentro de otra se contaría dos veces y el hash pasaría a depender de un solapamiento que nadie quiso. Cuando se señala una posición que resuelve a un nodo que contiene a otro señalado, no hay capture raro que escribir: hay una posición que resolvió más arriba de lo que se apuntó, y decirlo es más útil que capturar cualquier cosa.
+### Dos endpoints que vigilan partes distintas de la misma ubicación comparten el capture
 
-Pero dos partes sí pueden compartir una línea, y es el caso normal: en `public Dto get(String t)` el tipo de retorno y los parámetros son dos partes de la misma línea, con el nombre del método en el medio y afuera. No se solapan —son rangos disjuntos— y el fragmento no las cuenta dos veces. Lo que eso obliga es a que mostrar un fragmento no sea imprimir sus partes una detrás de otra: concatenadas, esa línea sale repetida. Es problema de quien lo muestra y no del formato, y lo resuelve [`get`](get.md) marcando el hueco intra-línea. El fragmento sigue siendo la concatenación, y el `hash` no cambia.
+El id sale de la ubicación, y la query nombra la ubicación y nada más, así que dos bilinks que miran el mismo método referencian el mismo capture aunque uno vigile los parámetros y otro el cuerpo. Lo que los distingue son sus dimensiones, que viven en cada endpoint, y no el capture.
 
-### Una query, no una lista de queries
+Es la deduplicación por construcción de "El id es el hash de la ubicación", y vale porque la query no lleva nada que no sea la ubicación.
 
-Un patrón único ancla los fragmentos entre sí: dice *"el `@RequestMapping` de la clase que contiene al método `getPermissions`"*. Una lista de queries independientes ancla cada una por su cuenta, y la primera sería *"el `@RequestMapping`"* a secas, que en un archivo con dos clases matchea la equivocada.
+### Un método sobrecargado ancla también por los tipos de sus parámetros
 
-Y abriría la resolución parcial, que no existe: tree-sitter matchea el patrón entero o no matchea. Con una lista, dos de tres queries resueltas no serían `RESOLVED` ni `UNANCHORED` sino un fragmento a medias, y habría que inventarle un estado.
+En un método que no se repite en su clase, el nombre alcanza para identificarlo. En una sobrecarga no: el nombre lo comparten varios, y lo que los distingue son los tipos de sus parámetros, porque Java no compila dos métodos con el mismo nombre y los mismos tipos. Así que la query de un método sobrecargado lleva, además del nombre, un predicado por el texto del tipo de cada parámetro. Son identidad, no contenido: sin ellos la query matchearía más de un nodo y `capture` se negaría.
 
-Menor pero cierto: el id es `sha256(file \0 query \0)`, y `query` sigue siendo un string.
-
-### El separador es `\n`
-
-Los rangos no son contiguos, así que hay que decidir qué va entre uno y el siguiente, y eso entra en el `hash`:
-
-| | |
-|---|---|
-| nada | dos capturas pegadas producen un texto que no existe en ningún archivo |
-| `\n` | elegido: legible, y estable frente a cuánto espacio haya en el medio |
-| el texto intermedio | es el archivo tal cual, pero entonces el cuerpo entra por la ventana cuando dos capturas lo tienen en el medio |
-
-Y no se vuelve a tocar. Cambiarlo movería de una vez el hash de todos los captures multi-fragmento, y todos pasarían a `ALTERED` sin que nadie tocara el código.
-
-`hash_ast` sigue la misma regla: las s-expressions de los nodos, en el mismo orden, unidas por `\n`.
+Lo que cuesta es lo de toda ancla. Cambiar el tipo de un parámetro de un método sobrecargado cambia qué método es, y el capture queda `UNANCHORED` en vez de mostrar el cambio como un diff: la salida es `recapture`. El tipo está en dos lugares a la vez —en la query, que lo usa para encontrar el nodo, y en la dimensión que vigila los parámetros, si el endpoint la declara—, pero ahí no es una ambigüedad: cada lugar hace una sola cosa con él.
 
 ### No hay sub-rango
 
-Un capture nombra un conjunto estructural de nodos, uno por `@target`, cada uno entero. No se puede referenciar un rango de bytes adentro de uno, y la selección con la que se lo crea sirve para encontrar los nodos, no para recortarlos.
+Un capture nombra un nodo entero. No se puede referenciar un rango de bytes adentro de él, y la selección con la que se lo crea sirve para encontrar el nodo, no para recortarlo.
 
 Un rango adentro de un nodo se corre con cualquier edición encima suya dentro del mismo nodo: su granularidad es ilusoria, se rompe todo el tiempo y hay que repuntarlo a mano. Un ancla de nodo entero es estable, y sus falsas alarmas son honestas: *"esto cambió, fijate si tu spec sigue valiendo"*.
 
-Lo que se pierde es atribución, no detección: dos fragmentos de spec que describen dos partes de la misma función pasan a compartir capture. `hash` dice que cambió y `hash_ast` si fue sólo espaciado; cuál parte cambió lo dice `bilinker get --diff`, que es trabajo de quien mira.
+Y la atribución tampoco se pierde: dos fragmentos de spec que describen dos partes de la misma función comparten capture, y cada bilink dice qué parte vigila con sus [dimensiones](bilink.md), que son partes enteras del AST y no rangos de bytes.
 
-Si hace falta más precisión, la respuesta es una query que nombre algo más chico, o que nombre varios nodos y deje el resto afuera, no un recorte sobre una que nombra algo más grande. Por eso una fila de tabla markdown se ancla por el texto de su primera celda: es un nodo, y tiene con qué distinguirse.
+Si hace falta más precisión, la respuesta es una query que nombre algo más chico, o una dimensión que nombre la parte, no un recorte sobre una que nombra algo más grande. Por eso una fila de tabla markdown se ancla por el texto de su primera celda: es un nodo, y tiene con qué distinguirse.
 
 ### El rango excluye el espacio que rodea al nodo
 
@@ -123,8 +106,6 @@ Dónde empieza un nodo depende de qué hay alrededor. En YAML el mismo item de s
 Eso contradice la propiedad central, así que el rango resuelto se recorta en los dos bordes. El fragmento es su contenido; el espacio que lo separa de sus vecinos es de los dos y no de él.
 
 Va en el único lugar donde un nodo se convierte en rango, así que no hay forma de obtener uno sin recortar.
-
-Con varios `@target` se recorta cada rango por separado, antes de concatenar. Recortar la concatenación dejaría los bordes internos a merced de dónde termina un nodo y empieza el otro, que es justo el contexto del que el recorte existe para independizar.
 
 ## La referencia y el ciclo de vida
 
@@ -272,11 +253,11 @@ El criterio es que el ancla se nombre a sí misma. Un nodo sin nombre propio pro
 ### `capture` sube en el AST hasta el primer ancestro estable y verifica que la query identifique el fragmento
 
 1. Leer el archivo y parsearlo con la gramática tree-sitter del lenguaje detectado por extensión.
-2. Encontrar el nodo AST más pequeño que contiene la selección completa (`named_descendant_for_point_range`). Con varias selecciones, una vez por cada una.
+2. Encontrar el nodo AST más pequeño que contiene la selección completa (`named_descendant_for_point_range`).
 3. Subir en el árbol AST hasta el primer ancestro que sea un ancla estable para el lenguaje.
 4. Casos especiales por lenguaje. YAML `block_sequence_item`: busca el par `id:` dentro del item y usa su valor como predicado, capturando el item completo. YAML `block_mapping_pair`: usa el texto de la clave como predicado. Markdown `section`: busca el heading dentro del section y usa su texto inline como predicado, capturando toda la sección (heading + contenido). Gherkin `feature`, `rule` y `scenario_definition`: usan como predicado el título de su línea —`Característica:`, `Regla:`, `Escenario:` o `Esquema del escenario:`, en el dialecto que declare `# language:`— y capturan el nodo entero; el del escenario lleva sus etiquetas, sus pasos y sus ejemplos. El predicado nombra también el tipo de línea, así que un escenario y un esquema con el mismo título se distinguen, y dos escenarios con el mismo título bajo la misma regla no: ahí `capture` se niega. Rust `impl_item`: el discriminante no es un campo `name` sino el tipo implementado (`type:`) y, cuando es la implementación de un trait, también el trait (`trait:`). Con uno solo, `impl Foo` y `impl Bar for Foo` quedan indistinguibles.
-5. Construir la query como el camino del AST desde ese ancestro hasta el nodo target. Cada predicado usa un nombre de captura único (`@n0`, `@n1`, …). El `@target` se coloca en el nodo que representa el fragmento completo. Con varios nodos señalados —[`chain new`](chain.md) con más de una posición— el ancestro es el ancla estable que los contiene a todos, los caminos se funden en un patrón único, y va un `@target` por nodo. Las partes de un patrón salen en orden de archivo: tree-sitter exige el orden de la gramática, y en Java las anotaciones van antes del nombre. Ninguna parte puede contener a otra: cuando pasa, `capture` falla diciendo cuáles.
-6. Verificar que la query identifica el fragmento: resolverla contra el mismo archivo y comprobar que devuelve exactamente un match, con exactamente los nodos señalados. Si devuelve otros nodos, un número distinto, o matchea más de una vez, `capture` falla sin escribir nada.
+5. Construir la query como el camino del AST desde ese ancestro hasta el nodo target. Cada predicado usa un nombre de captura único (`@n0`, `@n1`, …). El único `@target` se coloca en el nodo que representa el fragmento. Los predicados son los que lo identifican, y nada más: el nombre, y en un método sobrecargado los tipos de sus parámetros.
+6. Verificar que la query identifica el fragmento: resolverla contra el mismo archivo y comprobar que devuelve exactamente un match, y que es el nodo señalado. Si devuelve otro nodo, o matchea más de una vez, `capture` falla sin escribir nada.
 7. Calcular el id —el hash de los campos, cada uno seguido de un `\0`— y escribir `.bilink/capture/<id>.yaml` si no existe. Nada de cache: ni `range`, ni `state`, ni timestamp.
 
 `capture` no calcula ni almacena hashes: un capture describe ubicación, no contenido aceptado. El hash lo establece `bilinker accept` en el bilink que lo referencie.
@@ -320,8 +301,8 @@ id=$(bilinker capture src/lib.rs 10:1 24:2)
 
 ### Propiedades garantizadas de `capture`
 
-- Unicidad de la referencia: la `query` resuelve a los nodos que se señalaron, y a ninguno otro. Un ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`— produce una query que matchea el primer nodo de ese tipo del archivo: un capture que apunta a otra cosa y no falla. `capture` verifica antes de escribir y falla si no puede identificar el fragmento unívocamente. Un capture mal anclado es peor que uno roto, porque reporta OK sobre una correspondencia que no existe.
-- Determinismo de la referencia: dos ejecuciones sobre el mismo archivo y selección sin modificaciones intermedias producen la misma `query` y los mismos rangos. El orden en que se pasan las posiciones no cambia nada: las partes van en orden de archivo.
+- Unicidad de la referencia: la `query` resuelve al nodo que se señaló, y a ningún otro. Un ancla sin discriminante —un `impl` sin tipo, un comentario, un `use`— produce una query que matchea el primer nodo de ese tipo del archivo: un capture que apunta a otra cosa y no falla. `capture` verifica antes de escribir y falla si no puede identificar el fragmento unívocamente. Un capture mal anclado es peor que uno roto, porque reporta OK sobre una correspondencia que no existe.
+- Determinismo de la referencia: dos ejecuciones sobre el mismo archivo y selección sin modificaciones intermedias producen la misma `query` y el mismo rango.
 - Reuso: capturar dos veces el mismo fragmento devuelve el mismo id, sin buscar nada.
 - Independencia de git: `capture` no requiere que el archivo esté bajo control de versiones. Sí lo requiere `accept`, que necesita el commit del contenido aprobado.
 - No toca bilinks: `capture` crea el archivo del capture y nada más. Referenciarlo desde un `link` es un paso aparte, vía `bilinker chain new` o `recapture`.
@@ -440,8 +421,8 @@ Para lo que sí tiene auto-fix —`MOVED` y `REANCHORED`— corresponde [`apply`
 2. Un capture es inmutable. Ningún comando modifica uno existente.
 3. Un capture describe ubicación, nunca aceptación. No contiene hashes ni commits.
 4. `file` es relativo a la raíz de la capa donde vive el capture.
-5. Un capture nombra un conjunto de nodos enteros, uno por `@target`: no hay sub-rango. El fragmento es la concatenación de sus rangos en orden de archivo, separados por `\n`. Los rangos absolutos son derivados y viven en la cache.
-6. Ninguna parte de un fragmento contiene a otra: los rangos son disjuntos.
+5. Un capture nombra un nodo entero, con un solo `@target`: no hay sub-rango. El fragmento es ese nodo. El rango absoluto es derivado y vive en la cache.
+6. La query de un capture identifica el nodo y no compone el fragmento: qué partes se vigilan es de las dimensiones del endpoint.
 7. Un `link` sólo referencia captures de su propia capa. Un `accepted.link` de endpoint `path` o `repo` puede contener una copia opaca de un id ajeno, que no se resuelve localmente.
 8. Un capture puede ser referenciado por cualquier cantidad de bilinks, incluido cero.
 9. `apply` acuña captures y repunta un `link`; nunca escribe `accepted`.
