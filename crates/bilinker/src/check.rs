@@ -14,6 +14,7 @@ use bilink_format::bilink::bilink_files;
 use bilink_format::{BiLink, Capture, LinkEndpoint, Ranges};
 
 use crate::cache::Cache;
+use crate::dimension::{self, DimensionStates};
 use crate::state::{CaptureState, EndpointState};
 use crate::{grammar, hash, query};
 
@@ -47,6 +48,9 @@ pub struct CheckResult {
     pub uuid: String,
     pub state0: EndpointState,
     pub state1: EndpointState,
+    /// Las dimensiones que califican al estado de cada endpoint: las que no están
+    /// `OK`. Vacío sin dimensiones, o con todas limpias.
+    pub dimensions: [DimensionStates; 2],
 }
 
 impl CheckResult {
@@ -136,8 +140,9 @@ pub fn check_with(
     for (uuid, bl) in &bilinks {
         let uuid = uuid.as_str();
         let mut states = [EndpointState::Pending; 2];
+        let mut dimensions: [DimensionStates; 2] = Default::default();
         for n in [0u8, 1u8] {
-            let state = match check_endpoint(&layer, bl, uuid, n, &mut resolved, &mut cache, nb) {
+            let (state, dims) = match check_endpoint(&layer, bl, uuid, n, &mut resolved, &mut cache, nb) {
                 Ok(s) => s,
                 // **Lo que se alcanzó a verificar queda**, como en cualquier check
                 // parcial: el resto de la capa conserva lo que tenía.
@@ -151,13 +156,15 @@ pub fn check_with(
             };
             states[n as usize] = state;
             cache.set_endpoint_state(uuid, n, states[n as usize]);
+            cache.set_endpoint_dimensions(uuid, n, &dims);
+            dimensions[n as usize] = dims;
             // El alias sale del mismo trabajo: resolver el capture es lo que `check`
             // ya hizo para escribir `range`. `None` **borra** el que hubiera — un
             // `as` que se sacó no puede dejar el rótulo viejo colgado.
             let alias = alias_de(&layer, bl, n, &resolved);
             cache.set_alias(uuid, n, alias);
         }
-        out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1] });
+        out.push(CheckResult { uuid: uuid.to_string(), state0: states[0], state1: states[1], dimensions });
     }
 
     for (id, (state, range)) in &resolved {
@@ -256,19 +263,20 @@ fn check_endpoint(
     resolved: &mut HashMap<String, (CaptureState, Option<Ranges>)>,
     cache: &mut Cache,
     nb: crate::neighbours::Provider<'_>,
-) -> Result<EndpointState> {
+) -> Result<(EndpointState, DimensionStates)> {
     let e = bl.endpoint.get(n);
+    let word = |s: Result<EndpointState>| s.map(|s| (s, Vec::new()));
     match &e.link {
-        LinkEndpoint::Path(p)   => check_path(layer, p, uuid, e.accepted.first()),
-        LinkEndpoint::Issue(id) => check_issue(layer, id, e.accepted.first()),
-        LinkEndpoint::Repo(alias) => check_repo(layer, alias, uuid, e.accepted.first()),
+        LinkEndpoint::Path(p)   => word(check_path(layer, p, uuid, e.accepted.first())),
+        LinkEndpoint::Issue(id) => word(check_issue(layer, id, e.accepted.first())),
+        LinkEndpoint::Repo(alias) => word(check_repo(layer, alias, uuid, e.accepted.first())),
         // Constante: no hay contra qué comparar. Nunca pide acción.
-        LinkEndpoint::Abstract  => Ok(EndpointState::Open),
+        LinkEndpoint::Abstract  => Ok((EndpointState::Open, Vec::new())),
         LinkEndpoint::Capture(cap_id) => {
             let cap = match Capture::load_in(layer, cap_id) {
                 Ok(c) => c,
                 // El capture que el link nombra no está: no hay ubicación que evaluar.
-                Err(_) => return Ok(EndpointState::Unresolved),
+                Err(_) => return Ok((EndpointState::Unresolved, Vec::new())),
             };
 
             // La resolución se cachea por capture, pero la aceptación es por
@@ -286,7 +294,7 @@ fn check_endpoint(
                 }
             };
             if !state.is_resolved() {
-                return Ok(EndpointState::Unresolved);
+                return Ok((EndpointState::Unresolved, Vec::new()));
             }
 
             // **La lista decide antes que cualquier eje.**
@@ -296,9 +304,9 @@ fn check_endpoint(
             // ubicación o contenido exigiría elegir una, que es exactamente lo que
             // nadie hizo. Así que se reporta el desacuerdo y se corta.
             let accepted = match e.accepted.as_slice() {
-                []      => return Ok(EndpointState::Pending),
+                []      => return Ok((EndpointState::Pending, Vec::new())),
                 [one]   => one,
-                [_, ..] => return Ok(EndpointState::ConsensusDiverged),
+                [_, ..] => return Ok((EndpointState::ConsensusDiverged, Vec::new())),
             };
 
             // ── dimensión de ubicación ────────────────────────────────────────
@@ -306,7 +314,7 @@ fn check_endpoint(
             // Dos ids: no abre ningún archivo. Por eso se decide **siempre**, incluso
             // donde la otra dimensión degrada por no poder recuperar el texto aceptado.
             if accepted.link.as_ref() != Some(&e.link) {
-                return Ok(EndpointState::Relocated);
+                return Ok((EndpointState::Relocated, Vec::new()));
             }
 
             // ── dimensión de contenido ────────────────────────────────────────
@@ -327,8 +335,21 @@ fn check_endpoint(
                         .clone()
                 };
                 let mut src = CommitSource { derive: &mut derive };
-                compare_content(layer, &cap, accepted, range.as_ref(), &mut src)?
+                // **Con dimensiones, el estado sale de ellas**, y el fragmento entero
+                // deja de decidir: lo que cambia afuera de toda parte no lo pidió
+                // vigilar nadie. La palabra es la de la parte más severa, y las que
+                // no están OK van al lado.
+                if e.dimensions.is_empty() && accepted.dimensions.is_empty() {
+                    (compare_content(layer, &cap, accepted, range.as_ref(), &mut src)?, Vec::new())
+                } else {
+                    let Some(r) = range.as_ref() else {
+                        return Ok((EndpointState::Unresolved, Vec::new()));
+                    };
+                    let dims = dimension::compare(layer, &cap, &e.dimensions, &accepted.dimensions, r, &mut src)?;
+                    (dimension::word(&dims), dimension::qualifying(dims))
+                }
             };
+            let (state, dims) = state;
             // Lo derivado se guarda: el walk cuesta un `git show` por commit y el
             // mismo endpoint se consulta más de una vez en una corrida.
             if let Some(Some(c)) = &derived {
@@ -343,10 +364,10 @@ fn check_endpoint(
             // y aun así el contrato se movió.
             if state == EndpointState::Ok {
                 if let Some(s) = compare_contract(layer, &cap, e.n.as_ref(), accepted, range.as_ref(), nb)? {
-                    return Ok(s);
+                    return Ok((s, Vec::new()));
                 }
             }
-            Ok(state)
+            Ok((state, dims))
         }
     }
 }
@@ -1001,6 +1022,87 @@ mod tests {
         let it = r.results.iter().find(|x| x.uuid == uuid).expect("el bilink está");
         assert_eq!(it.state0, EndpointState::ConsensusDiverged, "{:?}", it.state0);
         assert!(!it.state0.is_clean(), "divergido no es limpio: check tiene que fallar");
+    }
+
+    // ─── las partes del contenido ─────────────────────────────────────────────
+
+    /// Una capa con un bilink cuyo endpoint 0 vigila el cuerpo y los parámetros de
+    /// `a`, aprobados sobre `before`, y el archivo reescrito con `today`.
+    fn dimensioned_layer(before: &str, today: &str) -> (tempfile::TempDir, String) {
+        const FN_A: &str = r#"(function_item name: (identifier) @n0 (#eq? @n0 "a")) @target"#;
+        let parts = [("body", "(function_item body: (block) @target)"),
+                     ("parameters", "(function_item parameters: (parameters) @target)")];
+        let d = tempdir().unwrap();
+        let language = grammar::for_language("rust").unwrap();
+        let whole = query::find_fragment(language.clone(), before, FN_A).unwrap().unwrap();
+        let within = bilink_format::ByteRange { start: whole.ranges.start(), end: whole.ranges.end() };
+
+        let cap = Capture { file: "lib.rs".into(), query: Some(FN_A.into()) };
+        cap.write_in(d.path()).unwrap();
+        let link: LinkEndpoint = format!("capture {}", cap.id()).parse().unwrap();
+        let mut bl = BiLink::new(link.clone(), LinkEndpoint::Abstract);
+        let e = bl.endpoint.get_mut(0);
+        let mut approved = std::collections::BTreeMap::new();
+        for (name, q) in parts {
+            e.dimensions.insert(name.into(), bilink_format::DeclaredDimension { query: q.into() });
+            let f = query::find_fragment_within(language.clone(), before, q, &within).unwrap().unwrap();
+            approved.insert(name.to_string(), bilink_format::AcceptedDimension {
+                hash: hash::sha256(f.ranges.text(before).as_bytes()),
+                hash_ast: Some(hash::sha256(f.sexp.as_bytes())),
+            });
+        }
+        e.accepted = vec![Accepted {
+            agree: Default::default(), link: Some(link),
+            hash: hash::sha256(whole.ranges.text(before).as_bytes()), hash_ast: None,
+            n: None, dimensions: approved,
+        }];
+        let uuid = "44444444-4444-4444-8444-444444444444".to_string();
+        bl.write(&BiLink::path_in(d.path(), &uuid)).unwrap();
+        bilink_format::ensure_version(d.path()).unwrap();
+        std::fs::write(d.path().join("lib.rs"), today).unwrap();
+        (d, uuid)
+    }
+
+    const LIB: &str = "fn a(x: u8) -> u8 { x + 1 }\n";
+
+    /// **La palabra es la de siempre, y las partes van al lado**: el cuerpo sólo
+    /// reformateado y un parámetro cambiado dan `ALTERED`, calificado con las dos.
+    #[test]
+    fn the_state_is_one_word_qualified_by_its_parts() {
+        let (d, uuid) = dimensioned_layer(LIB, "fn a(x: u32) -> u8 {\n    x + 1\n}\n");
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Altered);
+        assert_eq!(it.dimensions[0], vec![("body".to_string(), EndpointState::Restyled),
+                                          ("parameters".to_string(), EndpointState::Altered)]);
+        assert!(it.dimensions[1].is_empty());
+        assert!(!it.is_clean());
+
+        // La cache guarda la palabra sola, y las partes aparte.
+        let cache = Cache::load(d.path());
+        assert_eq!(cache.endpoint_state(&uuid, 0), Some(EndpointState::Altered));
+        assert_eq!(cache.endpoint_dimensions(&uuid, 0), it.dimensions[0]);
+    }
+
+    /// Con las partes intactas, un cambio afuera de ellas no avisa.
+    #[test]
+    fn with_parts_the_whole_fragment_no_longer_decides() {
+        let (d, uuid) = dimensioned_layer(LIB, "fn a(x: u8) -> u16 { x + 1 }\n");
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Ok, "el retorno no se vigila");
+        assert!(it.dimensions[0].is_empty());
+    }
+
+    /// Una sola parte reformateada no hace fallar, y se lista igual.
+    #[test]
+    fn a_restyled_part_alone_is_restyled_and_clean() {
+        let (d, uuid) = dimensioned_layer(LIB, "fn a(x: u8) -> u8 {\n    x + 1\n}\n");
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Restyled);
+        assert_eq!(it.dimensions[0], vec![("body".to_string(), EndpointState::Restyled)]);
+        assert!(it.is_clean());
     }
 
     // ─── el eje del vecindario ────────────────────────────────────────────────
