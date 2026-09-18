@@ -663,7 +663,9 @@ impl TipPlan {
             })
             .collect::<Vec<_>>().join("\n"));
         Ok(Some((
-            bilinker::preview::Preview::of(&label, &source, &capture.ranges).with_note(note),
+            bilinker::preview::Preview::of(&label, &source, &capture.ranges)
+                .with_dimensions(capture.dimensions.keys().cloned().collect())
+                .with_note(note),
             source,
         )))
     }
@@ -701,13 +703,21 @@ impl TipPlan {
             }
         })
     }
+
+    /// Las dimensiones que declaró el generador de este tip. Vacías sin `--as`.
+    fn dimensions(&self) -> std::collections::BTreeMap<String, bilink_format::DeclaredDimension> {
+        match &self.kind {
+            TipKind::Fragment { capture, .. } => capture.dimensions.clone(),
+            _ => Default::default(),
+        }
+    }
 }
 
 /// Un tip: `abstract`, o un path Stratum con cero o más posiciones.
 ///
 /// Las posiciones extra van separadas por coma después de la primera —
-/// `Foo.java:8:1,15:5` — y cada una resuelve a su nodo. De todas sale **una** query
-/// con un `@target` por nodo: el patrón único es lo que las ancla entre sí.
+/// `Foo.java:8:1,8:30` — y cada una resuelve a su nodo. Todas tienen que caer en el
+/// mismo: un capture es un nodo, y dos nodos son dos contratos.
 fn plan_tip(
     root: &Path, tip_str: &str, gen: Option<&dyn bilinker::capture::CaptureGenerator>,
 ) -> anyhow::Result<TipPlan> {
@@ -2066,8 +2076,15 @@ Eliminar? [y/N] ");
                     Some(_) => [None, as0],
                     None    => [as0, as1],
                 };
+                let dims: Vec<_> = plans.iter().map(TipPlan::dimensions).collect();
+                let dims_by_tip = match (from_repo.is_some(), dims.as_slice()) {
+                    (true, [d])     => [Default::default(), d.clone()],
+                    (_, [d0, d1])   => [d0.clone(), d1.clone()],
+                    _               => Default::default(),
+                };
                 let decl = bilinker::chain::Declaration {
-                    kind, name: [name0, name1], r#as: as_by_tip, uuid: from_repo_uuid,
+                    kind, name: [name0, name1], r#as: as_by_tip, dimensions: dims_by_tip,
+                    uuid: from_repo_uuid,
                 };
                 let result = bilinker::chain::chain_new(&cwd, &tips, &mids, &decl)?;
 

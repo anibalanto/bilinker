@@ -6,12 +6,10 @@ use bilink_format::{ByteRange, Ranges, FRAGMENT_SEPARATOR};
 
 /// Lo que la query nombra: uno o más nodos, con su huella.
 ///
-/// Una query puede llevar **más de una** captura `@target`, y entonces el fragmento
-/// es la concatenación de sus rangos en orden de archivo. Es lo que permite decir
-/// menos que un nodo —la firma de un método sin su cuerpo— y más que un nodo —una
-/// ruta que sale de dos anotaciones distintas—, sin dejar de ser estructural: son
-/// nodos, no rangos de bytes, así que la referencia sobrevive a que el código se
-/// mueva. Ver `concepts/capture.md` § "El fragmento son los `@target`".
+/// La query de un capture nombra un nodo, y el fragmento es ese nodo. Una con **más
+/// de una** captura `@target` es la de una dimensión, o la de un capture escrito
+/// cuando la query componía el fragmento: su texto es la concatenación de sus rangos
+/// en orden de archivo, y así se siguen leyendo los que ya existen.
 #[derive(Debug, Clone)]
 pub struct Fragment {
     /// Los rangos, recortados y en orden de archivo.

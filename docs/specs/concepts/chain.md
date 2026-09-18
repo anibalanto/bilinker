@@ -82,11 +82,11 @@ bilinker chain new --tip <STRATUM_PATH[:LINE:COL[,LINE:COL]...]> \
 
 | Argumento | Descripción |
 |---|---|
-| `--tip <ref>` | Extremo de la cadena: path Stratum al archivo con una o más posiciones, `abstract`, o `repo <alias>`. Exactamente dos veces. |
+| `--tip <ref>` | Extremo de la cadena: path Stratum al archivo con una o más posiciones que caen en un mismo nodo, `abstract`, o `repo <alias>`. Exactamente dos veces. |
 | `--mid <layer>` | Capa intermedia. Cero o más veces. |
 | `--kind <valor>` | El [`kind`](bilink.md) del bilink. |
 | `--name.N <etiqueta>` | El `name` del endpoint N. |
-| `--as.N <modo>` | Qué parte del nodo señalado captura el tip N. Sin esto, el nodo entero. |
+| `--as.N <modo>` | Qué partes del nodo señalado vigila el tip N, como [dimensiones](bilink.md) del endpoint. Sin esto, ninguna: el fragmento es el nodo entero. |
 | `--as` | Sin valor: lista los modos disponibles y no hace nada más. |
 | `--dry-run` | Muestra qué capturaría y no escribe nada. |
 | `--yes` | No pregunta. Para scripts y para CI. |
@@ -111,23 +111,19 @@ Los dos endpoints quedan en PENDING. Revisar con `bilinker get` y aprobar con `b
 
 `--kind` existe para no depender de una edición a mano. `kind` y `name` son campos de declaración, y todo archivo de bilinker sale de un comando: sin el flag, la única forma de poblarlos sería abrir el YAML, que es justamente lo que el formato no pide de nadie.
 
-### Un tip puede señalar varias partes
+### Las posiciones de un tip caen en un solo nodo
 
 Las posiciones extra van separadas por coma, después de la primera:
 
 ```bash
 bilinker chain new \
   --tip 'docs/specs/concepts/capture.md:66:1' \
-  --tip 'crates/bilinker/src/query.rs:109:1,22:1'
+  --tip 'crates/bilinker/src/query.rs:110:5,111:9'
 ```
 
-Cada posición resuelve a su nodo igual que una sola —al ancla estable más cercana—, y de todas sale una query con un `@target` por nodo. El fragmento es su concatenación ([capture.md](capture.md), "El fragmento son los `@target`").
+Cada posición resuelve a su nodo igual que una sola —al ancla estable más cercana—, y todas tienen que caer en el mismo: señalar dos líneas de una función señala la función una vez. Es lo que pasa también al editar las marcas de la [vista previa](#y-las-marcas-se-editan).
 
-Las posiciones se descartan. Sirven para encontrar los nodos, y lo que se guarda es la query. El orden en que se pasan tampoco se guarda: el fragmento va en orden de archivo.
-
-La query se ancla una sola vez. El nodo raíz del patrón es el ancla estable que contiene a todas las partes, así que las partes quedan ancladas entre sí: `@RequestMapping` de la clase que contiene al método, y no *"el primer `@RequestMapping` del archivo"*.
-
-Si dos posiciones caen en el mismo nodo, es un nodo: no hay parte repetida.
+Si caen en nodos distintos, `chain new` falla sin escribir nada. Dos nodos son dos contratos, y un capture es una ubicación: su query identifica un nodo y no compone el fragmento ([capture.md](capture.md)). Para vigilar partes de un nodo están las dimensiones, y las declara un generador con `--as`.
 
 ### El path de un tip atraviesa directorios, no sólo capas
 
@@ -170,21 +166,21 @@ El alias tiene que estar declarado —`.bilink/.hsi.toml`— y el clon tiene que
 
 ### El modo se pide; no se adivina
 
-Sin `--as`, la query la genera el núcleo y captura los nodos señalados enteros. Con `--as <nombre>`, la genera un generador: `interface`, que es del núcleo, o un plugin como `spring-controller`.
+Sin `--as`, el endpoint no declara dimensiones, y el fragmento es el nodo señalado entero. Con `--as <nombre>`, un generador declara qué partes del nodo se vigilan: `interface`, que es del núcleo, o un plugin como `spring-controller`. El capture es el mismo en los dos casos, porque lo escribe el núcleo.
 
 Un generador sabe decir si tiene algo que decir sobre un nodo, y eso sirve para sugerir, nunca para elegir:
 
 ```
 $ bilinker chain new --tip 'concepts/api.md:12:1' --tip '>impl/src/Ctl.java:16:5'
 …
-sugerencia: `--as.1 spring-controller` compone la ruta y deja el cuerpo afuera
+sugerencia: `--as.1 spring-controller` — el endpoint de Spring: la ruta compuesta, el tipo de retorno y los parámetros
 ```
 
-Un generador que acierta cuando no querías ya te escribió otra cosa, y un capture es opaco después. Bilinker arregla solo lo que es suyo, y pide lo que es del repo de otro.
+Un generador que acierta cuando no querías ya te escribió otra cosa, y lo que un endpoint vigila no se ve sin ir a buscarlo. Bilinker arregla solo lo que es suyo, y pide lo que es del repo de otro.
 
 Va por tip, con la misma forma que `--name.N`, porque los dos extremos rara vez se capturan igual: del lado de la spec hay una sección de markdown y del lado del código un método, y un modo global obligaría a que el modo del código valiera también para la prosa.
 
-Un generador toma una posición. Genera la query de eso que señalaste, y dos cosas señaladas son dos contratos, no uno con dos mitades. Sin `--as`, las posiciones siguen siendo las que quieras.
+Un generador toma una posición, y declara las dimensiones de eso que señalaste.
 
 ### Por qué es un nombre y no una flag booleana
 
@@ -194,23 +190,23 @@ Porque hay más de uno. `--as` toma un nombre, y eso hace que el atajo del núcl
 
 ### El capture no deja rastro, y el bilink sí
 
-Un generador genera una query y desaparece. El capture que queda es una query normal: no dice quién lo generó, no depende de que el generador exista, y se podría haber escrito señalando las posiciones a mano.
+Un generador declara dimensiones y desaparece. El capture que queda es el que el núcleo escribe para ese nodo: no dice quién lo pidió, no depende de que el generador exista, y es el mismo archivo que sale sin `--as`.
 
 Eso lo fuerza el formato, no la disciplina. El id de un capture es `sha256(file \0 query \0)`; agregarle *"generado por spring-controller"* le cambiaría el id sin cambiar la ubicación. No hay dónde dejar el rastro aunque uno quisiera.
 
-El bilink es otro objeto, y ahí sí hay dónde. Su id es un UUID y ya lleva campos que no entran en ningún hash, así que el endpoint anota con qué se capturó en [`as`](bilink.md).
+El bilink es otro objeto, y ahí sí hay dónde. Su id es un UUID y ya lleva campos que no entran en ningún hash, así que el endpoint anota con qué se capturó en [`as`](bilink.md), y lo que el generador decidió vigilar en [`dimensions`](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento), cada una con su query escrita.
 
-Y la mitad que importa se conserva entera: perder el plugin cuesta lo que el plugin sabía, nunca el vínculo. El capture sigue resolviendo, `check` sigue contestando, y un `as` que nombra un generador que no está instalado es un dato que no se pudo usar.
+Y la mitad que importa se conserva entera: perder el plugin cuesta lo que el plugin sabía, nunca el vínculo. El capture sigue resolviendo, las dimensiones también —su query está en el endpoint y no se deduce del `as`—, `check` sigue contestando, y un `as` que nombra un generador que no está instalado es un dato que no se pudo usar.
 
 ### Y pasa la misma verificación que una query escrita a mano
 
-Que el capture resultante sea una query normal es lo que lo somete a la misma unicidad de la referencia que cualquier otra ([capture.md](capture.md), "Propiedades garantizadas de `capture`"). Un generador que produce una query que matchea más de un nodo no escribe, igual que `capture` sobre un ancla sin discriminante.
+El capture es el del núcleo, así que pasa la misma unicidad de la referencia que cualquier otro ([capture.md](capture.md), "Propiedades garantizadas de `capture`"). Y cada dimensión que el generador declara se resuelve antes de escribir, contra el nodo que el capture fijó: tiene que resolver, y a las partes que el generador señaló. Si no, `chain new` no escribe nada.
 
-No es una regla nueva para generadores: es que no hay excepción. Un capture mal anclado reporta OK sobre una correspondencia que no existe, y eso no cambia porque lo haya escrito un plugin; cambia a peor, porque quien lo pidió no vio la query.
+No es una regla nueva para generadores: es que no hay excepción. Una dimensión que vigila otra cosa reporta OK sobre una parte que nadie aprobó, y eso no cambia porque la haya escrito un plugin; cambia a peor, porque quien la pidió no vio la query.
 
 ### `--as interface`: la firma sin el cuerpo
 
-El atajo del caso común. Señalás el método y se captura su firma:
+El atajo del caso común. Señalás el método y el endpoint vigila su firma, una dimensión por parte:
 
 ```bash
 bilinker chain new \
@@ -218,13 +214,15 @@ bilinker chain new \
   --as.1 interface --tip '>impl/src/Service.java:16:5'
 ```
 
-Sin el atajo habría que señalar el tipo de retorno, el nombre y los parámetros por separado: tres posiciones para algo que el AST ya tiene agrupado.
+Sin el atajo, el endpoint vigila el método entero, cuerpo incluido, y un cambio en el cuerpo es un `ALTERED` sobre una spec que describe la firma.
 
 ### Lo que bilinker sabe, y es poco
 
-Que en un nodo de función hay un campo que es el cuerpo, y que la firma es todo lo demás. En tree-sitter eso tiene nombre por gramática —`body` en Java, Rust y TypeScript—, y con eso alcanza: se capturan todos los hijos con nombre del nodo menos ése.
+Que en un nodo de función hay un campo que es el cuerpo, y que la firma es todo lo demás. En tree-sitter eso tiene nombre por gramática —`body` en Java, Rust y TypeScript—, y con eso alcanza: se declara una dimensión por cada hijo con nombre del nodo, menos ése.
 
-No es conocimiento de framework: es de la gramática, y la gramática ya es una dependencia. Es una tabla de la misma clase que las anclas estables, y existe por lo mismo, para que un lenguaje que no está falle en vez de adivinar:
+Cada dimensión se llama como la gramática nombra a su hijo: por su campo —`type`, `name`, `parameters`— o, si no tiene campo, por su tipo de nodo —`modifiers`—. No hay tabla de nombres, porque salen del árbol, y en otro lenguaje son otros: `return_type` y `visibility_modifier` en Rust. Dos hijos sin campo del mismo tipo son una dimensión con dos partes.
+
+La tabla que sí existe es la del cuerpo, de la misma clase que las anclas estables, y existe por lo mismo, para que un lenguaje que no está falle en vez de adivinar:
 
 ```
 $ bilinker chain new --as.1 interface --tip 'spec.md:1:1' --tip 'script.py:10:1'
@@ -232,24 +230,45 @@ Error: `--as interface` no sabe qué es el cuerpo en python.
        Señalar las partes a mano, o agregar python a la tabla.
 ```
 
-Un nodo sin cuerpo se captura entero. Si la gramática no le da campo `body` —la firma de un método en una `interface` de TypeScript—, la firma es el nodo.
+Un nodo sin cuerpo declara una dimensión por cada hijo. Si la gramática no le da campo `body` —la firma de un método en una `interface` de TypeScript—, la firma es el nodo entero.
+
+Las partes son las que el nodo tiene al capturarlo. Un `throws` que aparece después no se vigila hasta que `recapture --as interface` lo declare.
 
 ### El nombre se captura y además ancla
 
-La firma incluye el nombre, y el nombre es además lo que la query usa para encontrar el nodo. Las dos cosas caen sobre el mismo nodo del AST y se escriben juntas:
+La firma incluye el nombre, y el nombre es además lo que la query del capture usa para encontrar el nodo. Las dos cosas caen sobre el mismo nodo del AST, y cada una en su lugar: el predicado en el capture, y la parte en la dimensión `name` del endpoint.
 
-```
-(method_declaration
-  name: (identifier) @n0 @target (#eq? @n0 "getPermissions")
-  type: (generic_type) @target
-  parameters: (formal_parameters) @target)
+```yaml
+# capture
+query: |-
+  (class_declaration
+    name: (identifier) @n0 (#eq? @n0 "Service")
+    body: (class_body
+    (method_declaration
+    name: (identifier) @n1 (#eq? @n1 "getPermissions")) @target))
 ```
 
-No es una redundancia que se pueda sacar. Sin el `@target`, renombrar el método no sería un cambio de contenido sino una relocalización, y el fragmento aceptado dejaría de mencionar cómo se llama lo que describe.
+```yaml
+# endpoint
+    dimensions:
+      modifiers:
+        query: (method_declaration (modifiers) @target) @anchor
+      name:
+        query: '(method_declaration name: (_) @target) @anchor'
+      parameters:
+        query: '(method_declaration parameters: (_) @target) @anchor'
+      type:
+        query: '(method_declaration type: (_) @target) @anchor'
+    as: interface
+```
+
+No es una redundancia que se pueda sacar. Sin la dimensión `name`, renombrar el método no sería un cambio de contenido sino una relocalización, y el fragmento aceptado dejaría de mencionar cómo se llama lo que describe.
+
+Los hijos se nombran con `(_)` y no con su tipo de nodo: el tipo es parte de lo vigilado, y un `List<Dto>` que pasa a `Dto` es la firma que cambió, no una dimensión que desapareció.
 
 ### `--as spring-controller`: el endpoint, no el método
 
-Señalás sólo el método y el plugin va a buscar lo demás:
+Señalás sólo el método y el plugin declara tres dimensiones:
 
 ```bash
 bilinker chain new \
@@ -257,72 +276,76 @@ bilinker chain new \
   --as.1 spring-controller --tip '>impl/src/HSIPublicApiUsersRestImpl.java:16:5'
 ```
 
-- sube a la clase y toma el `@RequestMapping`
-- baja al método y toma su anotación de ruta —`@GetMapping`, `@PostMapping`, …
-- toma el tipo de retorno y los parámetros
+- `route`: sube a la clase y toma el `@RequestMapping`, y baja al método y toma su anotación de ruta —`@GetMapping`, `@PostMapping`, …
+- `type`: el tipo de retorno
+- `parameters`: los parámetros
 
-Cuatro fragmentos de una sola posición. Y con eso entra la ruta compuesta: sale de un `@RequestMapping` de clase más un `@GetMapping` de método, y el literal completo no aparece en ningún lado del archivo.
+`type` y `parameters` son las de `--as interface`, con el mismo nombre y la misma query. `route` es la única que no es un hijo del método, y por eso lleva un nombre del generador. Con ella entra la ruta compuesta: sale de un `@RequestMapping` de clase más un `@GetMapping` de método, y el literal completo no aparece en ningún lado del archivo.
 
 ### El ancla es el nombre del método, y la ruta y el verbo son contenido
 
-Una query generada tiene dos clases de cosas: lo que ancla —los predicados y la forma, que deciden si el fragmento se encuentra— y lo que se captura —los `@target`, cuyo texto entra en `hash`—. Un nodo en los dos roles hace que cambiarlo pierda el puntero en vez de mostrar el diff, y para un endpoint lo que tiene que poder cambiar y verse es la ruta, el verbo y la forma.
+El capture es el del núcleo: el nombre de la clase y el del método. Lo que tiene que poder cambiar y verse —la ruta, el verbo y la forma— está en las dimensiones, y un cambio ahí es `ALTERED` con su diff, nunca un puntero perdido.
 
-Así que el único predicado de nombre es el del método, y no lleva `@target`:
-
+```yaml
+    dimensions:
+      parameters:
+        query: '(method_declaration parameters: (_) @target) @anchor'
+      route:
+        query: |-
+          (class_declaration
+            (modifiers
+              (_
+                name: (identifier) @c (#match? @c "^(RequestMapping)$")) @target)
+            body: (class_body
+              (method_declaration
+                (modifiers
+                  (_
+                    name: (identifier) @m (#match? @m "^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)$")) @target)) @anchor))
+      type:
+        query: '(method_declaration type: (_) @target) @anchor'
+    as: spring-controller
 ```
-(class_declaration
-  (modifiers
-    (_
-      name: (identifier) @n0 (#match? @n0 "^RequestMapping$")) @target)
-  body: (class_body
-    (method_declaration
-      (modifiers
-        (_
-          name: (identifier) @n1 (#match? @n1 "^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)$")) @target)
-      name: (identifier) @n2 (#eq? @n2 "getPermissions")
-      type: (_) @target
-      parameters: (_) @target)))
-```
 
-Cambiar el literal de la ruta, el verbo o el prefijo de la clase deja el endpoint `ALTERED`, con su diff. Lo mismo sacarle el literal a la anotación o cambiar un `List<Dto>` por un `Dto`.
+Cambiar el literal de la ruta, el verbo o el prefijo de la clase deja el endpoint `ALTERED(route)`, con su diff. Sacarle el literal a la anotación también. Cambiar un `List<Dto>` por un `Dto` lo deja `ALTERED(type)`.
 
-- **Las anotaciones se reconocen por clase, no por nombre.** `#match?` contra el conjunto de anotaciones de ruta dice *"la anotación de ruta del método"*, sea `@GetMapping` o `@PostMapping`; `#eq?` queda para el ancla. Por eso el último `#eq?` de la query es el nombre del método, que es lo que `check` muestra cuando un capture no resuelve y lo que `recapture` reescribe.
-- **Los `@target` de contenido no fijan el kind.** `(_)` y no `(generic_type)`: el kind es parte de lo capturado, y un `annotation` que pasa a `marker_annotation` es la ruta que cambió, no un fragmento que desapareció.
+- **Las anotaciones se reconocen por clase, no por nombre.** `#match?` contra el conjunto de anotaciones de ruta dice *"la anotación de ruta del método"*, sea `@GetMapping` o `@PostMapping`.
+- **Los `@target` no fijan el kind.** `(_)` y no `annotation`: un `annotation` que pasa a `marker_annotation` es la ruta que cambió, no una dimensión que desapareció.
+- **`route` pide lo que había al capturar.** Si la clase llevaba `@RequestMapping`, la query lo exige, y mudarlo al método deja el capture resuelto y `route` sin resolver: la salida es `recapture --as spring-controller`. Si no lo llevaba, la query nombra sólo la anotación del método, y un prefijo que aparece después no se vigila hasta volver a generarla.
 
-Es el reparto inverso al de `--as interface`, que pone el nombre en los dos roles. Las dos reglas salen del mismo criterio —qué describe el fragmento—: una firma se describe por cómo se llama, y el contrato de un endpoint no incluye cómo se llama el método que lo sirve.
+El nombre del método no está en ninguna dimensión. Es el reparto inverso al de `--as interface`, y las dos reglas salen del mismo criterio —qué describe el fragmento—: una firma se describe por cómo se llama, y el contrato de un endpoint no incluye cómo se llama el método que lo sirve.
 
-Lo que cuesta es que renombrar el método deja el capture sin ancla, y el endpoint `UNRESOLVED`. Cuando la similitud lo encuentra sin ambigüedad el capture es `REANCHORED`: `apply` lo repunta y el endpoint queda `RELOCATED` hasta que alguien acepte. Entre hermanos parecidos la similitud no alcanza, el capture es `UNANCHORED`, y la salida es `recapture`. No hay ancla más barata: en un endpoint cuya anotación no lleva literal no hay otra cosa que lo distinga de sus hermanos, y anclar por algo que el fragmento captura convierte el cambio que importa en un puntero perdido.
+Lo que cuesta es lo de toda ancla: renombrar el método, o la clase, deja el capture sin ancla y el endpoint `UNRESOLVED`. Cuando la similitud lo encuentra sin ambigüedad el capture es `REANCHORED`: `apply` lo repunta y el endpoint queda `RELOCATED` hasta que alguien acepte. Entre hermanos parecidos la similitud no alcanza, el capture es `UNANCHORED`, y la salida es `recapture`. No hay ancla más barata: en un endpoint cuya anotación no lleva literal no hay otra cosa que lo distinga de sus hermanos, y anclar por algo que el endpoint vigila convierte el cambio que importa en un puntero perdido.
 
 ### En una sobrecarga, los tipos de los parámetros también anclan
 
-Si el nombre del método se repite entre los métodos de la clase, el nombre solo no distingue el endpoint, y la query suma un predicado por el tipo de cada parámetro, en orden y sin huecos:
+Si el nombre del método se repite entre los métodos de la clase, el nombre solo no lo distingue, y la query del capture suma un predicado por el tipo de cada parámetro, en orden y sin huecos:
 
 ```
       parameters: (formal_parameters
         .
-        (formal_parameter type: (_) @n3 (#match? @n3 "^Short$"))
+        (formal_parameter type: (_) @n2 (#match? @n2 "^Short$"))
         .
-        (formal_parameter type: (_) @n4 (#match? @n4 "^List<Long>$"))
-        .) @target
+        (formal_parameter type: (_) @n3 (#match? @n3 "^List<Long>$"))
+        .)
 ```
 
-Los tipos distinguen siempre: Java no compila dos métodos con el mismo nombre y los mismos tipos de parámetros. Los parámetros siguen siendo contenido —el nodo lleva `@target`—, y lo que ancla es sólo el texto de cada tipo, no sus anotaciones ni sus nombres.
+Es la regla del núcleo ([capture.md](capture.md)) y no del generador, así que el capture es el mismo con `--as` o sin él. Los tipos distinguen siempre: Java no compila dos métodos con el mismo nombre y los mismos tipos de parámetros. Los parámetros siguen siendo contenido —los vigila la dimensión `parameters`—, y lo que ancla es sólo el texto de cada tipo, no sus anotaciones ni sus nombres.
 
 Van con `#match?` y no con `#eq?`, así que el último `#eq?` de la query sigue siendo el nombre del método.
 
-Lo que cuesta es lo de toda ancla: cambiar el tipo de un parámetro de un método sobrecargado deja el capture sin resolver, y la salida es `recapture`. Cambiar su ruta sigue siendo contenido, y se ve como `ALTERED` con su diff. Un método que no se repite en la clase ancla sólo en el nombre, como antes.
+Lo que cuesta es lo de toda ancla: cambiar el tipo de un parámetro de un método sobrecargado deja el capture sin resolver, y la salida es `recapture`. Cambiar su ruta sigue siendo contenido, y se ve como `ALTERED(route)` con su diff. Un método que no se repite en la clase ancla sólo en el nombre, como antes.
 
 ### El alias: el verbo y la ruta, compuestos del fragmento
 
-Un bilink se identifica por su UUID, y para un endpoint hay un nombre que cualquiera reconoce. Está entero adentro de lo capturado, así que se compone y no se guarda:
+Un bilink se identifica por su UUID, y para un endpoint hay un nombre que cualquiera reconoce. Está entero adentro de lo que se vigila, así que se compone y no se guarda:
 
 ```
 GET /public-api/user/info/from-token
 ```
 
-La ruta de clase y el literal del método son dos de los cuatro `@target`; el verbo sale del nombre de la anotación —`@GetMapping` → `GET`—. No hay que ir a buscar nada afuera del fragmento.
+La ruta de clase y el literal del método son las dos partes de `route`; el verbo sale del nombre de la anotación —`@GetMapping` → `GET`—. No hay que ir a buscar nada afuera de las dimensiones.
 
-Y en un markerless hace falta el nombre del método. Sin literal propio, la ruta de clase y el verbo los comparten todos los hermanos, así que el alias sería ambiguo. Lo desempata el nombre, que sale de entre los dos últimos `@target`: el tipo de retorno termina, viene el nombre, arrancan los parámetros, y en el medio no hay nada más.
+Y en un markerless hace falta el nombre del método. Sin literal propio, la ruta de clase y el verbo los comparten todos los hermanos, así que el alias sería ambiguo. Lo desempata el nombre, que se lee del archivo entre las partes de `type` y de `parameters`: el tipo de retorno termina, viene el nombre, arrancan los parámetros, y en el medio no hay nada más.
 
 ```
 GET /public-api/appointment/booking/institution  ·  getBookingList
@@ -330,11 +353,11 @@ GET /public-api/appointment/booking/institution  ·  getBookingList
 
 Donde falta el literal sobra el nombre, y viceversa.
 
-Pero se lee del archivo y no de la query, aunque en la query esté. `name: (identifier)` aparece también en las anotaciones y en la clase, que van más arriba del árbol y por lo tanto antes en el patrón, así que ni el primero ni el último aciertan. Entre dos `@target` no hay ambigüedad posible: es la forma que el generador escribió, no una heurística sobre texto.
+Se lee del archivo y no de la query del capture, aunque ahí esté. `name: (identifier)` aparece también en la clase, que va más arriba del árbol y por lo tanto antes en el patrón. Entre dos partes no hay ambigüedad posible: es la forma que la gramática le da al método, no una heurística sobre texto.
 
-El alias es de cada generador y no del formato. Cada uno nombra en su vocabulario: acá es el verbo y la ruta porque eso es un endpoint; `--as interface` nombra por el método, porque eso es una firma. Un generador que no sepa nombrar no nombra, y el bilink se muestra por UUID.
+El alias es de cada generador y no del formato. Cada uno nombra en su vocabulario: acá es el verbo y la ruta porque eso es un endpoint; `--as interface` nombra por el método, con el texto de su dimensión `name`, porque eso es una firma. Un generador que no sepa nombrar no nombra, y el bilink se muestra por UUID. Tampoco nombra un endpoint cuyas dimensiones no resuelven: no hay de dónde componer.
 
-Dónde vive el valor compuesto es de [la cache](cache.md), no de acá: es un derivado del capture, como `range`.
+Dónde vive el valor compuesto es de [la cache](cache.md), no de acá: es un derivado de las dimensiones, como `range` lo es del capture.
 
 ### El literal de ruta del alias es el posicional, el de `value` o el de `path`
 
@@ -352,10 +375,10 @@ El plugin sí, y es todo lo que sabe: qué anotaciones marcan una ruta y dónde 
 
 ### La salida deja ver qué se capturó, y qué no
 
-Un capture es opaco después de escrito, así que una query mal generada se descubre tarde. Antes de escribir, `chain new` muestra cada tip que captura posiciones:
+Un endpoint es opaco después de escrito, así que una query mal generada se descubre tarde. Antes de escribir, `chain new` muestra cada tip que captura posiciones:
 
 ```
-$ bilinker chain new --tip 'docs/spec.md:1:1' --tip 'src/Service.java:2:5,10:5'
+$ bilinker chain new --tip 'docs/spec.md:1:1' --tip 'src/Service.java:2:5'
 
 . :: src/Service.java
 
@@ -366,20 +389,16 @@ $ bilinker chain new --tip 'docs/spec.md:1:1' --tip 'src/Service.java:2:5,10:5'
      5
      6       public int dos(int b) {
      ⋮
-     8       }
-     9
-  ▸ 10       public int tres(int c) {
-  ▸ 11           return c - 3;
-  ▸ 12       }
-    13   }
 
-2 fragmentos · 2–4, 10–12
+1 fragmento · 2–4
 queda afuera: todo lo que no está marcado
 
 ¿escribir? [y/N/e(ditar)]
 ```
 
 Cuatro cosas, y cada una atrapa un error distinto: el archivo como encabezado, una vez y no repetido por parte; contexto alrededor, con `⋮` donde se saltan líneas; `▸` sobre lo capturado, así lo que no entra se ve sin marcar; y una línea que dice qué quedó afuera, porque es lo que más se malinterpreta.
+
+Con `--as`, lo marcado son las partes de sus dimensiones y no el nodo entero, y el pie las nombra: `3 dimensiones · parameters, route, type`.
 
 El error que esto atrapa es señalar el nodo equivocado en un archivo con veinte parecidos: se ve porque la línea marcada queda lejos de donde tenía que estar.
 
@@ -391,7 +410,7 @@ Sin terminal tampoco se pregunta. Un `chain new` adentro de un script no puede q
 
 Confirmar con `y/N` obliga a volver a empezar cuando la resolución agarró mal. `e` abre la misma vista en el editor, y ahí se corrige: se saca un `▸`, se pone otro, se guarda.
 
-Las marcas son señales, no rangos. Cada línea marcada resuelve a su nodo, igual que una posición de la línea de comandos, así que editar el buffer es otra forma de señalar y lo que se guarda sigue siendo la query. Marcar tres líneas de una función marca la función una vez.
+Las marcas son señales, no rangos. Cada línea marcada resuelve a su nodo, igual que una posición de la línea de comandos, así que editar el buffer es otra forma de señalar y lo que se guarda sigue siendo la query. Marcar tres líneas de una función marca la función una vez, y marcar dos funciones se rechaza, como dos posiciones que caen en nodos distintos.
 
 Los dos tips van en un solo buffer. Abrir un editor por tip haría corregir a ciegas el segundo, y lo que se está revisando es el vínculo, no cada punta por su cuenta. Al guardar, la vista corregida se vuelve a mostrar: la corrección también se revisa.
 

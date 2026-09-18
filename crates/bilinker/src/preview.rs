@@ -39,6 +39,9 @@ pub struct Preview {
     pub parts: usize,
     /// Una línea al pie: qué otra forma de capturar esto había. Se **sugiere**.
     pub note: Option<String>,
+    /// Los nombres de las dimensiones, cuando un generador las declaró: lo marcado
+    /// son sus partes, y el pie las nombra en vez de contar fragmentos.
+    pub dimensions: Vec<String>,
 }
 
 impl Preview {
@@ -59,7 +62,14 @@ impl Preview {
             spans:  spans_of(&marked),
             parts:  ranges.parts().len(),
             note:   None,
+            dimensions: Vec::new(),
         }
+    }
+
+    /// La misma vista, sobre las partes de estas dimensiones.
+    pub fn with_dimensions(mut self, names: Vec<String>) -> Preview {
+        self.dimensions = names;
+        self
     }
 
     /// La misma vista, con una línea al pie.
@@ -96,7 +106,13 @@ impl Preview {
         }
 
         out.push('\n');
-        out.push_str(&format!("{} · {}\n", partes(self.parts), fmt_spans(&self.spans)));
+        if self.dimensions.is_empty() {
+            out.push_str(&format!("{} · {}\n", partes(self.parts), fmt_spans(&self.spans)));
+        } else {
+            let n = self.dimensions.len();
+            let cuantas = if n == 1 { "1 dimensión".to_string() } else { format!("{n} dimensiones") };
+            out.push_str(&format!("{cuantas} · {}\n", self.dimensions.join(", ")));
+        }
         out.push_str("queda afuera: todo lo que no está marcado\n");
         if let Some(note) = &self.note {
             out.push_str(&format!("{note}\n"));

@@ -100,7 +100,7 @@ endpoint:
       parameters:
         query: |-
           (method_declaration parameters: (formal_parameters) @target) @anchor
-      return:
+      type:
         query: |-
           (method_declaration type: (_) @target) @anchor
     accepted:
@@ -113,7 +113,7 @@ endpoint:
         parameters:
           hash: 5d0c8a13e7f2b94c61a0d38e25f7b1c9a4e6d0f3b8c2a57e19d4f6b0c3a8e2d7
           hash_ast: 9a31f0c7b2e84d15a6c9e3f07b1d2a48c5e9f6b3d0a7c1e48f2b5d9a6c3e0f17
-        return:
+        type:
           hash: e27b4f91c0a3d68e25b7f1c4a9d03e6b8f2c5a17d9e4b0f3c6a8e1d27b5f9c04
           hash_ast: 3c7e0a9d5f1b84e26c0d9a7f3e5b1c48d2a6f0e9b7c3d15a8e4f2b6c0d9a7e31
     as: spring-controller

@@ -363,7 +363,8 @@ fn check_qualifies_the_state_with_the_parts_that_changed() {
     assert!(out.contains("ALTERED(body, parameters)"), "{out}");
 }
 
-/// `--as interface` captura la firma y deja el cuerpo afuera, anclada en la clase.
+/// `--as interface` declara una dimensión por cada parte de la firma, y deja el
+/// cuerpo afuera. El capture es el del núcleo: el método, anclado en su clase.
 #[test]
 fn as_interface_captures_the_signature_without_the_body() {
     let (_tmp, root) = workspace_with_a_controller();
@@ -375,17 +376,15 @@ fn as_interface_captures_the_signature_without_the_body() {
     assert!(ok, "{stderr}");
 
     let cap = capture_file_of(&root);
-    assert!(cap.contains("(modifiers) @target"),      "las anotaciones del método:\n{cap}");
-    assert!(cap.contains("type: (generic_type) @target"), "el tipo de retorno:\n{cap}");
-    assert!(cap.contains("parameters: (formal_parameters) @target"), "los parámetros:\n{cap}");
-    assert!(cap.contains(r#"@n1 @target (#eq? @n1 "getPermissions")"#),
-            "el nombre es a la vez ancla y parte:\n{cap}");
-    // El `body:` que hay es el de la clase, el camino hasta el método. El del
-    // método —un `(block)`— no aparece.
-    assert!(!cap.contains("(block)"), "el cuerpo del método no entra:\n{cap}");
-    assert!(cap.contains("body: (class_body"), "{cap}");
-    assert!(cap.contains(r#"(#eq? @n0 "Service")"#),
-            "la firma se ancla en la clase, no en el método suelto:\n{cap}");
+    assert_eq!(cap.matches("@target").count(), 1, "el capture es un nodo:\n{cap}");
+    assert!(cap.contains(r#"(#eq? @n0 "Service")"#) && cap.contains(r#"(#eq? @n1 "getPermissions")"#),
+            "anclado en la clase y en el método:\n{cap}");
+
+    let bl = bilink_file_of(&root);
+    for dim in ["modifiers:", "name:", "parameters:", "type:"] {
+        assert!(bl.contains(&format!("\n      {dim}\n")), "falta la dimensión {dim}\n{bl}");
+    }
+    assert!(!bl.contains("\n      body:\n"), "el cuerpo no se vigila:\n{bl}");
 }
 
 /// El caso de `1d`, literal: el cuerpo cambia y no pasa nada; el tipo de retorno
@@ -523,7 +522,8 @@ fn an_unknown_mode_lists_the_ones_that_exist() {
     assert!(stderr.contains("spring-controller"), "{stderr}");
 }
 
-/// `--as spring-controller` compone la ruta de dos anotaciones y deja el cuerpo afuera.
+/// `--as spring-controller` declara `route`, `type` y `parameters`, y la ruta junta
+/// las dos anotaciones.
 #[test]
 fn as_spring_controller_composes_the_route_from_two_annotations() {
     let (_tmp, root) = workspace_with_a_controller();
@@ -533,16 +533,20 @@ fn as_spring_controller_composes_the_route_from_two_annotations() {
         "--as.1", "spring-controller", "--tip", "src/Service.java:6:5",
     ]);
     assert!(ok, "{stderr}");
-    assert!(stderr.contains("4 fragmentos"), "cuatro partes de una sola posición:\n{stderr}");
+    assert!(stderr.contains("3 dimensiones · parameters, route, type"), "{stderr}");
 
     let cap = capture_file_of(&root);
-    assert_eq!(cap.matches("@target").count(), 4, "{cap}");
-    assert!(cap.contains(r#"(#match? @n0 "^(RequestMapping)$")"#), "el prefijo de la clase:\n{cap}");
-    assert!(cap.contains("GetMapping|PostMapping"), "la anotación de ruta, por clase:\n{cap}");
-    assert!(!cap.contains("/permissions/from-token"), "la ruta no es ancla:\n{cap}");
-    assert_eq!(cap.matches("#eq?").count(), 1, "un solo ancla:\n{cap}");
-    assert!(cap.contains(r#"(#eq? @n2 "getPermissions")"#), "y es el nombre del método:\n{cap}");
-    assert!(!cap.contains("(block)"), "el cuerpo no entra:\n{cap}");
+    assert_eq!(cap.matches("@target").count(), 1, "el capture es un nodo:\n{cap}");
+    assert!(!cap.contains("RequestMapping"), "la ruta no es ancla:\n{cap}");
+
+    let bl = bilink_file_of(&root);
+    assert!(bl.contains(r#"(#match? @c "^(RequestMapping)$")"#), "el prefijo de la clase:\n{bl}");
+    assert!(bl.contains("GetMapping|PostMapping"), "la anotación de ruta, por clase:\n{bl}");
+    assert!(!bl.contains("\n      body:\n") && !bl.contains("\n      name:\n"), "ni el cuerpo ni el nombre:\n{bl}");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root)), "--dimension", "route"]);
+    assert!(ok, "{stderr}");
+    assert!(out.contains("@RequestMapping(\"/public-api/user\")") && out.contains("@GetMapping"), "{out}");
 }
 
 /// El contrato es la ruta y la forma: renombrar el método es mover el ancla, y ni el
@@ -611,7 +615,7 @@ fn a_spring_endpoint_sees_the_class_prefix() {
     let src = fs::read_to_string(&java).unwrap();
     fs::write(&java, src.replace("/public-api/user", "/public-api/usuario")).unwrap();
     let (out, _, _) = run_in(&root, &["check", "."]);
-    assert!(out.contains("ALTERED"), "la ruta compuesta entra en el fragmento:\n{out}");
+    assert!(out.contains("ALTERED(route)"), "la ruta compuesta entra en `route`:\n{out}");
 }
 
 /// Crea la cadena sobre el controller y la acepta, para editar el Java después.
@@ -649,8 +653,28 @@ fn changing_the_method_route_is_altered_not_unresolved() {
     edit_java(&root, "/permissions/from-token", "/permissions/from-token-v2");
     let (out, _, ok) = run_in(&root, &["check", "."]);
     assert!(!ok, "la ruta cambió, y eso se reporta:\n{out}");
-    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(out.contains("ALTERED(route)"), "como contenido que cambió, y dice cuál:\n{out}");
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
+}
+
+/// **Mudar el `@RequestMapping` de la clase al método no pierde el ancla.** El
+/// capture es el método, y resuelve; lo que no resuelve es `route`, que pide la
+/// anotación de la clase que había al capturar. `check` la da `ALTERED(route)`, y
+/// `get` la nombra.
+#[test]
+fn moving_the_class_route_to_the_method_keeps_the_anchor_and_loses_the_route() {
+    let (_tmp, root) = accepted_spring_endpoint();
+
+    edit_java(&root, "@RequestMapping(\"/public-api/user\")\npublic class", "public class");
+    edit_java(&root, "    @GetMapping", "    @RequestMapping(\"/public-api/user\")\n    @GetMapping");
+    let (out, _, ok) = run_in(&root, &["check", "."]);
+    assert!(!ok, "la ruta no resuelve, y eso se reporta:\n{out}");
+    assert!(out.contains("ALTERED(route)"), "como la parte que cambió:\n{out}");
+    assert!(!out.contains("UNRESOLVED") && !out.contains("UNANCHORED"), "el ancla sigue ahí:\n{out}");
+
+    let (_, stderr, ok) = run_in(&root, &["get", &format!("{}.1", uuid_of(&root)), "--dimension", "route"]);
+    assert!(!ok, "la dimensión pedida no resuelve");
+    assert!(stderr.contains("route"), "y se nombra:\n{stderr}");
 }
 
 /// **Cambiar el verbo también es contenido.** `@GetMapping` → `@PostMapping` es otro
@@ -663,7 +687,7 @@ fn changing_the_verb_is_altered_not_unresolved() {
     edit_java(&root, "@GetMapping", "@PostMapping");
     let (out, _, ok) = run_in(&root, &["check", "."]);
     assert!(!ok, "el verbo cambió, y eso se reporta:\n{out}");
-    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(out.contains("ALTERED(route)"), "como contenido que cambió, y dice cuál:\n{out}");
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
 }
 
@@ -678,7 +702,7 @@ fn changing_the_kind_of_the_return_type_is_altered_not_unresolved() {
     edit_java(&root, "List<PublicAuthorityDto>", "PublicAuthorityDto");
     let (out, _, ok) = run_in(&root, &["check", "."]);
     assert!(!ok, "el tipo de retorno cambió, y eso se reporta:\n{out}");
-    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(out.contains("ALTERED(type)"), "como contenido que cambió, y dice cuál:\n{out}");
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
 }
 
@@ -692,7 +716,7 @@ fn dropping_the_route_literal_is_altered_not_unresolved() {
     edit_java(&root, "@GetMapping(\"/permissions/from-token\")", "@GetMapping");
     let (out, _, ok) = run_in(&root, &["check", "."]);
     assert!(!ok, "la ruta cambió, y eso se reporta:\n{out}");
-    assert!(out.contains("ALTERED"), "como contenido que cambió:\n{out}");
+    assert!(out.contains("ALTERED(route)"), "como contenido que cambió, y dice cuál:\n{out}");
     assert!(!out.contains("UNRESOLVED"), "y no como un ancla perdida:\n{out}");
 }
 
@@ -936,10 +960,11 @@ fn only_bilink(root: &std::path::Path) -> (std::path::PathBuf, String) {
     (bilinks[0].clone(), uuid)
 }
 
-/// **`recapture --as` regenera la query con un generador, y conserva el bilink.**
+/// `recapture --as` sobre el mismo método no repunta: el capture es el mismo, y el
+/// endpoint pasa a declarar las dimensiones del generador.
 ///
-/// Es cómo un capture escrito con otra regla —o sin generador— pasa a la de hoy sin
-/// cambiar de UUID, que es lo que otro repo tiene colgado de una punta `abstract`.
+/// Es cómo un endpoint escrito sin generador pasa a vigilar partes sin cambiar de
+/// UUID, que es lo que otro repo tiene colgado de una punta `abstract`.
 #[test]
 fn recapture_as_regenerates_the_query_and_keeps_the_bilink() {
     let (_tmp, root) = workspace_with_a_controller();
@@ -950,21 +975,25 @@ fn recapture_as_regenerates_the_query_and_keeps_the_bilink() {
     ]);
     assert!(ok, "{stderr}");
     let (bl_path, uuid) = only_bilink(&root);
+    let before = fs::read_to_string(&bl_path).unwrap();
 
     let target = format!("{uuid}.1");
     let (stdout, stderr, ok) = run_in(&root, &[
         "recapture", &target, "src/Service.java", "6:5", "--as", "spring-controller",
     ]);
     assert!(ok, "{stderr}");
-
-    let cap = fs::read_to_string(
-        root.join(".bilink/capture").join(format!("{}.yaml", stdout.trim()))).unwrap();
-    assert_eq!(cap.matches("@target").count(), 4, "la query es la del generador:\n{cap}");
-    assert!(cap.contains(r#"(#eq? @n2 "getPermissions")"#), "{cap}");
+    assert!(before.contains(&format!("link: capture {}", stdout.trim())), "el mismo capture:\n{before}");
 
     let bl = fs::read_to_string(&bl_path).unwrap();
     assert!(bl.contains("as: spring-controller"), "el endpoint anota con qué se capturó:\n{bl}");
+    assert!(bl.contains("\n      route:\n"), "y las dimensiones que declaró:\n{bl}");
     assert_eq!(only_bilink(&root).1, uuid, "el mismo bilink");
+
+    let (_, stderr, ok) = run_in(&root, &[
+        "recapture", &target, "src/Service.java", "6:5", "--as", "spring-controller",
+    ]);
+    assert!(!ok, "otra vez lo mismo no tiene nada que escribir");
+    assert!(stderr.contains("nada que"), "{stderr}");
 }
 
 /// Un modo que no existe se dice también en `recapture`, y no repunta nada.
@@ -1013,9 +1042,10 @@ fn workspace_with_markerless_verbs() -> (tempfile::TempDir, std::path::PathBuf) 
     (tmp, root)
 }
 
-/// **Sin literal en la anotación, el ancla es el nombre del método** — y sólo el
-/// ancla. Sin esto el único predicado sería el nombre de la anotación, que no
-/// distingue un endpoint de sus hermanos.
+/// **Sin literal en la anotación, lo que distingue el endpoint es el nombre del
+/// método**, y el capture lo tiene: es el ancla del núcleo. Y no se vigila, que es
+/// el reparto inverso al de `--as interface`: renombrar no cambia el contrato del
+/// endpoint.
 #[test]
 fn a_markerless_verb_anchors_on_the_method_name() {
     let (_tmp, root) = workspace_with_markerless_verbs();
@@ -1027,13 +1057,9 @@ fn a_markerless_verb_anchors_on_the_method_name() {
     assert!(ok, "{stderr}");
 
     let cap = capture_of(&root, "Booking.java");
-    let name = cap.lines().find(|l| l.contains("getBookingList"))
-        .unwrap_or_else(|| panic!("el nombre no entró en la query:\n{cap}"));
-    assert!(name.contains("#eq?"), "el nombre entra como predicado:\n{cap}");
-    // Y **no** como `@target`, que es el reparto inverso al de `--as interface`:
-    // renombrar no cambia el contrato del endpoint, así que tiene que ser una
-    // relocalización y no un cambio de contenido.
-    assert!(!name.contains("@target"), "el nombre ancla y no es contenido:\n{cap}");
+    assert!(cap.contains(r#"(#eq? @n1 "getBookingList")"#), "el nombre entra como predicado:\n{cap}");
+    let bl = bilink_file_of(&root);
+    assert!(!bl.contains("\n      name:\n"), "el nombre ancla y no es contenido:\n{bl}");
 }
 
 /// Y ancla en el hermano correcto: tocar el otro endpoint de la misma clase, con la
@@ -1199,7 +1225,7 @@ fn detection_suggests_and_does_not_choose() {
     assert!(cap.contains("getPermissions"), "{cap}");
 }
 
-/// Un generador toma una posición: dos cosas señaladas son dos contratos.
+/// Un generador toma un nodo: dos cosas señaladas son dos contratos.
 #[test]
 fn a_generator_takes_one_position() {
     let (_tmp, root) = workspace_with_three_methods();
@@ -1209,7 +1235,7 @@ fn a_generator_takes_one_position() {
         "--as.1", "interface", "--tip", "src/Service.java:2:5,10:5",
     ]);
     assert!(!ok, "{stderr}");
-    assert!(stderr.contains("toma una posición"), "{stderr}");
+    assert!(stderr.contains("nodos distintos"), "{stderr}");
 }
 
 /// `--as spring-controller` sobre un método sin ruta dice qué falta.
@@ -1302,9 +1328,10 @@ fn capture_of(root: &std::path::Path, file: &str) -> String {
         .unwrap_or_else(|| panic!("no hay capture de {file}"))
 }
 
-/// Dos posiciones en un tip son **una** query con dos `@target`, anclada una vez.
+/// Dos posiciones en nodos distintos se rechazan: un capture es un nodo, y dos son
+/// dos contratos.
 #[test]
-fn a_tip_with_two_positions_makes_one_query_with_two_targets() {
+fn a_tip_with_two_positions_in_distinct_nodes_is_refused() {
     let (_tmp, root) = workspace_with_three_methods();
 
     let (_, stderr, ok) = run_in(&root, &[
@@ -1312,26 +1339,64 @@ fn a_tip_with_two_positions_makes_one_query_with_two_targets() {
         "--tip", "docs/spec.md:1:1",
         "--tip", "src/Service.java:2:5,10:5",
     ]);
-    assert!(ok, "chain new failed:\n{stderr}");
-
-    let cap = capture_file_of(&root);
-    assert_eq!(cap.matches("@target").count(), 2, "faltan @target:\n{cap}");
-    assert!(cap.contains("\"uno\"") && cap.contains("\"tres\""), "{cap}");
-    assert!(cap.contains("\"Service\""), "el patrón se ancla una vez, en la clase:\n{cap}");
-    assert!(!cap.contains("\"dos\""), "el método del medio no entra:\n{cap}");
+    assert!(!ok, "dos nodos no son un capture");
+    assert!(stderr.contains("nodos distintos") && stderr.contains("--as"), "{stderr}");
+    assert!(!root.join(".bilink").exists() ||
+            std::fs::read_dir(root.join(".bilink")).unwrap()
+                .filter_map(|e| e.ok())
+                .all(|e| e.path().extension().and_then(|x| x.to_str()) != Some("yaml")),
+            "no escribió nada");
 }
 
-/// El fragmento es la concatenación, y `get` la muestra por partes.
+/// Dos posiciones en el mismo nodo son ese nodo, una vez.
+#[test]
+fn a_tip_with_two_positions_in_one_node_is_that_node() {
+    let (_tmp, root) = workspace_with_three_methods();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:6:5,7:9",
+    ]);
+    assert!(ok, "{stderr}");
+    let cap = capture_file_of(&root);
+    assert_eq!(cap.matches("@target").count(), 1, "{cap}");
+    assert!(cap.contains("\"dos\""), "{cap}");
+}
+
+/// La query de dos partes que se escribía cuando la query componía el fragmento.
+/// Ya no la escribe ningún comando, y un capture así se sigue leyendo igual.
+const TWO_PARTS: &str = r#"(class_declaration
+  name: (identifier) @n0 (#eq? @n0 "Service")
+  body: (class_body
+  (method_declaration
+  name: (identifier) @n1 (#eq? @n1 "uno")) @target
+  (method_declaration
+  name: (identifier) @n2 (#eq? @n2 "tres")) @target))"#;
+
+/// Una cadena cuyo tip de código es un capture de dos partes escrito antes.
+fn two_part_chain(root: &std::path::Path) -> String {
+    let (stdout, stderr, ok) = run_in(root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--tip", "src/Service.java:2:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let uuid = stdout.lines().next().unwrap().trim_start_matches("Created chain: ").trim().to_string();
+    let cap = bilink_format::Capture { file: "src/Service.java".into(), query: Some(TWO_PARTS.into()) };
+    let (id, _, _) = cap.write_in(root).unwrap();
+    let path = root.join(format!(".bilink/{uuid}.yaml"));
+    let mut bl = bilink_format::BiLink::load(&path).unwrap();
+    bl.endpoint.get_mut(1).link = format!("capture {id}").parse().unwrap();
+    bl.write(&path).unwrap();
+    uuid
+}
+
+/// Un capture de dos partes escrito antes es su concatenación, y `get` la muestra
+/// por partes.
 #[test]
 fn get_shows_a_two_part_fragment_as_two_spans() {
     let (_tmp, root) = workspace_with_three_methods();
-    let (stdout, stderr, ok) = run_in(&root, &[
-        "chain", "new", "--yes",
-        "--tip", "docs/spec.md:1:1",
-        "--tip", "src/Service.java:2:5,10:5",
-    ]);
-    assert!(ok, "{stderr}");
-    let uuid = stdout.lines().next().unwrap().trim_start_matches("Created chain: ").trim();
+    let uuid = two_part_chain(&root);
 
     run_in(&root, &["check", "."]);
     let (frag, stderr, ok) = run_in(&root, &["get", &format!("{uuid}.1")]);
@@ -1345,12 +1410,10 @@ fn get_shows_a_two_part_fragment_as_two_spans() {
 #[test]
 fn drift_fires_only_for_the_captured_parts() {
     let (_tmp, root) = workspace_with_three_methods();
-    let (_, stderr, ok) = run_in(&root, &[
-        "chain", "new", "--yes",
-        "--tip", "docs/spec.md:1:1",
-        "--tip", "src/Service.java:2:5,10:5",
-    ]);
-    assert!(ok, "{stderr}");
+    two_part_chain(&root);
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "dos partes"]] {
+        std::process::Command::new("git").current_dir(&root).args(&args).output().unwrap();
+    }
     run_in(&root, &["check", "."]);
     let (_, stderr, ok) = run_in(&root, &["accept", "--decline-n1", "."]);
     assert!(ok, "accept failed:\n{stderr}");
@@ -1367,7 +1430,7 @@ fn drift_fires_only_for_the_captured_parts() {
     assert!(out.contains("ALTERED"), "una parte capturada sí dispara drift:\n{out}");
 }
 
-/// Una parte adentro de otra se contaría dos veces: se rechaza y se dice cuál.
+/// La clase y uno de sus métodos son dos nodos, aunque uno contenga al otro.
 #[test]
 fn a_part_inside_another_is_refused() {
     let (_tmp, root) = workspace_with_three_methods();
@@ -1377,7 +1440,7 @@ fn a_part_inside_another_is_refused() {
         "--tip", "src/Service.java:1:1,6:5",
     ]);
     assert!(!ok, "un fragmento no puede contener a otro");
-    assert!(stderr.contains("contiene a la otra"), "{stderr}");
+    assert!(stderr.contains("nodos distintos"), "{stderr}");
     assert!(stderr.contains("method_declaration") && stderr.contains("class_declaration"), "{stderr}");
 }
 
@@ -1388,17 +1451,32 @@ fn the_preview_marks_what_is_captured() {
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new", "--yes",
         "--tip", "docs/spec.md:1:1",
-        "--tip", "src/Service.java:2:5,10:5",
+        "--tip", "src/Service.java:2:5",
     ]);
     assert!(ok, "{stderr}");
     assert!(stderr.contains("src/Service.java"), "el archivo va de encabezado:\n{stderr}");
-    assert!(stderr.contains("2 fragmentos · 2–4, 10–12"), "{stderr}");
+    assert!(stderr.contains("1 fragmento · 2–4"), "{stderr}");
     assert!(stderr.contains("queda afuera"), "{stderr}");
 
     let marcada = stderr.lines().find(|l| l.contains("public int uno")).unwrap();
     assert!(marcada.contains('▸'), "lo capturado va marcado: {marcada}");
     let libre = stderr.lines().find(|l| l.contains("public int dos")).unwrap();
     assert!(!libre.contains('▸'), "lo que no entra se ve sin marcar: {libre}");
+}
+
+/// Con `--as`, lo marcado son las partes de las dimensiones, y el pie las nombra.
+#[test]
+fn the_preview_of_a_generator_names_its_dimensions() {
+    let (_tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes",
+        "--tip", "docs/spec.md:1:1",
+        "--as.1", "interface", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("4 dimensiones · modifiers, name, parameters, type"), "{stderr}");
+    let cuerpo = stderr.lines().find(|l| l.contains("svc.permissionsOf")).unwrap();
+    assert!(!cuerpo.contains('▸'), "el cuerpo no se vigila: {cuerpo}");
 }
 
 /// `--dry-run` muestra lo mismo y no escribe nada.
@@ -1408,10 +1486,10 @@ fn dry_run_shows_the_preview_and_writes_nothing() {
     let (_, stderr, ok) = run_in(&root, &[
         "chain", "new", "--dry-run",
         "--tip", "docs/spec.md:1:1",
-        "--tip", "src/Service.java:2:5,10:5",
+        "--tip", "src/Service.java:2:5",
     ]);
     assert!(ok, "{stderr}");
-    assert!(stderr.contains("2 fragmentos"), "{stderr}");
+    assert!(stderr.contains("1 fragmento"), "{stderr}");
     assert!(!root.join(".bilink").exists() ||
             std::fs::read_dir(root.join(".bilink")).unwrap()
                 .filter_map(|e| e.ok())

@@ -65,11 +65,11 @@ El rango vigente de un fragmento es derivado, y vive en la cache de su capa. Un 
 
 ### Un rango de varias partes sale con un tramo por parte
 
-Un capture de varias partes, como el de `spring-controller`, sale con un tramo `inicio~fin` por parte, en orden de archivo y separados por coma: `.::src/Service.java#16~51,106~144,156~180,195~209`. El texto entre dos partes no está en ningún tramo, porque el fragmento no lo cubre.
+Un capture cuya query lleva varios `@target` ([capture.md](capture.md)) sale con un tramo `inicio~fin` por parte, en orden de archivo y separados por coma: `.::src/Service.java#16~51,106~144,156~180,195~209`. El texto entre dos partes no está en ningún tramo, porque el fragmento no lo cubre.
 
 ### Un tip de varias partes lleva la declaración que nombra su capture
 
-La declaración es el nodo que declara el ancla del capture, el nombre de su último predicado `#eq?`: en un `spring-controller`, el método entero, con su cuerpo. Sale en `declaration`, un tramo por tip, o `null` en un tip de una sola parte.
+La declaración es el nodo que declara el ancla del capture, el nombre de su último predicado `#eq?`: en uno que junta las anotaciones de un endpoint con su retorno y sus parámetros, el método entero, con su cuerpo. Sale en `declaration`, un tramo por tip, o `null` en un tip de una sola parte.
 
 Se resuelve con tree-sitter sobre el archivo de hoy, y sale sólo si ese mismo match da los tramos que tiene la cache: si no, el archivo cambió desde el último `check`, y una declaración de hoy junto a tramos viejos no nombra lo mismo. Un capture sin ancla, o cuya query ya no resuelve, sale sin declaración.
 

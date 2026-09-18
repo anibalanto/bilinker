@@ -29,6 +29,8 @@ pub struct Declaration {
     /// escrito con qué se hizo. Sin `--as`, ninguno — que es lo que dice un capture
     /// del núcleo, y lo que dice todo archivo escrito antes de este campo.
     pub r#as: [Option<String>; 2],
+    /// Las dimensiones que declaró el generador de cada tip. Vacías sin `--as`.
+    pub dimensions: [std::collections::BTreeMap<String, bilink_format::DeclaredDimension>; 2],
     /// El uuid del bilink remoto, cuando un tip es `repo`. En una cadena local se
     /// genera; cruzando la frontera se toma del proveedor, porque **el uuid
     /// compartido es el rendezvous**.
@@ -80,6 +82,8 @@ pub fn chain_new(
         bl.endpoint.get_mut(1).name = decl.name[1].clone();
         bl.endpoint.get_mut(0).r#as = decl.r#as[0].clone();
         bl.endpoint.get_mut(1).r#as = decl.r#as[1].clone();
+        bl.endpoint.get_mut(0).dimensions = decl.dimensions[0].clone();
+        bl.endpoint.get_mut(1).dimensions = decl.dimensions[1].clone();
         let path = bilink_path(root, &all_layers[0], &uuid);
         bl.write(&path)?;
         created.push(path);
@@ -110,9 +114,11 @@ pub fn chain_new(
         // El `as` viaja igual, y por una razón más fuerte: dice con qué se capturó
         // un fragmento, y un mid no captura ninguno.
         if i == 0        { bl.endpoint.get_mut(0).name = decl.name[0].clone();
-                           bl.endpoint.get_mut(0).r#as = decl.r#as[0].clone(); }
+                           bl.endpoint.get_mut(0).r#as = decl.r#as[0].clone();
+                           bl.endpoint.get_mut(0).dimensions = decl.dimensions[0].clone(); }
         if i == n - 1    { bl.endpoint.get_mut(1).name = decl.name[1].clone();
-                           bl.endpoint.get_mut(1).r#as = decl.r#as[1].clone(); }
+                           bl.endpoint.get_mut(1).r#as = decl.r#as[1].clone();
+                           bl.endpoint.get_mut(1).dimensions = decl.dimensions[1].clone(); }
         let path = bilink_path(root, layer, &uuid);
         bl.write(&path)?;
         created.push(path);

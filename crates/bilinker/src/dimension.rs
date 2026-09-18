@@ -132,6 +132,23 @@ pub(crate) fn compare(
     Ok(out)
 }
 
+/// Lo que resuelve cada dimensión declarada, por nombre, desde el nodo `anchor`.
+///
+/// `None` si alguna no resuelve: lo que se compone de las partes —un alias— no se
+/// compone de una parte que falta.
+pub fn resolve_all(
+    file: &str,
+    source: &str,
+    declared: &BTreeMap<String, DeclaredDimension>,
+    anchor: (usize, usize),
+) -> Option<Vec<(String, Ranges)>> {
+    let language = grammar::for_language(grammar::language_for_file(file)).ok()?;
+    declared.iter()
+        .map(|(name, d)| query::dimension(language.clone(), source, &d.query, anchor).ok()?
+            .map(|f| (name.clone(), f.ranges)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
