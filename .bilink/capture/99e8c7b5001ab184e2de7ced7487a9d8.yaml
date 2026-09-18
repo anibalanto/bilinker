@@ -1,0 +1,6 @@
+file: docs/specs/concepts/get.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Las dimensiones"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Con dimensiones, `--diff` da un diff por dimensión"))) @target)
