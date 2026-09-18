@@ -1029,9 +1029,15 @@ mod tests {
     /// Una capa con un bilink cuyo endpoint 0 vigila el cuerpo y los parámetros de
     /// `a`, aprobados sobre `before`, y el archivo reescrito con `today`.
     fn dimensioned_layer(before: &str, today: &str) -> (tempfile::TempDir, String) {
+        layer_watching(&[("body", "(function_item body: (block) @target) @anchor"),
+                         ("parameters", "(function_item parameters: (parameters) @target) @anchor")],
+                       before, today)
+    }
+
+    /// La misma capa, vigilando sólo las partes dadas. Sin ninguna, el endpoint no
+    /// declara `dimensions` y aprueba el fragmento entero.
+    fn layer_watching(parts: &[(&str, &str)], before: &str, today: &str) -> (tempfile::TempDir, String) {
         const FN_A: &str = r#"(function_item name: (identifier) @n0 (#eq? @n0 "a")) @target"#;
-        let parts = [("body", "(function_item body: (block) @target) @anchor"),
-                     ("parameters", "(function_item parameters: (parameters) @target) @anchor")];
         let d = tempdir().unwrap();
         let language = grammar::for_language("rust").unwrap();
         let whole = query::find_fragment(language.clone(), before, FN_A).unwrap().unwrap();
@@ -1043,7 +1049,7 @@ mod tests {
         let mut bl = BiLink::new(link.clone(), LinkEndpoint::Abstract);
         let e = bl.endpoint.get_mut(0);
         let mut approved = std::collections::BTreeMap::new();
-        for (name, q) in parts {
+        for &(name, q) in parts {
             e.dimensions.insert(name.into(), bilink_format::DeclaredDimension { query: q.into() });
             let f = query::dimension(language.clone(), before, q, node).unwrap().unwrap();
             approved.insert(name.to_string(), bilink_format::AcceptedDimension {
@@ -1053,7 +1059,8 @@ mod tests {
         }
         e.accepted = vec![Accepted {
             agree: Default::default(), link: Some(link),
-            hash: hash::sha256(whole.ranges.text(before).as_bytes()), hash_ast: None,
+            hash: hash::sha256(whole.ranges.text(before).as_bytes()),
+            hash_ast: Some(hash::sha256(whole.sexp.as_bytes())),
             n: None, dimensions: approved,
         }];
         let uuid = "44444444-4444-4444-8444-444444444444".to_string();
@@ -1103,6 +1110,28 @@ mod tests {
         assert_eq!(it.state0, EndpointState::Restyled);
         assert_eq!(it.dimensions[0], vec![("body".to_string(), EndpointState::Restyled)]);
         assert!(it.is_clean());
+    }
+
+    /// **Sin dimensiones, el fragmento entero es la única parte**, y no se nombra:
+    /// el mismo cambio que con partes no avisa, acá es un `ALTERED` sin calificar.
+    #[test]
+    fn without_parts_the_whole_fragment_decides() {
+        let (d, uuid) = layer_watching(&[], LIB, "fn a(x: u8) -> u16 { x + 1 }\n");
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Altered);
+        assert!(it.dimensions[0].is_empty());
+
+        let (d, uuid) = layer_watching(&[], LIB, "fn a(x: u8) -> u8 {\n    x + 1\n}\n");
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Restyled);
+        assert!(it.dimensions[0].is_empty());
+
+        let (d, uuid) = layer_watching(&[], LIB, LIB);
+        let r = check_with(d.path(), d.path(), None).unwrap();
+        let it = r.results.iter().find(|x| x.uuid == uuid).unwrap();
+        assert_eq!(it.state0, EndpointState::Ok);
     }
 
     // ─── el eje del vecindario ────────────────────────────────────────────────
