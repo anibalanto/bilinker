@@ -1,0 +1,6 @@
+file: docs/specs/concepts/chain.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`--as`: quién genera la query"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "El alias: el verbo y la ruta, compuestos del fragmento"))) @target)

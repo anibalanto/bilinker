@@ -4,6 +4,7 @@ endpoint:
     accepted:
     - agree:
       - Anibal
+      - anibal
       link: capture 14c8ae244ea4256101146bcd7908da7b
       hash: 1868e803e297c83e2c6e7bebcecbe7ac702d53930f50d9515f7d514891752778
   1:
@@ -13,8 +14,12 @@ endpoint:
         link: capture 17def75583ac5c161ab1dc90c73127b2 ba47e2ee221e0eb80bb93b595a6a55cd
     accepted:
     - agree:
-      - Anibal
+      - anibal
       link: capture 3cba6b7105a2335570b5ee7b94ac443e
-      hash: 265d9fb8b67f11797817b483629cdb10ccb5a8fe492a4a67a6f54fcf750af459
-      hash_ast: 53f6022267c08f5a770359eee2db34f84b289b38a5a0f2b59bc8e099860fcb0a
-      n: declined
+      hash: af1c91705a9f61b0b03789ecf8e923cd9666c8563eeb880f312b6cd2d51ad2f3
+      hash_ast: ce866a9580e150da068021ee6b1ac71572da202e6c1ef9c2f949fdcf287783ee
+      n:
+        1:
+          link: capture 17def75583ac5c161ab1dc90c73127b2 ba47e2ee221e0eb80bb93b595a6a55cd
+          hash: 669a7590cba8619084807435681bd1708eebea40cec590e04b95d7459944b9d4
+          hash_ast: fc29dfe07c7f75dc6a25c888afbe9f3267f2d3187a35157623a5dfc59606c86a
