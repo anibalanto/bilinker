@@ -50,6 +50,9 @@ enum Command {
         /// está la vista, que es el default.
         #[arg(long)]
         raw: bool,
+        /// Sólo esa dimensión del endpoint: su vista, su diff o su texto exacto
+        #[arg(long, value_name = "nombre")]
+        dimension: Option<String>,
     },
 
     /// Repunta un endpoint a otro fragmento
@@ -545,6 +548,27 @@ fn project_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 ///
 /// Cada vecino lleva su encabezado, que es lo que impide que el fragmento y sus
 /// vecinos se lean como uno solo.
+/// El diff de una dimensión, con su nombre adelante del encabezado.
+fn print_dimension_diff(file: &str, d: &bilinker::get::DimensionDiff) {
+    use bilinker::get::DimensionChange::*;
+    let span = d.lines.iter().map(|(a, b)| format!("{a}–{b}")).collect::<Vec<_>>().join(", ");
+    match &d.change {
+        Same(text) => {
+            eprintln!("# {} · {file}  lines {span}", d.name);
+            println!("{text}");
+        }
+        Changed(diff) => {
+            eprintln!("# {} · {file}  lines {span}", d.name);
+            print!("{diff}");
+        }
+        Unresolved(q) => {
+            eprintln!("# {} · no resuelve", d.name);
+            eprintln!("query: {q}");
+        }
+        Undeclared => eprintln!("# {} · aprobada y ya no declarada", d.name),
+    }
+}
+
 fn print_level1(level1: &bilinker::get::Level1) {
     use bilinker::get::{Level1, NotBrought};
 
@@ -1086,7 +1110,7 @@ Eliminar? [y/N] ");
             }
         }
 
-        Command::Get { target, before, after, diff, raw } => {
+        Command::Get { target, before, after, diff, raw, dimension } => {
             let uuid_form = {
                 let t = target.trim();
                 if let Some(dot) = t.rfind('.') {
@@ -1111,16 +1135,32 @@ Eliminar? [y/N] ");
                 let root     = project_root(&cwd)?;
 
                 if diff {
-                    let result = bilinker::get::get_diff(&root, name, endpoint)?;
-                    eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
-                    match &result.diff {
-                        Some(d) => print!("{d}"),
-                        None    => eprintln!("[sin cambios]"),
+                    let result = bilinker::get::get_diff(&root, name, endpoint, dimension.as_deref())?;
+                    if result.dimensions.is_empty() {
+                        eprintln!("# {}  lines {}–{}", result.file, result.start_line, result.end_line);
+                        match &result.diff {
+                            Some(d) => print!("{d}"),
+                            None    => eprintln!("[sin cambios]"),
+                        }
+                    }
+                    // **Un diff por dimensión**, cada uno con su nombre adelante: es lo
+                    // que `check` comparó, parte por parte.
+                    for (i, d) in result.dimensions.iter().enumerate() {
+                        if i > 0 { println!(); }
+                        print_dimension_diff(&result.file, d);
                     }
                 } else {
                     let before   = before.as_deref().map(parse_pos).transpose()?;
                     let after    = after.as_deref().map(parse_pos).transpose()?;
-                    let result   = bilinker::get::get(&root, name, endpoint, before, after)?;
+                    let result   = bilinker::get::get(&root, name, endpoint, before, after, dimension.as_deref())?;
+                    // **Con dimensiones, `--raw` es el texto de una**: `check` hashea cada
+                    // una por separado, y todas juntas no las compara nadie.
+                    let dims = &result.fragment.dimensions;
+                    if raw && dimension.is_none() && !dims.is_empty() {
+                        anyhow::bail!(
+                            "con dimensiones, `--raw` pide `--dimension`: es el texto de una.\n  Declara: {}.",
+                            bilinker::get::dimension_names(dims.iter().map(|d| &d.name)));
+                    }
                     // El alias contesta **qué** se está mirando; el archivo y las
                     // líneas contestan dónde. Sin alias el encabezado es el de antes.
                     if let Some(a) = bilinker::cache::Cache::load(&root).alias(name, endpoint) {
@@ -1133,10 +1173,19 @@ Eliminar? [y/N] ");
                         println!("{}", result.fragment.content);
                     } else {
                         print!("{}", result.fragment.view);
+                        // Una dimensión que no resuelve no corta a las demás: se nombra
+                        // con su query, que es lo que hace falta para arreglarla.
+                        for d in dims.iter().filter(|d| d.ranges.is_none()) {
+                            eprintln!("# {} · no resuelve", d.name);
+                            eprintln!("query: {}", d.query);
+                        }
                         // El vecindario va con el fragmento, porque `accept` los
                         // aprueba juntos. En `--raw` no entra: ahí el stdout es el
-                        // fragmento y nada más, byte por byte.
-                        print_level1(&result.level1);
+                        // fragmento y nada más, byte por byte. Con `--dimension` tampoco:
+                        // el vecindario es del endpoint, no de una de sus partes.
+                        if dimension.is_none() {
+                            print_level1(&result.level1);
+                        }
                     }
                 }
             } else if pos_form {

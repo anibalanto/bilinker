@@ -6521,3 +6521,167 @@ Característica: Tableros
     assert!(states.contains("ALTERED") && !states.contains("RESTYLED"),
             "cambiar un paso no dio ALTERED:\n{states}");
 }
+
+// ─── get y las dimensiones ────────────────────────────────────────────────────
+
+/// Las tres dimensiones del controller: la ruta de la clase, el retorno y los
+/// parámetros. El cuerpo queda afuera a propósito: nadie lo vigila.
+const CONTROLLER_DIMENSIONS: &str = concat!(
+    "    dimensions:\n",
+    "      parameters:\n",
+    "        query: '(method_declaration parameters: (formal_parameters) @target) @anchor'\n",
+    "      return:\n",
+    "        query: '(method_declaration type: (_) @target) @anchor'\n",
+    "      route:\n",
+    "        query: '(class_declaration (modifiers [(annotation) (marker_annotation)] @target) body: (class_body (method_declaration) @anchor))'\n",
+);
+
+/// El controller con un bilink cuya punta del código declara `dimensions`, aceptado.
+/// Devuelve el endpoint de esa punta, `<uuid>.1`.
+fn controller_with_dimensions(dimensions: &str) -> (tempfile::TempDir, std::path::PathBuf, String) {
+    let (tmp, root) = workspace_with_a_controller();
+    let (_, stderr, ok) = run_in(&root, &[
+        "chain", "new", "--yes", "--tip", "docs/spec.md:1:1", "--tip", "src/Service.java:6:5",
+    ]);
+    assert!(ok, "{stderr}");
+    let (bilink, uuid) = only_bilink(&root);
+    declare_dimensions(&bilink, dimensions);
+    let (_, stderr, ok) = run_in(&root, &["accept", "--decline-n1", "."]);
+    assert!(ok, "{stderr}");
+    (tmp, root, format!("{uuid}.1"))
+}
+
+/// Escribe `dimensions` en la punta del código, debajo de su `link`.
+fn declare_dimensions(bilink: &std::path::Path, dimensions: &str) {
+    let yaml = fs::read_to_string(bilink).unwrap();
+    let at = yaml.find("  1:\n    link: capture ").expect("la punta del código");
+    let eol = at + "  1:\n".len();
+    let eol = eol + yaml[eol..].find('\n').unwrap() + 1;
+    fs::write(bilink, format!("{}{dimensions}{}", &yaml[..eol], &yaml[eol..])).unwrap();
+}
+
+/// **Con dimensiones, `get` imprime las partes y nada más**, y cada línea lleva los
+/// nombres de las dimensiones que la tocan. El retorno y los parámetros comparten la
+/// línea 6, que sale una vez con los dos nombres en el orden en que aparecen.
+#[test]
+fn get_prints_only_the_dimensions_and_names_them_on_each_line() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (out, stderr, ok) = run_in(&root, &["get", &ep]);
+    assert!(ok, "{stderr}");
+
+    let firma: Vec<&str> = out.lines().filter(|l| l.contains("getPermissions") || l.contains("(String token)")).collect();
+    assert_eq!(firma.len(), 1, "la línea compartida sale una vez:\n{out}");
+    assert!(firma[0].contains("... List<PublicAuthorityDto> ... (String token)"), "{out}");
+    assert!(firma[0].ends_with("‹return · parameters›"), "{out}");
+
+    assert!(out.lines().any(|l| l.contains("@RestController") && l.ends_with("‹route›")), "{out}");
+    assert!(out.lines().any(|l| l.contains("@RequestMapping") && l.ends_with("‹route›")), "{out}");
+    assert!(!out.contains("permissionsOf"), "el cuerpo no se vigila y no se imprime:\n{out}");
+}
+
+/// Un endpoint sin dimensiones se imprime igual que antes de que existieran.
+#[test]
+fn get_without_dimensions_prints_no_names() {
+    let (_tmp, root, ep) = controller_with_dimensions("");
+    let (out, stderr, ok) = run_in(&root, &["get", &ep]);
+    assert!(ok, "{stderr}");
+    assert!(out.contains("permissionsOf"), "el fragmento entero:\n{out}");
+    assert!(!out.contains('‹'), "{out}");
+}
+
+/// `--dimension` acota a una: sólo sus partes, con su nombre.
+#[test]
+fn get_dimension_prints_only_that_one() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (out, stderr, ok) = run_in(&root, &["get", &ep, "--dimension", "parameters"]);
+    assert!(ok, "{stderr}");
+    assert!(out.contains("(String token)"), "{out}");
+    assert!(out.trim_end().ends_with("‹parameters›"), "{out}");
+    assert!(!out.contains("PublicAuthorityDto") && !out.contains("@RestController"), "{out}");
+}
+
+/// Un nombre que el endpoint no declara falla, y el error nombra los que sí.
+#[test]
+fn get_an_unknown_dimension_fails_naming_the_ones_there_are() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (_, stderr, ok) = run_in(&root, &["get", &ep, "--dimension", "body"]);
+    assert!(!ok);
+    assert!(stderr.contains("no declara la dimensión `body`"), "{stderr}");
+    assert!(stderr.contains("parameters, return, route"), "{stderr}");
+
+    let (_tmp, root, ep) = controller_with_dimensions("");
+    let (_, stderr, ok) = run_in(&root, &["get", &ep, "--dimension", "body"]);
+    assert!(!ok);
+    assert!(stderr.contains("no declara ninguna dimensión"), "{stderr}");
+}
+
+/// **`--raw` es lo que `check` hashea**, y con dimensiones eso es una por vez.
+#[test]
+fn get_raw_with_dimensions_needs_one_and_prints_its_exact_text() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (_, stderr, ok) = run_in(&root, &["get", &ep, "--raw"]);
+    assert!(!ok);
+    assert!(stderr.contains("--dimension") && stderr.contains("parameters, return, route"), "{stderr}");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &ep, "--raw", "--dimension", "route"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(out, "@RestController\n@RequestMapping(\"/public-api/user\")\n");
+}
+
+/// **`--diff` da un diff por dimensión**, cada uno con su nombre; con `--dimension`,
+/// sólo el de esa.
+#[test]
+fn get_diff_gives_one_diff_per_dimension() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    edit_java(&root, "(String token)", "(String token, int page)");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &ep, "--diff"]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("# parameters · "), "{stderr}");
+    assert!(stderr.contains("# route · "), "{stderr}");
+    assert!(out.contains("-(String token)") && out.contains("+(String token, int page)"), "{out}");
+    assert!(!out.contains("-@RestController"), "la ruta no cambió:\n{out}");
+
+    let (out, stderr, ok) = run_in(&root, &["get", &ep, "--diff", "--dimension", "route"]);
+    assert!(ok, "{stderr}");
+    assert!(!stderr.contains("# parameters"), "{stderr}");
+    assert!(!out.contains("int page"), "{out}");
+}
+
+/// Una declarada y no aprobada sale entera como agregada; una aprobada y ya no
+/// declarada se nombra sin texto.
+#[test]
+fn get_diff_of_a_dimension_on_one_side_only() {
+    let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (bilink, _) = only_bilink(&root);
+    let yaml = fs::read_to_string(&bilink).unwrap();
+    let yaml = yaml.replacen(
+        "      return:\n        query: '(method_declaration type: (_) @target) @anchor'\n",
+        "      body:\n        query: '(method_declaration body: (block) @target) @anchor'\n", 1);
+    fs::write(&bilink, yaml).unwrap();
+
+    let (out, stderr, ok) = run_in(&root, &["get", &ep, "--diff"]);
+    assert!(ok, "{stderr}");
+    assert!(out.contains("+        return svc.permissionsOf(token);"), "el cuerpo, agregado:\n{out}");
+    assert!(stderr.contains("# return · aprobada y ya no declarada"), "{stderr}");
+}
+
+/// Una dimensión que no resuelve se imprime con su query y no hace fallar; pedida
+/// con `--dimension`, sí.
+#[test]
+fn get_an_unresolved_dimension_is_named_and_fails_only_when_asked_for() {
+    let throws = concat!(
+        "      throws:\n",
+        "        query: '(method_declaration (throws) @target) @anchor'\n",
+    );
+    let (_tmp, root, ep) = controller_with_dimensions(&format!("{CONTROLLER_DIMENSIONS}{throws}"));
+    let (out, stderr, ok) = run_in(&root, &["get", &ep]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("# throws · no resuelve"), "{stderr}");
+    assert!(stderr.contains("query: (method_declaration (throws) @target) @anchor"), "{stderr}");
+    assert!(out.contains("‹return · parameters›"), "las demás se imprimen:\n{out}");
+
+    let (_, stderr, ok) = run_in(&root, &["get", &ep, "--dimension", "throws"]);
+    assert!(!ok);
+    assert!(stderr.contains("throws") && stderr.contains("no resuelve"), "{stderr}");
+}
