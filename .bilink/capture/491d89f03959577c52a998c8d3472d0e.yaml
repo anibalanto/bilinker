@@ -1,0 +1,6 @@
+file: docs/specs/concepts/get.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Las dimensiones"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`--dimension` acota a una, y un nombre que no está falla nombrando los que hay"))) @target)
