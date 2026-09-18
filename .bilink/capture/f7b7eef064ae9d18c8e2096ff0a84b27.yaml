@@ -1,0 +1,6 @@
+file: docs/specs/concepts/migration.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "`bilinker migrate`"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Una migración no toca una capa que ya declara un formato posterior"))) @target)
