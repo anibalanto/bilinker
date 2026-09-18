@@ -33,6 +33,11 @@ pub fn run(layer: &Path, dry_run: bool) -> Result<Outcome> {
     if !src.exists() {
         return Ok(Outcome::default());
     }
+    // El formato 1 es el que no declara versión. Una capa que declara una —porque
+    // nació en un formato posterior, sin ledger que lo diga— no tiene nada acá.
+    if bilink_format::read_version(layer).is_some() {
+        return Ok(Outcome::default());
+    }
     let plan = plan(layer)?;
     let mut out = Outcome::default();
 
@@ -381,6 +386,16 @@ pub fn verify(layer: &Path) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Una capa que declara una versión no es de formato 1, y no deja carpeta.
+    #[test]
+    fn a_layer_that_declares_a_version_is_a_no_op() {
+        let d = tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".bilink")).unwrap();
+        std::fs::write(d.path().join(".bilink/version"), "4.1.0\n").unwrap();
+        assert!(run(d.path(), false).unwrap().is_empty());
+        assert!(!d.path().join(OUT_DIR).exists());
+    }
 
     /// Una capa en formato 1, escrita a mano tal como el binario viejo la dejaría.
     fn layer_v1() -> tempfile::TempDir {

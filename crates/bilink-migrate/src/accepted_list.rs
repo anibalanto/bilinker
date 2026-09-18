@@ -154,6 +154,13 @@ pub fn run(layer: &Path, dry_run: bool) -> Result<Outcome> {
     if !src.exists() {
         return Ok(Outcome::default());
     }
+    // Una capa que ya declara el formato 4 —porque nació ahí, sin ledger que lo
+    // diga— no tiene nada en 3.8 que envolver.
+    let major = bilink_format::read_version(layer)
+        .and_then(|v| v.split('.').next()?.parse::<u32>().ok());
+    if major.is_some_and(|m| m >= 4) {
+        return Ok(Outcome::default());
+    }
     let plan = plan(layer)?;
     let mut out = Outcome::default();
 
@@ -315,6 +322,15 @@ mod tests {
         std::fs::create_dir_all(d.path().join(".bilink")).unwrap();
         std::fs::write(d.path().join(".bilink/7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.yaml"), bilink).unwrap();
         d
+    }
+
+    /// **Una capa que nació en formato 4 no tiene nada que envolver.** Sin ledger, el
+    /// runner le pasa todas las migraciones, y leer sus archivos como 3.8 fallaba.
+    #[test]
+    fn a_layer_already_at_format_4_is_a_no_op() {
+        let d = layer("endpoint:\n  '0':\n    link: capture aaa\n    accepted:\n    - link: capture aaa\n      hash: deadbeef\n  '1':\n    link: path >impl\n");
+        std::fs::write(d.path().join(".bilink/version"), "4.1.0\n").unwrap();
+        assert!(run(d.path(), true).unwrap().is_empty());
     }
 
     /// **Un objeto se vuelve una lista de uno, y no se pierde nada.**
