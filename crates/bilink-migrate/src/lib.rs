@@ -20,13 +20,14 @@
 
 pub mod accepted_list;
 pub mod cut;
+pub mod dimensions;
 pub mod partition;
 
 use accreta_migrate::Migration;
 
 /// Las migraciones de bilinker, en orden.
 ///
-/// Hay una sola, y `bilinker-001-capture-split` no está: se retiró. Sigue en el
+/// `bilinker-001-capture-split` no está: se retiró. Sigue en el
 /// ledger de todos los repos que la corrieron —eso registra qué les pasó, no qué
 /// sabe hacer este binario— pero su código ya no existe, porque `002` lee la
 /// forma embebida además de la que `001` producía. Un repo que nunca corrió
@@ -42,6 +43,11 @@ pub fn all() -> Vec<Migration> {
             id:          "bilinker-003-accepted-list",
             description: "`accepted` pasa a lista, y un vecindario sin captures pasa a `declined`",
             run:         accepted_list::run,
+        },
+        Migration {
+            id:          "bilinker-004-dimensions",
+            description: "un capture compuesto pasa a ancla y dimensiones, y su aceptación se parte",
+            run:         dimensions::run,
         },
     ]
 }

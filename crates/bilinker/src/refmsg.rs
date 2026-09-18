@@ -77,6 +77,10 @@ pub enum RefCommand {
     /// decisión como aprobarlo, y lleva su commit: el árbol del padre menos ese
     /// archivo, y nada más.
     Remove { uuid: String },
+    /// Tipo 2 — **el corte de una migración** sobre un repo cuyos bilinks ya viven en
+    /// la ref. Nombra la migración, y se lleva el `.bilink/` entero: reescribe un
+    /// conjunto, no un endpoint.
+    Migrate { migration: String },
 }
 
 impl RefCommand {
@@ -99,6 +103,7 @@ impl RefCommand {
             Self::Relayer { layer } => format!("relayer {layer}"),
             Self::RestoreN1 => "restore-n1".to_string(),
             Self::Remove { uuid } => format!("remove {uuid}"),
+            Self::Migrate { migration } => format!("migrate {migration}"),
         }
     }
 }
@@ -196,6 +201,8 @@ pub fn parse(message: &str) -> Result<RefMessage> {
         ("relayer", [l]) => RefCommand::Relayer { layer: branch(l)? },
         ("restore-n1", []) => RefCommand::RestoreN1,
         ("remove", [u]) => RefCommand::Remove { uuid: uuid(u)? },
+        // El id de una migración tiene las restricciones de un nombre de rama.
+        ("migrate", [m]) => RefCommand::Migrate { migration: branch(m)? },
 
         ("accept", [e]) => {
             let (uuid, n) = endpoint(e)?;
@@ -354,6 +361,7 @@ mod tests {
             RefCommand::Pull { remote: "origin".into() },
             RefCommand::Relayer { layer: "subsystems/stratum".into() },
             RefCommand::Remove { uuid: UUID.into() },
+            RefCommand::Migrate { migration: "bilinker-004-dimensions".into() },
             RefCommand::Track { branch: "rc-2.35".into() },
         ] {
             let back = round(cmd.clone());

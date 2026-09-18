@@ -381,9 +381,47 @@ pub fn compute_as(
             a.kind(), a.start_position().row + 1, b.kind(), b.start_position().row + 1,
         );
     }
-    let node = pointed[0];
+    compute_node(file, &source, pointed[0], standalone, generator)
+}
 
-    let ctx = GenCtx { source: &source, lang, anchors, standalone };
+/// El capture del nodo que ocupa exactamente `range` y, con generador, sus
+/// dimensiones.
+///
+/// Es [`compute_as`] para quien ya sabe de qué nodo se trata, y no tiene una
+/// selección: lo que resolvió una query vieja.
+pub fn compute_at(
+    root: &Path,
+    file: &str,
+    range: (usize, usize),
+    generator: Option<&dyn CaptureGenerator>,
+) -> Result<Computed> {
+    let file_path = root.join(file);
+    let source = std::fs::read_to_string(&file_path)
+        .with_context(|| format!("reading {}", file_path.display()))?;
+    let language = grammar::for_language(grammar::language_for_file(file))?;
+    let mut parser = Parser::new();
+    parser.set_language(&language).context("set language")?;
+    let tree = parser.parse(&source, None).context("parse failed")?;
+
+    let node = tree.root_node()
+        .named_descendant_for_byte_range(range.0, range.1)
+        .filter(|n| (n.start_byte(), n.end_byte()) == range)
+        .with_context(|| format!("ningún nodo ocupa {}..{} en {file}", range.0, range.1))?;
+    compute_node(file, &source, node, false, generator)
+}
+
+fn compute_node(
+    file: &str,
+    source: &str,
+    node: Node<'_>,
+    standalone: bool,
+    generator: Option<&dyn CaptureGenerator>,
+) -> Result<Computed> {
+    let lang = grammar::language_for_file(file);
+    let language = grammar::for_language(lang)?;
+    let anchors = stable_anchor_kinds(lang);
+
+    let ctx = GenCtx { source, lang, anchors, standalone };
     let query = pattern_for(&ctx, node);
 
     // La query tiene que identificar al nodo señalado y a ninguno otro. Un ancla sin
@@ -391,7 +429,7 @@ pub fn compute_as(
     // nodo de ese tipo del archivo, y el capture apuntaría a otra cosa sin fallar.
     // Un capture mal anclado es peor que uno roto: reporta OK sobre una
     // correspondencia que no existe.
-    let range = verify_query_identifies(language.clone(), &source, &query, node, file)?;
+    let range = verify_query_identifies(language.clone(), source, &query, node, file)?;
 
     // **La selección elige nodos, no rangos de bytes.** Un rango adentro de un nodo
     // se corre con cualquier edición encima suya dentro del mismo nodo, así que su
@@ -400,7 +438,7 @@ pub fn compute_as(
     let capture = Capture { file: file.to_string(), query: Some(query) };
 
     let Some(g) = generator else {
-        let hash = hash::sha256(range.text(&source).as_bytes());
+        let hash = hash::sha256(range.text(source).as_bytes());
         return Ok(Computed { capture, hash, ranges: range, dimensions: BTreeMap::new(), parts: Vec::new() });
     };
 
@@ -408,7 +446,7 @@ pub fn compute_as(
     let mut parts = Vec::new();
     let anchor = (range.start(), range.end());
     for d in g.dimensions(&ctx, node)? {
-        let resolved = verify_dimension(language.clone(), &source, &d, anchor, file)?;
+        let resolved = verify_dimension(language.clone(), source, &d, anchor, file)?;
         dimensions.insert(d.name.clone(), DeclaredDimension { query: d.query });
         parts.push((d.name, resolved));
     }
@@ -418,7 +456,7 @@ pub fn compute_as(
     all.sort_by_key(|r| (r.start, r.end));
     all.dedup();
     let ranges = Ranges::new(all).unwrap_or(range);
-    let hash = hash::sha256(ranges.text(&source).as_bytes());
+    let hash = hash::sha256(ranges.text(source).as_bytes());
     Ok(Computed { capture, hash, ranges, dimensions, parts })
 }
 

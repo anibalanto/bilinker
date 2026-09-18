@@ -1621,6 +1621,11 @@ Eliminar? [y/N] ");
                         }
                         cache.save(&c.layer)?;
                     }
+                    // **Donde los bilinks viven en la ref, el corte es un commit de
+                    // ella**: reescribe el `.bilink/` entero, y sin el commit la
+                    // migración quedaría como un cambio suelto en `bilinker diff`.
+                    seal_with(&c.layer, bilinker::refmsg::RefCommand::Migrate { migration: c.id.to_string() },
+                              Some(format!("{} bilink(s), {} capture(s)", c.bilinks, c.captures)))?;
                 }
                 // El ledger va acá: el estado recién ahora es verdadero.
                 let written = accreta_migrate::record(&layers, &bilink_migrate::all())?;
