@@ -10,6 +10,9 @@ endpoint:
     name: acc-417
   1:
     link: capture 400c3a3e58028531751754f8033f2197
+    n:
+      1:
+        link: capture 09a312ed2ed2f7f7f7d5734151c0d6e3
     accepted:
     - agree:
       - anibal
