@@ -894,6 +894,7 @@ mod tests {
             hash: hash::sha256(before.as_bytes()),
             hash_ast: Some(sexp_hash(after, QUERY)),   // coincidiría, si se mirara
             n: None,
+            dimensions: Default::default(),
         };
         let range = Ranges::one(0, after.len());
 
@@ -985,6 +986,7 @@ mod tests {
             agree: Default::default(),
             link: Some(format!("capture {}", cap.id()).parse().unwrap()),
             hash: h.into(), hash_ast: None, n: None,
+            dimensions: Default::default(),
         };
         let mut bl = bilink_format::BiLink::new(
             format!("capture {}", cap.id()).parse().unwrap(),
@@ -1057,6 +1059,7 @@ mod tests {
             agree: Default::default(), link: None,
             hash: String::new(), hash_ast: None,
             n: Some(bilink_format::N::of_level_1(f.n)),
+            dimensions: Default::default(),
         }
     }
 
@@ -1076,7 +1079,7 @@ mod tests {
     #[test]
     fn an_endpoint_without_a_neighbourhood_is_not_asked() {
         let (d, cap, range, _) = dto_layer("pub struct Dto { pub x: u8 }");
-        let acc = Accepted { agree: Default::default(), link: None, hash: String::new(), hash_ast: None, n: None };
+        let acc = Accepted { agree: Default::default(), link: None, hash: String::new(), hash_ast: None, n: None, dimensions: Default::default() };
         assert_eq!(contract(d.path(), &cap, None, &acc, &range, Some(&Apagado)).unwrap(), None);
     }
 
@@ -1206,6 +1209,7 @@ mod tests {
                 link: bilink_format::LevelLink::Unknown,
                 hash: hash.into(), hash_ast,
             })),
+            dimensions: Default::default(),
         }
     }
 
