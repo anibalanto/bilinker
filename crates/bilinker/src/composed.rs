@@ -76,6 +76,7 @@ pub fn split(
         let part = query::dimension(language.clone(), &source, &d.query, anchor)?
             .with_context(|| format!("la dimensión {name} no resuelve"))?;
         Ok((name.clone(), AcceptedDimension {
+            query: d.query.clone(),
             hash: hash::sha256(part.ranges.text(&source).as_bytes()),
             hash_ast: discriminates.then(|| hash::sha256(part.sexp.as_bytes())),
         }))

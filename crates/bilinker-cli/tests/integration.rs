@@ -912,6 +912,9 @@ fn accepting_dimensions_needs_no_daemon() {
     assert_eq!(declined["body"].hash, sha("{\n        return svc.permissionsOf(token);\n    }"));
     assert_eq!(declined["route"].hash, sha("@RestController\n@RequestMapping(\"/public-api/user\")"));
     assert!(declined.values().all(|d| d.hash_ast.is_some()), "java discrimina contenido: {declined:?}");
+    assert_eq!(declined["parameters"].query,
+               "(method_declaration parameters: (formal_parameters) @target) @anchor",
+               "la aceptación guarda la query con que resolvió la parte");
 
     // Sin preguntar escribe lo mismo: las dimensiones no dependen de a quién se le pregunta.
     let (stderr, ok) = run(&["accept", &target, "--no-ask-n1"]);
@@ -6727,7 +6730,7 @@ fn get_diff_gives_one_diff_per_dimension() {
 }
 
 /// Una declarada y no aprobada sale entera como agregada; una aprobada y ya no
-/// declarada se nombra sin texto.
+/// declarada se nombra y sale entera como quitada, resuelta con su query aprobada.
 #[test]
 fn get_diff_of_a_dimension_on_one_side_only() {
     let (_tmp, root, ep) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
@@ -6742,6 +6745,41 @@ fn get_diff_of_a_dimension_on_one_side_only() {
     assert!(ok, "{stderr}");
     assert!(out.contains("+        return svc.permissionsOf(token);"), "el cuerpo, agregado:\n{out}");
     assert!(stderr.contains("# return · aprobada y ya no declarada"), "{stderr}");
+    assert!(out.contains("-List<PublicAuthorityDto>"), "el retorno aprobado, quitado:\n{out}");
+}
+
+/// Una query que el generador cambió por otra que da el mismo texto: `check` lo
+/// reporta en esa dimensión, porque nadie aprobó la query nueva.
+const RETURN_BY_ANOTHER_QUERY: (&str, &str) = (
+    "        query: '(method_declaration type: (_) @target) @anchor'\n",
+    "        query: '(method_declaration type: (generic_type) @target) @anchor'\n",
+);
+
+#[test]
+fn a_declared_query_other_than_the_accepted_one_is_altered() {
+    let (_tmp, root, _) = controller_with_dimensions(CONTROLLER_DIMENSIONS);
+    let (bilink, _) = only_bilink(&root);
+    let (was, now) = RETURN_BY_ANOTHER_QUERY;
+    let yaml = fs::read_to_string(&bilink).unwrap();
+    let at = yaml.find("  1:\n").unwrap();
+    let (head, tail) = yaml.split_at(at);
+    fs::write(&bilink, format!("{head}{}", tail.replacen(was, now, 1))).unwrap();
+
+    let (out, err, code) = code_in(&root, &["check", "."]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(out.contains("ALTERED(return)"), "{out}");
+    assert!(out.contains("parameters OK") || !out.contains("parameters ALTERED"), "{out}");
+
+    // `get --diff` dice que cambió la query, aunque el texto sea el mismo.
+    let (_, stderr, ok) = run_in(&root, &["get", &format!("{}.1", only_bilink(&root).1), "--diff"]);
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("# return · query cambiada"), "{stderr}");
+
+    // Aceptar fija la query nueva.
+    let (_, stderr, ok) = run_in(&root, &["accept", "--decline-n1", "."]);
+    assert!(ok, "{stderr}");
+    let (out, err, code) = code_in(&root, &["check", "."]);
+    assert_eq!(code, 0, "{out}{err}");
 }
 
 /// Una dimensión que no resuelve se imprime con su query y no hace fallar; pedida
