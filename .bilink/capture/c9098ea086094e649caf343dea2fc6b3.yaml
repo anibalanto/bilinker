@@ -1,0 +1,6 @@
+file: docs/decisions/2026-09-17.capture-ancla-y-dimensiones.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Decisión"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "1. El capture vuelve a ser un ancla de un nodo"))) @target)
