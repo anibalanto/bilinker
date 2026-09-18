@@ -14,6 +14,10 @@ accreta-migrate = { path = "../accreta-migrate" }
 bilink-format-v1 = { path = "../bilink-format-v1" }
 bilink-format    = { path = "../bilink-format" }
 
+# La `004` resuelve queries: el capture de un nodo y sus dimensiones salen de la
+# gramática, y eso es de `bilinker`.
+bilinker         = { path = "../bilinker" }
+
 stratum = { git = "https://github.com/anibalanto/stratum.git", branch = "main" }
 
 # La `003` lee la forma 3.8 con structs locales: los dos formatos son el mismo YAML y

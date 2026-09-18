@@ -16,6 +16,7 @@ pub mod bilink_ref;
 pub mod cache;
 pub mod capture;
 pub mod chain;
+pub mod composed;
 pub mod check;
 pub mod config;
 pub mod dimension;
