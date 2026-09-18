@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use anyhow::{bail, Context, Result};
 
-use bilink_format::{BiLink, Capture, LinkEndpoint, Ranges, FRAGMENT_SEPARATOR};
+use bilink_format::{BiLink, Capture, DeclaredDimension, LinkEndpoint, Ranges, FRAGMENT_SEPARATOR};
 
 use crate::cache::Cache;
 use crate::state::CaptureState;
@@ -25,6 +26,41 @@ pub struct GetResult {
     /// `@target` no ocupa un tramo contiguo, y un par tendría que mentir eligiendo
     /// el que las abarca a todas.
     pub lines: Vec<(usize, usize)>,
+    /// Las dimensiones que se muestran: todas las declaradas, o la que se pidió. Vacía
+    /// en un endpoint sin dimensiones, que se muestra como siempre.
+    pub dimensions: Vec<Dimension>,
+}
+
+/// Una dimensión del endpoint, resuelta desde el nodo del capture.
+pub struct Dimension {
+    pub name: String,
+    /// La query, que es lo que hace falta para arreglarla cuando no resuelve.
+    pub query: String,
+    /// Sus partes, o `None` si no resuelve.
+    pub ranges: Option<Ranges>,
+}
+
+/// Los nombres de las dimensiones, como los lista un error: `parameters, return`.
+pub fn dimension_names<'a>(names: impl Iterator<Item = &'a String>) -> String {
+    names.map(String::as_str).collect::<Vec<_>>().join(", ")
+}
+
+/// Las dimensiones que se muestran: todas, o la que nombra `only`.
+///
+/// El nombre se compara tal cual —es una etiqueta opaca—, y uno que el endpoint no
+/// declara es un error que lista los que sí declara.
+fn pick<'a>(
+    dims: &'a BTreeMap<String, DeclaredDimension>, only: Option<&str>,
+) -> Result<Vec<(&'a String, &'a DeclaredDimension)>> {
+    let Some(name) = only else { return Ok(dims.iter().collect()) };
+    if dims.is_empty() {
+        bail!("el endpoint no declara ninguna dimensión.");
+    }
+    match dims.get_key_value(name) {
+        Some(d) => Ok(vec![d]),
+        None => bail!("el endpoint no declara la dimensión `{name}`.\n  Declara: {}.",
+                      dimension_names(dims.keys())),
+    }
 }
 
 impl GetResult {
@@ -101,6 +137,29 @@ pub struct DiffResult {
     pub end_line: usize,
     /// None = no changes
     pub diff: Option<String>,
+    /// Un diff por dimensión, en el orden de sus nombres. Vacío en un endpoint sin
+    /// dimensiones, que se compara entero como siempre.
+    pub dimensions: Vec<DimensionDiff>,
+}
+
+/// El diff de una dimensión: lo aprobado de ella contra lo que resuelve hoy.
+pub struct DimensionDiff {
+    pub name: String,
+    /// Dónde está hoy, 1-based e inclusivo. Vacío si hoy no está.
+    pub lines: Vec<(usize, usize)>,
+    pub change: DimensionChange,
+}
+
+pub enum DimensionChange {
+    /// No cambió: el texto de hoy.
+    Same(String),
+    /// El unified diff. Una dimensión declarada y no aprobada sale entera, agregada.
+    Changed(String),
+    /// Está declarada y hoy no resuelve: su query.
+    Unresolved(String),
+    /// Está aprobada y ya no declarada. **No hay texto que mostrar**: lo aprobado
+    /// guarda sólo el `hash`, y la query que la resolvía se fue con la declaración.
+    Undeclared,
 }
 
 /// El fragmento que un endpoint referencia.
@@ -110,6 +169,7 @@ pub fn get(
     endpoint: u8,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
+    only: Option<&str>,
 ) -> Result<Got> {
     let path = crate::accept::find_bilink_path(root, bilink_name)?;
     let uuid = uuid_of(&path);
@@ -123,14 +183,14 @@ pub fn get(
             let cap = crate::capture::capture_of(root, link)?
                 .context("el endpoint estructural no tiene capture resoluble")?;
             Ok(Got {
-                fragment: resolve(root, &cap, before, after)?,
+                fragment: resolve(root, &cap, &ep.dimensions, only, before, after)?,
                 level1: level1_of(root, ep, before, after),
             })
         }
-        LinkEndpoint::Path(p) => traverse_layer(root, p.clone(), &uuid, before, after),
+        LinkEndpoint::Path(p) => traverse_layer(root, p.clone(), &uuid, before, after, only),
         // Cruzar la frontera: el fragmento vive en el clon del proveedor, que el
         // sparse-checkout ya trajo entero.
-        LinkEndpoint::Repo(alias) => traverse_repo(root, alias, &uuid, before, after),
+        LinkEndpoint::Repo(alias) => traverse_repo(root, alias, &uuid, before, after, only),
         LinkEndpoint::Abstract => bail!(
             "el endpoint {endpoint} es `abstract`: es la punta abierta y no apunta a \
              ningún fragmento de este repo"
@@ -144,7 +204,7 @@ pub fn get(
 /// El baseline es el `commit` del endpoint —aquel en que el contenido aceptado
 /// quedó establecido—, que vive en la cache. Con cache fría no está y se pide
 /// correr `accept` o `check`.
-pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResult> {
+pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8, only: Option<&str>) -> Result<DiffResult> {
     let path = crate::accept::find_bilink_path(root, bilink_name)?;
     let uuid = uuid_of(&path);
     let bl = BiLink::load(&path)?;
@@ -187,7 +247,15 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
         LinkEndpoint::Capture(_) => {
             let cap = crate::capture::capture_of(root, &e.link)?
                 .context("el endpoint estructural no tiene capture resoluble")?;
-            diff_structural(root, &cap, &commit, range.as_ref(), Some(&accepted.hash))
+            let mut result = diff_structural(root, &cap, &commit, range.as_ref(), Some(&accepted.hash))?;
+            if only.is_some() || !e.dimensions.is_empty() || !accepted.dimensions.is_empty() {
+                result.dimensions =
+                    diff_dimensions(root, &cap, &commit, &e.dimensions, &accepted.dimensions, only)?;
+            }
+            Ok(result)
+        }
+        LinkEndpoint::Path(_) if only.is_some() => {
+            bail!("`--diff --dimension` todavía no cruza a la capa vecina: pedirlo desde ella.")
         }
         LinkEndpoint::Path(p) => {
             let (adj_root, adj_cap, adj_commit, adj_range, adj_hash) =
@@ -208,7 +276,7 @@ pub fn get_diff(root: &Path, bilink_name: &str, endpoint: u8) -> Result<DiffResu
 /// el archivo al que apunta vienen del mismo commit por construcción.
 fn traverse_repo(
     root: &Path, alias: &str, uuid: &str,
-    before: Option<(usize, usize)>, after: Option<(usize, usize)>,
+    before: Option<(usize, usize)>, after: Option<(usize, usize)>, only: Option<&str>,
 ) -> Result<Got> {
     let clone = crate::frontier::Provider::clone_path(root, alias);
     if !clone.join(".bilink").is_dir() {
@@ -229,7 +297,7 @@ fn traverse_repo(
     // El vecindario que se muestra es el del endpoint estructural del proveedor, y
     // sale de su capa: los ids que declara son captures suyos, no de acá.
     Ok(Got {
-        fragment: resolve(&clone, &cap, before, after)?,
+        fragment: resolve(&clone, &cap, &ep.dimensions, only, before, after)?,
         level1: level1_of(&clone, ep, before, after),
     })
 }
@@ -277,7 +345,7 @@ fn diff_structural(
     hash: Option<&str>,
 ) -> Result<DiffResult> {
     // "after": current fragment via AST query
-    let after_result = resolve(root, cap, None, None)?;
+    let after_result = resolve(root, cap, &BTreeMap::new(), None, None, None)?;
     let after_text = &after_result.content;
 
     // "before": el fragmento aceptado, resolviendo la query contra el contenido
@@ -304,7 +372,81 @@ fn diff_structural(
         start_line: after_result.lines.first().map_or(1, |l| l.0),
         end_line: after_result.lines.last().map_or(1, |l| l.1),
         diff,
+        dimensions: Vec::new(),
     })
+}
+
+/// Un diff por dimensión: cada parte aprobada contra la de hoy, por nombre.
+///
+/// El texto aprobado se recupera resolviendo la query de la dimensión en `commit`,
+/// desde el nodo del capture en ese commit, igual que la resuelve `check` para
+/// `EXPANDED`. Si su hash no coincide con el aprobado se muestra igual: para un diff
+/// informativo algo aproximado es mejor que nada. Y si no resuelve, el lado aprobado
+/// queda vacío.
+fn diff_dimensions(
+    root: &Path,
+    cap: &Capture,
+    commit: &str,
+    declared: &BTreeMap<String, DeclaredDimension>,
+    accepted: &BTreeMap<String, bilink_format::AcceptedDimension>,
+    only: Option<&str>,
+) -> Result<Vec<DimensionDiff>> {
+    let picked = pick(declared, only)?;
+    let source = std::fs::read_to_string(root.join(&cap.file))?;
+    let language = grammar::for_language(grammar::language_for_file(&cap.file))?;
+    let node_of = |src: &str| -> Option<(usize, usize)> {
+        match &cap.query {
+            None => Some((0, src.len())),
+            Some(q) => query::find_fragment(language.clone(), src, q).ok()?
+                .map(|f| (f.ranges.start(), f.ranges.end())),
+        }
+    };
+    let now = node_of(&source).ok_or_else(|| fail(root, cap))?;
+    let old = crate::capture::source_at(root, cap, commit);
+    let then = old.as_deref().and_then(|o| node_of(o).map(|n| (o, n)));
+    let last_line = count_lines(&source).saturating_sub(1);
+
+    // Todas las declaradas, más las aprobadas que ya no lo están; o la que se pidió.
+    let mut names: Vec<&String> = picked.iter().map(|(n, _)| *n).collect();
+    if only.is_none() {
+        names.extend(accepted.keys().filter(|n| !declared.contains_key(*n)));
+        names.sort();
+    }
+
+    let mut out = Vec::new();
+    for name in names {
+        let Some(d) = declared.get(name) else {
+            out.push(DimensionDiff { name: name.clone(), lines: Vec::new(), change: DimensionChange::Undeclared });
+            continue;
+        };
+        let Some(today) = query::dimension(language.clone(), &source, &d.query, now).ok().flatten() else {
+            out.push(DimensionDiff {
+                name: name.clone(), lines: Vec::new(), change: DimensionChange::Unresolved(d.query.clone()),
+            });
+            continue;
+        };
+        let parts: Vec<(usize, usize)> = today.ranges.parts().iter().map(|p| (p.start, p.end)).collect();
+        let lines = spans_of(&source, &parts, 0, 0, last_line);
+        let text = today.ranges.text(&source);
+
+        let approved = accepted.get(name).map(|a| {
+            let old_text = then.and_then(|(o, node)| {
+                query::dimension(language.clone(), o, &d.query, node).ok().flatten().map(|f| f.ranges.text(o))
+            });
+            (a, old_text.unwrap_or_default())
+        });
+        // Una parte no termina en salto de línea, y sin él cada diff cargaría con un
+        // `\ No newline at end of file` que no dice nada del cambio.
+        let line = |t: &str| if t.is_empty() { String::new() } else { format!("{t}\n") };
+        let change = match approved {
+            Some((a, _)) if crate::hash::sha256(text.as_bytes()) == a.hash => DimensionChange::Same(text),
+            Some((_, before)) if before.trim_end() == text.trim_end() => DimensionChange::Same(text),
+            Some((_, before)) => DimensionChange::Changed(unified_diff(&line(&before), &line(&text), commit)),
+            None => DimensionChange::Changed(unified_diff("", &line(&text), commit)),
+        };
+        out.push(DimensionDiff { name: name.clone(), lines, change });
+    }
+    Ok(out)
 }
 
 fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&Ranges>) -> Result<String> {
@@ -334,9 +476,14 @@ fn git_show_fragment(root: &Path, commit: &str, file: &str, range: Option<&Range
 fn unified_diff(before: &str, after: &str, commit: &str) -> String {
     
 
+    // Un nombre por llamada: dos `get --diff` a la vez, o dos dimensiones seguidas,
+    // no pueden pisarse los archivos.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tag = format!("{}-{call}", std::process::id());
     let dir = std::env::temp_dir();
-    let before_path = dir.join("bilinker_diff_before.tmp");
-    let after_path  = dir.join("bilinker_diff_after.tmp");
+    let before_path = dir.join(format!("bilinker_diff_before-{tag}.tmp"));
+    let after_path  = dir.join(format!("bilinker_diff_after-{tag}.tmp"));
 
     let _ = std::fs::write(&before_path, before);
     let _ = std::fs::write(&after_path, after);
@@ -425,6 +572,7 @@ pub fn get_callee_diff(
         start_line,
         end_line,
         diff,
+        dimensions: Vec::new(),
     })
 }
 
@@ -474,6 +622,7 @@ fn traverse_layer(
     uuid: &str,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
+    only: Option<&str>,
 ) -> Result<Got> {
     let adjacent_root = {
         let p = stratum::resolve(root, root, layer_path.tokens())
@@ -492,9 +641,10 @@ fn traverse_layer(
     // **El vecindario es del endpoint estructural, y por eso vive del otro lado.** Un
     // endpoint `path` no tiene vecindario propio: lleva una copia opaca del ajeno, y
     // lo que hay que mostrar es el del fragmento — que es el que se está trayendo.
+    let ep = adjacent_bl.endpoint.get(n);
     Ok(Got {
-        fragment: resolve(&adjacent_root, &cap, before, after)?,
-        level1: level1_of(&adjacent_root, adjacent_bl.endpoint.get(n), before, after),
+        fragment: resolve(&adjacent_root, &cap, &ep.dimensions, only, before, after)?,
+        level1: level1_of(&adjacent_root, ep, before, after),
     })
 }
 
@@ -553,7 +703,7 @@ fn bring(
 ) -> Neighbour {
     let fragment = match Capture::load_in(layer, id) {
         Err(e) => Err(NotBrought::NoCapture(format!("{e:#}"))),
-        Ok(cap) => resolve(layer, &cap, before, after)
+        Ok(cap) => resolve(layer, &cap, &BTreeMap::new(), None, before, after)
             .map_err(|_| NotBrought::Unresolved(unresolved_for(layer, &cap))),
     };
     Neighbour { id: id.to_string(), fragment }
@@ -593,9 +743,12 @@ impl std::fmt::Display for Unresolved {
 fn resolve(
     root: &Path,
     cap: &Capture,
+    dims: &BTreeMap<String, DeclaredDimension>,
+    only: Option<&str>,
     before: Option<(usize, usize)>,
     after: Option<(usize, usize)>,
 ) -> Result<GetResult> {
+    let picked = pick(dims, only)?;
     let file_path = root.join(&cap.file);
     // **El archivo no está tampoco es "no se pudo leer".** El estado sabe si se
     // movió, si el anchor se renombró, o si no está en ninguna parte, y de ahí sale
@@ -611,18 +764,58 @@ fn resolve(
             view,
             file: cap.file.clone(),
             lines: vec![(1, total)],
+            dimensions: Vec::new(),
         });
     };
 
     let lang = grammar::language_for_file(&cap.file);
     let language = grammar::for_language(lang)?;
 
-    let fragment = query::find_fragment(language, &source, query_str)?
+    let fragment = query::find_fragment(language.clone(), &source, query_str)?
         .ok_or_else(|| fail(root, cap))?;
 
     let before_rows = before.map(|(r, _)| r).unwrap_or(0);
     let after_rows  = after.map(|(r, _)| r).unwrap_or(0);
     let last_line   = count_lines(&source).saturating_sub(1);
+
+    // **Con dimensiones se muestra lo que `check` compara, y nada más**: cada parte
+    // resuelta desde el nodo del capture por su `@anchor`, como la resuelven `accept`
+    // y `check`. Lo que queda afuera de toda parte no lo vigila nadie.
+    if !picked.is_empty() {
+        let node = (fragment.ranges.start(), fragment.ranges.end());
+        let dimensions: Vec<Dimension> = picked.iter()
+            .map(|(name, d)| Dimension {
+                name: name.to_string(),
+                query: d.query.clone(),
+                ranges: query::dimension(language.clone(), &source, &d.query, node)
+                    .ok().flatten().map(|f| f.ranges),
+            })
+            .collect();
+        // La que se pidió y no resuelve no deja nada que devolver.
+        if let (Some(name), Some(d)) = (only, dimensions.first()) {
+            if d.ranges.is_none() {
+                bail!("la dimensión `{name}` no resuelve.\n  query: {}", d.query);
+            }
+        }
+        let found: Vec<(String, Ranges)> = dimensions.iter()
+            .filter_map(|d| d.ranges.clone().map(|r| (d.name.clone(), r)))
+            .collect();
+        let content = match (only, found.first()) {
+            (Some(_), Some((_, r))) => r.text(&source),
+            _                       => fragment.ranges.text(&source),
+        };
+        let mut parts: Vec<(usize, usize)> = found.iter()
+            .flat_map(|(_, r)| r.parts().iter().map(|p| (p.start, p.end)))
+            .collect();
+        parts.sort_unstable();
+        return Ok(GetResult {
+            content,
+            view: crate::preview::dimension_view(&source, &found, before_rows, after_rows),
+            file: cap.file.clone(),
+            lines: spans_of(&source, &parts, before_rows, after_rows, last_line),
+            dimensions,
+        });
+    }
 
     // Una parte por `@target`, cada una con su contexto y su tramo de líneas. Se
     // muestran unidas por el mismo separador que las une en el `hash`: lo que se
@@ -645,7 +838,26 @@ fn resolve(
         view: crate::preview::fragment_view(&source, &fragment.ranges, before_rows, after_rows),
         file: cap.file.clone(),
         lines,
+        dimensions: Vec::new(),
     })
+}
+
+/// Los tramos de líneas de unas partes, 1-based e inclusivos, con el contexto
+/// pedido. Dos tramos que se tocan son uno: el retorno y los parámetros de una firma
+/// comparten línea, y el encabezado no la nombra dos veces.
+fn spans_of(
+    source: &str, parts: &[(usize, usize)], before_rows: usize, after_rows: usize, last_line: usize,
+) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in parts {
+        let from = byte_to_line(source, *s).saturating_sub(before_rows) + 1;
+        let to   = (byte_to_line(source, e.saturating_sub(1)) + after_rows).min(last_line) + 1;
+        match spans.last_mut() {
+            Some(last) if from <= last.1 + 1 => last.1 = last.1.max(to),
+            _ => spans.push((from, to)),
+        }
+    }
+    spans
 }
 
 /// Cuenta sobre bytes y no sobre `&str`: un offset puede caer en medio de un

@@ -234,19 +234,41 @@ pub const HOLE: &str = "...";
 /// La sangría se conserva tal cual y **nunca se vuelve un hueco**: es espacio en
 /// blanco, no aporta contenido, y sin ella el código no se lee.
 pub fn fragment_view(source: &str, ranges: &Ranges, before: usize, after: usize) -> String {
+    let partes: Vec<(usize, usize)> = ranges.parts().iter().map(|r| (r.start, r.end)).collect();
+    let mut out = String::new();
+    for fila in filas(source, &partes, before, after) {
+        match fila {
+            Fila::Salto(width)        => out.push_str(&format!("{:>width$} {SKIP}\n", "")),
+            Fila::Linea(_, texto)     => { out.push_str(&texto); out.push('\n'); }
+        }
+    }
+    out
+}
+
+/// Una fila de la vista: un salto, con el ancho de la columna de números, o una
+/// línea del archivo ya numerada y con sus huecos.
+enum Fila {
+    Salto(usize),
+    Linea(usize, String),
+}
+
+/// Las filas de la vista de unas partes: las líneas que tocan, con el contexto
+/// pedido, y un salto donde no son contiguas.
+///
+/// Es lo que comparten la vista de un fragmento y la de sus dimensiones, y lo que se
+/// desincronizaría si cada una calculara sus líneas.
+fn filas(source: &str, partes: &[(usize, usize)], before: usize, after: usize) -> Vec<Fila> {
     let lines: Vec<&str> = source.lines().collect();
-    if lines.is_empty() { return String::new() }
+    if lines.is_empty() { return Vec::new() }
 
     // El offset donde arranca cada línea, 1-based.
     let mut start_of = Vec::with_capacity(lines.len() + 1);
     let mut at = 0usize;
     for l in &lines { start_of.push(at); at += l.len() + 1; }
 
-    let partes: Vec<(usize, usize)> = ranges.parts().iter().map(|r| (r.start, r.end)).collect();
-
     // Qué líneas se muestran: las que toca alguna parte, más el contexto pedido.
     let mut shown: Vec<usize> = Vec::new();
-    for (s, e) in &partes {
+    for (s, e) in partes {
         let from = line_of(source, *s);
         let to   = line_of(source, e.saturating_sub(1));
         let from = from.saturating_sub(before).max(1);
@@ -257,20 +279,85 @@ pub fn fragment_view(source: &str, ranges: &Ranges, before: usize, after: usize)
     shown.dedup();
 
     let width = shown.last().copied().unwrap_or(1).to_string().len();
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut prev = 0usize;
     for l in shown {
         // **Un salto de líneas es visible o es una mentira.** Sin el `⋮`, dos tramos
         // lejanos se leen como si fueran contiguos.
         if prev != 0 && l > prev + 1 {
-            out.push_str(&format!("{:>width$} {SKIP}\n", "", width = width));
+            out.push(Fila::Salto(width));
         }
         let texto = lines[l - 1];
         let ls = start_of[l - 1];
-        out.push_str(&format!("{l:>width$}:   {}\n", con_huecos(texto, ls, &partes)));
+        out.push(Fila::Linea(l, format!("{l:>width$}:   {}", con_huecos(texto, ls, partes))));
         prev = l;
     }
     out
+}
+
+/// La vista de las dimensiones de un endpoint: sus partes sobre sus líneas, y al
+/// final de cada línea los nombres de las dimensiones que la tocan.
+///
+/// **Una línea sale una sola vez**, aunque la toquen varias dimensiones: el retorno y
+/// los parámetros comparten línea siempre que la firma quepa en una, y un bloque por
+/// dimensión la imprimiría dos veces. Los nombres van en el orden en que sus partes
+/// aparecen en la línea, así que con los `...` se lee cuál es cuál sin tocar el texto.
+///
+/// Dos dimensiones pueden superponerse —el formato sólo hace disjuntas las partes de
+/// una misma—, así que las partes se unen antes de recortar: el rango compartido sale
+/// una vez, y su línea lleva los dos nombres.
+pub fn dimension_view(source: &str, dims: &[(String, Ranges)], before: usize, after: usize) -> String {
+    let mut partes: Vec<(usize, usize)> = dims.iter()
+        .flat_map(|(_, r)| r.parts().iter().map(|p| (p.start, p.end)))
+        .collect();
+    partes.sort_unstable();
+    let mut unidas: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in partes {
+        match unidas.last_mut() {
+            Some(u) if s < u.1 => u.1 = u.1.max(e),
+            _ => unidas.push((s, e)),
+        }
+    }
+
+    let filas = filas(source, &unidas, before, after);
+    let columna = filas.iter()
+        .map(|f| match f { Fila::Linea(_, t) => t.chars().count(), Fila::Salto(_) => 0 })
+        .max().unwrap_or(0) + 2;
+
+    let mut out = String::new();
+    for fila in filas {
+        match fila {
+            Fila::Salto(width) => out.push_str(&format!("{:>width$} {SKIP}\n", "")),
+            Fila::Linea(l, texto) => {
+                let nombres = nombres_de(source, l, dims);
+                if nombres.is_empty() {
+                    out.push_str(&texto);
+                } else {
+                    let pad = columna - texto.chars().count();
+                    out.push_str(&format!("{texto}{:pad$}‹{}›", "", nombres.join(" · ")));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// Los nombres de las dimensiones que tocan la línea `l`, 1-based, en el orden en
+/// que aparece la primera parte de cada una en esa línea.
+fn nombres_de<'a>(source: &str, l: usize, dims: &'a [(String, Ranges)]) -> Vec<&'a str> {
+    let Some(texto) = source.lines().nth(l - 1) else { return Vec::new() };
+    let inicio: usize = source.lines().take(l - 1).map(|t| t.len() + 1).sum();
+    let fin = inicio + texto.len();
+    let mut tocan: Vec<(usize, &str)> = dims.iter()
+        .filter_map(|(nombre, r)| r.parts().iter()
+            .filter(|p| p.start < fin.max(inicio + 1) && p.end > inicio)
+            .map(|p| p.start.max(inicio))
+            .min()
+            .map(|at| (at, nombre.as_str())))
+        .collect();
+    tocan.sort();
+    tocan.into_iter().map(|(_, n)| n).collect()
 }
 
 /// Una línea con `...` donde no la cubre ninguna parte.
@@ -392,5 +479,88 @@ mod fragment_view_tests {
         let at = src.find("dos").unwrap();
         let v = fragment_view(src, &Ranges::one(at, at + 3), 1, 1);
         assert_eq!(v, "1:   uno\n2:   dos\n3:   tres\n", "{v:?}");
+    }
+}
+
+#[cfg(test)]
+mod dimension_view_tests {
+    use super::*;
+
+    const FIRMA: &str = "class C {\n\tpublic Dto get(String t) {\n\t\treturn null;\n\t}\n}\n";
+
+    fn en(src: &str, text: &str) -> Ranges {
+        let at = src.find(text).unwrap();
+        Ranges::one(at, at + text.len())
+    }
+
+    /// Las dimensiones en el orden de sus nombres, que es como las da el bilink.
+    fn firma() -> Vec<(String, Ranges)> {
+        vec![
+            ("parameters".into(), en(FIRMA, "(String t)")),
+            ("return".into(), en(FIRMA, "Dto")),
+        ]
+    }
+
+    /// El caso que obliga a marcar por línea: el retorno y los parámetros comparten
+    /// una, y la línea sale una vez, con los dos nombres en el orden en que aparecen.
+    #[test]
+    fn una_linea_lleva_los_nombres_de_sus_partes_en_orden_de_archivo() {
+        let v = dimension_view(FIRMA, &firma(), 0, 0);
+        assert_eq!(v.lines().count(), 1, "{v}");
+        let linea = v.lines().next().unwrap();
+        assert!(linea.contains("... Dto ... (String t) ..."), "el texto no se toca: {linea}");
+        assert!(linea.ends_with("‹return · parameters›"), "{linea}");
+    }
+
+    /// Los nombres se alinean en una columna, a dos espacios de la línea más larga.
+    #[test]
+    fn los_nombres_van_en_una_columna() {
+        let dims = vec![
+            ("head".to_string(), en(FIRMA, "class C {")),
+            ("return".to_string(), en(FIRMA, "Dto")),
+        ];
+        let v = dimension_view(FIRMA, &dims, 0, 0);
+        let columnas: Vec<usize> = v.lines()
+            .filter(|l| l.contains('‹'))
+            .map(|l| l.chars().take_while(|c| *c != '‹').count())
+            .collect();
+        assert_eq!(columnas.len(), 2, "{v}");
+        assert_eq!(columnas[0], columnas[1], "{v}");
+        let larga = v.lines().map(|l| l.split('‹').next().unwrap().trim_end().chars().count()).max().unwrap();
+        assert_eq!(columnas[0], larga + 2, "{v}");
+    }
+
+    /// Dos dimensiones que se superponen: el rango sale una vez, con los dos nombres.
+    #[test]
+    fn dos_dimensiones_superpuestas_salen_una_vez_con_los_dos_nombres() {
+        let dims = vec![
+            ("firma".to_string(), en(FIRMA, "Dto get(String t)")),
+            ("parameters".to_string(), en(FIRMA, "(String t)")),
+        ];
+        let v = dimension_view(FIRMA, &dims, 0, 0);
+        assert_eq!(v.matches("(String t)").count(), 1, "{v}");
+        assert!(v.contains("... Dto get(String t) ..."), "{v}");
+        assert!(v.contains("‹firma · parameters›"), "{v}");
+    }
+
+    /// El contexto de `-B` y `-A` sale entero y sin marcas: no es de ninguna dimensión.
+    #[test]
+    fn el_contexto_no_lleva_nombres() {
+        let v = dimension_view(FIRMA, &firma(), 1, 1);
+        let lineas: Vec<&str> = v.lines().collect();
+        assert_eq!(lineas.len(), 3, "{v}");
+        assert!(!lineas[0].contains('‹') && !lineas[2].contains('‹'), "{v}");
+        assert!(lineas[1].contains('‹'), "{v}");
+    }
+
+    /// Las líneas lejanas llevan `⋮` en el medio, como en cualquier fragmento.
+    #[test]
+    fn el_salto_sigue_viendose() {
+        let dims = vec![
+            ("head".to_string(), en(FIRMA, "class C {")),
+            ("body".to_string(), en(FIRMA, "return null;")),
+        ];
+        let v = dimension_view(FIRMA, &dims, 0, 0);
+        assert!(v.contains(SKIP), "{v}");
     }
 }
