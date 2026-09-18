@@ -80,7 +80,7 @@ impl LanguageServer for Backend {
 
             // Try to get the content of the other side
             let other_side = if *n == 0 { 1u8 } else { 0u8 };
-            let content = match get(&root, uuid, other_side, None, None) {
+            let content = match get(&root, uuid, other_side, None, None, None) {
                 Ok(r) => format!("`{}` lines {}\n```{}\n{}\n```",
                     r.fragment.file, r.fragment.line_span(),
                     lang_from_file(&r.fragment.file), r.fragment.content),
