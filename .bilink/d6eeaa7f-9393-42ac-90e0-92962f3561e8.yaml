@@ -1,0 +1,13 @@
+kind: governs
+endpoint:
+  0:
+    link: capture e83f1a63c8ada964ed37a827a1fd4ab1
+    accepted:
+    - agree:
+      - anibal
+      link: capture e83f1a63c8ada964ed37a827a1fd4ab1
+      hash: 91dd70cef73d5b4e3d170c49b458ff112c17ed26922de0d429bcf07eef9ef723
+    name: acc-417
+  1:
+    link: capture 400c3a3e58028531751754f8033f2197
+    name: acc-417
