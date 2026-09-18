@@ -244,6 +244,21 @@ fn copiar_lo_que_no_cambia(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copia `.bilink/` entero salvo lo derivado —la cache y el índice—, que `check`
+/// regenera.
+pub(crate) fn copiar_arbol_sin_derivados(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let name = e.file_name();
+        if name == "cache" || name == "index" { continue }
+        let to = dst.join(&name);
+        if e.file_type()?.is_dir() { copiar_arbol(&e.path(), &to)?; }
+        else { std::fs::copy(e.path(), &to)?; }
+    }
+    Ok(())
+}
+
 fn copiar_arbol(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {

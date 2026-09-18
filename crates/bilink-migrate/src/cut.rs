@@ -21,6 +21,8 @@ use crate::partition;
 /// mientras hubo una sola: al escribir la segunda, `--cut` no sabía cortarla y falló
 /// verificando la primera.
 pub struct Cuttable {
+    /// El id de la migración, el que va al ledger y al commit de la ref.
+    pub id: &'static str,
     /// La carpeta donde esta migración escribe.
     pub out_dir: &'static str,
     /// Dónde va lo anterior. Lleva el nombre del formato que se deja atrás, así que
@@ -37,6 +39,7 @@ pub struct Cuttable {
 /// El corte de `bilinker-002-file-partition`.
 pub fn partition_cut() -> Cuttable {
     Cuttable {
+        id:         "bilinker-002-file-partition",
         out_dir:    partition::OUT_DIR,
         backup_dir: ".bilink-formato-1",
         verify:     partition::verify,
@@ -57,6 +60,7 @@ pub fn partition_cut() -> Cuttable {
 pub fn accepted_list_cut() -> Cuttable {
     use crate::accepted_list;
     Cuttable {
+        id:         "bilinker-003-accepted-list",
         out_dir:    accepted_list::OUT_DIR,
         backup_dir: ".bilink-formato-3",
         verify:     |_| Ok(Vec::new()),
@@ -65,7 +69,29 @@ pub fn accepted_list_cut() -> Cuttable {
     }
 }
 
+/// El corte de `bilinker-004-dimensions`.
+///
+/// **Verifica lo mismo que genera**: que todo endpoint compuesto de la capa se pueda
+/// partir. Entre la generación y el corte alguien puede haber tocado un archivo, y
+/// ahí la carpeta generada partiría una aceptación que ya no es la del archivo.
+pub fn dimensions_cut() -> Cuttable {
+    use crate::dimensions;
+    Cuttable {
+        id:         "bilinker-004-dimensions",
+        out_dir:    dimensions::OUT_DIR,
+        backup_dir: dimensions::BACKUP_DIR,
+        verify:     |l| Ok(dimensions::plan(l)?.refused.into_iter()
+                          .map(|(at, why)| format!("{at}  {why}")).collect()),
+        regenerate: dimensions::run,
+        counts:     |l| {
+            let p = dimensions::plan(l)?;
+            Ok((p.files.len(), p.captures.len(), Vec::new()))
+        },
+    }
+}
+
 pub struct CutPlan {
+    pub id: &'static str,
     pub layer: PathBuf,
     /// Lo que la migración produjo, y que va a reemplazar a `.bilink/`.
     pub from: PathBuf,
@@ -104,6 +130,7 @@ pub fn plan_cut_of(layer: &Path, m: &Cuttable) -> Result<CutPlan> {
     (m.regenerate)(layer, false)?;
 
     Ok(CutPlan {
+        id:       m.id,
         layer:    layer.to_path_buf(),
         from:     layer.join(m.out_dir),
         backup:   layer.join(m.backup_dir),
@@ -275,6 +302,9 @@ pub fn cuts_for(layers: &[PathBuf]) -> Vec<(PathBuf, Cuttable)> {
             // `read_version` cuando el archivo no está.
             None    => partition_cut(),
             Some(3) => accepted_list_cut(),
+            // **La `004` no mueve la versión**, así que la versión no dice si le toca:
+            // lo dice su carpeta, que sólo existe si alguien la generó.
+            Some(4) if l.join(crate::dimensions::OUT_DIR).exists() => dimensions_cut(),
             // Al día, o de un formato que este binario no puentea. Lo segundo no es
             // un corte que haya que elegir: es una versión que no se entiende, y
             // decirlo es de quien lee, no de acá.
