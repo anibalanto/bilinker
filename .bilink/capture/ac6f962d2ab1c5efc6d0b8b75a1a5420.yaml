@@ -1,0 +1,6 @@
+file: docs/specs/concepts/accept.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Las dimensiones del fragmento"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "`dimensions` parte el nivel 0, y `n` se queda con el nivel ≥1"))) @target)

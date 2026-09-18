@@ -1,0 +1,6 @@
+file: docs/specs/concepts/capture.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "El fragmento"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "La query identifica un nodo, y no compone el fragmento"))) @target)
