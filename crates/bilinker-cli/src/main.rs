@@ -1596,48 +1596,7 @@ Eliminar? [y/N] ");
             }
 
             if cut {
-                if dry_run {
-                    anyhow::bail!("--cut y --dry-run se excluyen: el corte escribe");
-                }
-                let mut cuts = Vec::new();
-                // Se planifican **todas** antes de mover ninguna: si una capa no
-                // verifica, no se corta nada. Un corte a medias deja el repo con
-                // dos formatos y ningún binario que entienda los dos.
-                for (layer, m) in &cortes {
-                    match bilink_migrate::cut::plan_cut_of(layer, m) {
-                        Ok(c) => cuts.push(c),
-                        Err(e) => anyhow::bail!("{layer:?}: {e}\n\nNo se cortó ninguna capa."),
-                    }
-                }
-                for c in &cuts {
-                    println!("  {}  {} bilink(s), {} capture(s)",
-                             c.layer.display(), c.bilinks, c.captures);
-                }
-                for c in &cuts {
-                    bilink_migrate::cut::execute(c)?;
-                    // La cache se siembra después de mover: es de la herramienta, no
-                    // del formato, así que la migración la devuelve y la escribe quien
-                    // la entiende.
-                    if !c.commits.is_empty() {
-                        let mut cache = bilinker::cache::Cache::load(&c.layer);
-                        for (uuid, n, commit) in &c.commits {
-                            cache.set_commit(uuid, *n, commit);
-                        }
-                        cache.save(&c.layer)?;
-                    }
-                    // **Donde los bilinks viven en la ref, el corte es un commit de
-                    // ella**: reescribe el `.bilink/` entero, y sin el commit la
-                    // migración quedaría como un cambio suelto en `bilinker diff`.
-                    seal_with(&c.layer, bilinker::refmsg::RefCommand::Migrate { migration: c.id.to_string() },
-                              Some(format!("{} bilink(s), {} capture(s)", c.bilinks, c.captures)))?;
-                }
-                // El ledger va acá: el estado recién ahora es verdadero.
-                let written = accreta_migrate::record(&layers, &bilink_migrate::all())?;
-                println!();
-                for l in &written { println!("ledger: {}", l.display()); }
-                eprintln!("\ncorte hecho en {} capa(s). Lo anterior queda en el backup de cada una.", cuts.len());
-                eprintln!("Revisar con `bilinker check .` y commitear.");
-                return Ok(());
+                return migrate_cut(&layers, &cortes, dry_run);
             }
 
             let report = accreta_migrate::generate(&layers, &bilink_migrate::all(), dry_run)?;
@@ -2246,6 +2205,65 @@ fn short(sha: &str) -> &str {
 /// la rama del proyecto y commitearlos es de quien trabaja.
 fn seal(cwd: &Path, command: bilinker::refmsg::RefCommand) -> anyhow::Result<()> {
     seal_with(cwd, command, None)
+}
+
+/// El corte de `migrate`: mueve la carpeta migrada de cada capa a `.bilink/` y
+/// recién entonces escribe el ledger.
+fn migrate_cut(
+    layers: &[PathBuf],
+    cortes: &[(PathBuf, bilink_migrate::cut::Cuttable)],
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    if dry_run {
+        anyhow::bail!("--cut y --dry-run se excluyen: el corte escribe");
+    }
+    // Sin nada que cortar el ledger no se toca: registrar la migración
+    // dejaría la capa en el formato viejo y a `migrate` diciendo que ya
+    // está aplicada.
+    if cortes.is_empty() {
+        anyhow::bail!("no hay nada generado que cortar en {} capa(s): \
+                       generar con `bilinker migrate` y después cortar",
+                      layers.len());
+    }
+    let mut cuts = Vec::new();
+    // Se planifican **todas** antes de mover ninguna: si una capa no
+    // verifica, no se corta nada. Un corte a medias deja el repo con
+    // dos formatos y ningún binario que entienda los dos.
+    for (layer, m) in cortes {
+        match bilink_migrate::cut::plan_cut_of(layer, m) {
+            Ok(c) => cuts.push(c),
+            Err(e) => anyhow::bail!("{layer:?}: {e}\n\nNo se cortó ninguna capa."),
+        }
+    }
+    for c in &cuts {
+        println!("  {}  {} bilink(s), {} capture(s)",
+                 c.layer.display(), c.bilinks, c.captures);
+    }
+    for c in &cuts {
+        bilink_migrate::cut::execute(c)?;
+        // La cache se siembra después de mover: es de la herramienta, no
+        // del formato, así que la migración la devuelve y la escribe quien
+        // la entiende.
+        if !c.commits.is_empty() {
+            let mut cache = bilinker::cache::Cache::load(&c.layer);
+            for (uuid, n, commit) in &c.commits {
+                cache.set_commit(uuid, *n, commit);
+            }
+            cache.save(&c.layer)?;
+        }
+        // **Donde los bilinks viven en la ref, el corte es un commit de
+        // ella**: reescribe el `.bilink/` entero, y sin el commit la
+        // migración quedaría como un cambio suelto en `bilinker diff`.
+        seal_with(&c.layer, bilinker::refmsg::RefCommand::Migrate { migration: c.id.to_string() },
+                  Some(format!("{} bilink(s), {} capture(s)", c.bilinks, c.captures)))?;
+    }
+    // El ledger va acá: el estado recién ahora es verdadero.
+    let written = accreta_migrate::record(layers, &bilink_migrate::all())?;
+    println!();
+    for l in &written { println!("ledger: {}", l.display()); }
+    eprintln!("\ncorte hecho en {} capa(s). Lo anterior queda en el backup de cada una.", cuts.len());
+    eprintln!("Revisar con `bilinker check .` y commitear.");
+    Ok(())
 }
 
 /// Ídem, con prosa. La lleva quien commitea **un conjunto** de decisiones de una vez:

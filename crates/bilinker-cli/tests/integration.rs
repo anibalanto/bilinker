@@ -6801,3 +6801,56 @@ fn get_an_unresolved_dimension_is_named_and_fails_only_when_asked_for() {
     assert!(!ok);
     assert!(stderr.contains("throws") && stderr.contains("no resuelve"), "{stderr}");
 }
+
+// ─── el corte de `migrate` ─────────────────────────────────────────────────────
+
+fn ledger_of(root: &Path) -> String {
+    fs::read_to_string(root.join(".accreta/migrations")).unwrap_or_default()
+}
+
+/// Una capa de formato 4 sin `.bilink-migrate-004-dimensions/`: nadie generó nada.
+fn layer_with_nothing_generated() -> (tempfile::TempDir, PathBuf) {
+    let (tmp, root) = isolated_git_workspace();
+    let (_, stderr, ok) = run_in(&root, &["chain", "new", "--tip", "docs/spec.md:1:1", "--tip", "abstract"]);
+    assert!(ok, "{stderr}");
+    (tmp, root)
+}
+
+#[test]
+fn a_cut_with_nothing_generated_does_not_write_the_ledger() {
+    let (_tmp, root) = layer_with_nothing_generated();
+
+    run_in(&root, &["migrate", "--cut"]);
+
+    assert!(!ledger_of(&root).contains("bilinker-"), "{}", ledger_of(&root));
+}
+
+#[test]
+fn a_cut_with_nothing_generated_fails_and_names_the_command_that_generates() {
+    let (_tmp, root) = layer_with_nothing_generated();
+
+    let (_, stderr, ok) = run_in(&root, &["migrate", "--cut"]);
+
+    assert!(!ok, "{stderr}");
+    assert!(stderr.contains("`bilinker migrate`"), "{stderr}");
+    assert!(!stderr.contains("corte hecho"), "{stderr}");
+}
+
+/// La `003` regenera en el corte, así que una capa de formato 3 se corta sin haber
+/// generado antes.
+#[test]
+fn a_cut_that_cuts_a_layer_still_writes_the_ledger() {
+    let (_tmp, root) = isolated_git_workspace();
+    let bl = root.join(".bilink");
+    fs::create_dir_all(bl.join("capture")).unwrap();
+    fs::write(bl.join("7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.yaml"),
+        "endpoint:\n  '0':\n    link: capture aaa\n  '1':\n    link: abstract\n").unwrap();
+    fs::write(bl.join("capture/aaa.yaml"), "file: docs/spec.md\n").unwrap();
+    fs::write(bl.join("version"), "3.8.0\n").unwrap();
+
+    let (_, stderr, ok) = run_in(&root, &["migrate", "--cut"]);
+
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("corte hecho en 1 capa(s)"), "{stderr}");
+    assert!(ledger_of(&root).contains("bilinker-003-accepted-list"), "{}", ledger_of(&root));
+}
