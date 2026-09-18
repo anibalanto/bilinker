@@ -1,0 +1,6 @@
+file: docs/specs/concepts/migration.md
+query: |-
+  (section
+    (atx_heading (inline) @n0 (#eq? @n0 "Las migraciones"))
+    (section
+    (atx_heading (inline) @n1 (#eq? @n1 "Corre sobre una capa de formato 4, y el corte lo elige su carpeta"))) @target)
