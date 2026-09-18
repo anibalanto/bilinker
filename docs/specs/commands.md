@@ -8,7 +8,7 @@ Una fila por comando. El detalle de cada uno está en el concepto al que remite:
 | `bilinker capture prune` | Borra los captures que ningún bilink referencia, ni como `link` ni como vecino. | [capture](concepts/capture.md) |
 | `bilinker capture remove <id>` | Borra un capture sin referentes; se niega si alguno lo referencia. | [capture](concepts/capture.md) |
 | `bilinker recapture <uuid>.<N> <file> [<l>:<c> <l>:<c>] [--as <modo>]` | Repunta un endpoint estructural a otro fragmento, a mano o regenerando la query con un generador. No acepta. | [capture](concepts/capture.md) |
-| `bilinker get <file>[:<l>:<c>]` · `get <uuid>.<N> [--diff] [--raw]` | Navega: qué endpoints cubren una posición o un archivo, y qué texto referencia un endpoint, con su vecindario. | [get](concepts/get.md) |
+| `bilinker get <file>[:<l>:<c>]` · `get <uuid>.<N> [--diff] [--raw] [--dimension <nombre>]` | Navega: qué endpoints cubren una posición o un archivo, y qué texto referencia un endpoint, con su vecindario y con la dimensión de cada parte. | [get](concepts/get.md) |
 | `bilinker check [<path>] [--against <ref>] [--no-ask-n1]` | Verifica la capa: resuelve captures, compara contra `accepted` y escribe la cache. No escribe nada versionado. Con nivel 1 adquirido usa el daemon activo, y sin él falla con 2; con `--no-ask-n1` no pregunta, y lo que no confirma es `OK_N1_UNCONFIRMED`. | [check](concepts/check.md) |
 | `bilinker status` | Muestra la cache agrupada por archivo, sin re-verificar. | [check](concepts/check.md) |
 | `bilinker watch` | Reporta en tiempo real los archivos vinculados que se modifican. | [check](concepts/check.md) |

@@ -38,7 +38,7 @@ Sin rango no se puede decir si cubre la posición. `get` no lo lista, y dice por
 ### `get <UUID>.<N>` devuelve el texto del fragmento que el endpoint referencia
 
 ```
-bilinker get <UUID>.<N> [-B <rows>] [-A <rows>] [--diff] [--raw]
+bilinker get <UUID>.<N> [-B <rows>] [-A <rows>] [--diff] [--raw] [--dimension <nombre>]
 ```
 
 | Argumento | Tipo | Descripción |
@@ -48,6 +48,7 @@ bilinker get <UUID>.<N> [-B <rows>] [-A <rows>] [--diff] [--raw]
 | `-A rows` | int | Líneas de contexto después del fragmento. |
 | `--diff` | flag | Muestra el diff entre el fragmento aceptado y el fragmento actual. |
 | `--raw` | flag | El texto del fragmento y nada más: sin números de línea y sin huecos. |
+| `--dimension nombre` | string | Sólo esa [dimensión](#las-dimensiones) del endpoint. |
 
 Resuelve el endpoint N del bilink `<uuid>.yaml` de la capa actual y retorna el texto del fragmento que referencia.
 
@@ -66,7 +67,7 @@ Con [alias](chain.md), el encabezado lo lleva: es lo que contesta qué se está 
 # hsi :: …/UserPublicController.java  lines 22–22, 36–37
 ```
 
-Un fragmento de varios `@target` se muestra por partes, y la metadata lleva un tramo por parte.
+Un fragmento de varias partes se muestra por partes, y la metadata lleva un tramo por parte.
 
 ```
 $ bilinker get 7f3d8e9a-1b2c-4d5e-8f6a-7b8c9d0e1f2a.1 -B 2 -A 2
@@ -94,13 +95,13 @@ $ bilinker get 67ba7217.0
 
 Los `...` son el límite entre partes, y por eso no hace falta marcarlo aparte. En la línea 37 dicen tres cosas de una: que `public` no entra, que el nombre del método no entra, y que el ` {` tampoco. Dónde termina una parte y arranca la otra se ve porque lo que hay en el medio no está.
 
-Y hace falta porque el texto pelado miente. Todo capture de `spring-controller` tiene cuatro `@target`, y el tipo de retorno y los parámetros comparten línea siempre que la firma quepa en una. Concatenados, esa línea sale dos veces y se lee como una duplicación que no existe. Con la vista, una línea del archivo sale una vez, aunque la toquen varias partes.
+Y hace falta porque el texto pelado miente. Un endpoint de `spring-controller` vigila la ruta, el retorno y los parámetros, y el retorno y los parámetros comparten línea siempre que la firma quepa en una. Concatenados, esa línea sale dos veces y se lee como una duplicación que no existe. Con la vista, una línea del archivo sale una vez, aunque la toquen varias partes.
 
 La sangría se conserva tal cual: es espacio en blanco, no aporta contenido, y sin ella el código no se lee.
 
 ### `--raw` es el texto, y no es el default
 
-Con `--raw` el stdout es el fragmento exacto, unido por el mismo separador que lo une en el `hash`: lo que se imprime es el fragmento, el mismo que `check` compara.
+Con `--raw` el stdout es el fragmento exacto, unido por el mismo separador que lo une en el `hash`: lo que se imprime es el fragmento, el mismo que `check` compara. Con dimensiones, `check` compara cada una por separado, y `--raw` [pide una](#con-dimensiones---raw-pide---dimension).
 
 El argumento no es de gustos. Si alguien quiere el texto exacto es para compararlo, y comparar lo hacen `check` y `--diff`, no una persona en una terminal. Un default que sirve para pipear y no para leer optimiza el uso raro.
 
@@ -227,6 +228,99 @@ Si el clon no está, `--diff` no lo crea: dice que falta y sale, igual que `chec
 
 `--diff` opera solo sobre el endpoint pedido. El traversal del call graph vive en lattice: bilinker no consulta language servers para eso.
 
+## Las dimensiones
+
+Un endpoint que declara [dimensiones](bilink.md#las-dimensiones-parten-el-contenido-del-fragmento) no se compara entero: `check` compara cada parte contra lo que se aprobó de ella, y califica el estado con las que cambiaron (`ALTERED(body, route)`). `get` es el comando al que se va después de leer ese aviso, así que muestra lo mismo que se comparó y dice de qué dimensión es cada cosa.
+
+Un endpoint sin dimensiones se imprime igual que siempre: nada de esta sección le aplica.
+
+### Con dimensiones, `get` imprime las dimensiones y nada más
+
+Lo que se imprime son las partes de cada dimensión, resueltas desde el nodo del capture por su `@anchor`, igual que las resuelven `accept` y `check`. Lo que queda afuera de toda parte no se imprime: nadie lo vigila, y mostrarlo lo haría pasar por aprobado.
+
+Las partes pasan por la misma vista que cualquier fragmento: números de línea, `⋮` y `...`, y una línea del archivo sale una sola vez. El encabezado lleva un tramo por parte. `-B` y `-A` agregan contexto alrededor de las partes, y el contexto sale entero, sin marcas.
+
+### Cada línea lleva al final los nombres de las dimensiones que la tocan
+
+Los nombres van después del texto, entre `‹ ›` y separados por ` · `, en el orden en que sus partes aparecen en la línea. Se alinean en una columna, a dos espacios de la línea más larga que se muestra.
+
+```
+$ bilinker get 67ba7217.0
+
+# GET /public-api/user/info/from-token
+# hsi :: …/UserPublicController.java  lines 22–22, 36–37
+22:   @RequestMapping("/public-api/user")                                              ‹route›
+ ⋮
+36:   	@GetMapping(value = "/info/from-token")                                          ‹route›
+37:   	... PublicUserInfoDto ... (@RequestHeader("user-token") String userToken) ...  ‹return · parameters›
+```
+
+El texto de la línea no se toca: con los `...` se ve dónde termina una parte y empieza la otra, y los nombres dicen de quién es cada una, en orden. Un bloque por dimensión no sirve, porque el retorno y los parámetros comparten línea y esa línea saldría dos veces.
+
+### Dos dimensiones que se superponen salen una vez, con los dos nombres
+
+El formato hace disjuntas las partes de una misma dimensión, pero no las de dos dimensiones distintas. Un rango que pertenece a dos se imprime una sola vez, y su línea lleva los dos nombres. `get` muestra lo que hay y no le pone al formato una regla que el formato no tiene.
+
+### `--dimension` acota a una, y un nombre que no está falla nombrando los que hay
+
+`--dimension <nombre>` imprime sólo las partes de esa dimensión, con la misma vista y las mismas marcas. Se combina con `--diff` y con `--raw`. El nombre se compara tal cual, porque es una [etiqueta opaca](bilink.md#el-nombre-de-una-dimensión-es-una-etiqueta-opaca).
+
+Un nombre que el endpoint no declara es un error, y el mensaje lista los que sí declara:
+
+```
+$ bilinker get 67ba7217.0 --dimension body
+Error: el endpoint no declara la dimensión `body`.
+  Declara: parameters, return, route.
+```
+
+Sobre un endpoint sin dimensiones, `--dimension` falla igual, y dice que el endpoint no declara ninguna.
+
+Con `--dimension`, el vecindario no se imprime. El vecindario es del endpoint, no de una de sus partes, y el que pide una parte ya sabe qué quiere mirar.
+
+### Con dimensiones, `--raw` pide `--dimension`
+
+`--raw` imprime byte por byte lo que `check` hashea. Con dimensiones, `check` hashea cada una por separado, así que ese texto es el de una dimensión: sus partes en orden de archivo, unidas por `\n` ([bilink.md](bilink.md#las-partes-de-una-dimensión-se-unen-con-n)).
+
+Sin `--dimension`, `--raw` falla y el error lista las dimensiones que hay. Imprimirlas una detrás de otra pediría un separador entre dimensiones que ningún hash tiene, y el resultado no lo compararía nadie.
+
+### Con dimensiones, `--diff` da un diff por dimensión
+
+Cada dimensión se compara contra lo que se aprobó de ella, por nombre, en el orden de los nombres, y lleva su propio encabezado en stderr, con el nombre adelante:
+
+```
+$ bilinker get 67ba7217.0 --diff
+
+# route · hsi :: …/UserPublicController.java  lines 22–22, 36–36
+--- aceptado (commit a3f2b1c)
++++ actual
+@@ -1,2 +1,2 @@
+ @RequestMapping("/public-api/user")
+-@GetMapping(value = "/info/from-token")
++@GetMapping(value = "/info/by-token")
+
+# parameters · hsi :: …/UserPublicController.java  lines 37–37
+(@RequestHeader("user-token") String userToken)
+```
+
+El texto aceptado de cada parte se recupera resolviendo su query contra el `commit` del endpoint, desde el nodo del capture en ese commit, y se verifica contra el `hash` de esa dimensión. Si no verifica, se muestra igual lo que resolvió ahí: para un diff informativo, algo aproximado es mejor que nada, igual que con el fragmento entero. Si no resuelve, el lado aceptado queda vacío.
+
+Una dimensión que no cambió se muestra sin diff. Una declarada y no aprobada sale entera como agregada. Una aprobada y ya no declarada se nombra, `# <nombre> · aprobada y ya no declarada`, y no lleva texto: lo aprobado guarda sólo el `hash`, y la query que la resolvía se fue con la declaración. Las dos son las que `check` da `ALTERED` por estar de un solo lado.
+
+Con `--dimension`, sale sólo el diff de esa.
+
+Sobre un endpoint `path`, `--diff` compara el fragmento entero de la capa vecina, como siempre, y `--diff --dimension` falla: el diff por dimensión se pide desde la capa donde está el fragmento.
+
+### Una dimensión que no resuelve se imprime igual, y no hace fallar al comando
+
+Si una parte no resuelve, el nodo del capture sigue estando, y las demás dimensiones se imprimen. En el lugar de la que falta va su nombre y su query, que es lo que hace falta para arreglarla:
+
+```
+# route · no resuelve
+query: (class_declaration (modifiers (annotation) @target) body: (class_body (method_declaration) @anchor))
+```
+
+El código de salida sigue siendo 0, por la misma razón que el de [un vecino que no resuelve](#un-vecino-que-no-resuelve-se-imprime-igual-y-no-hace-fallar-al-comando): el estado es de `check`. Sólo falla si la dimensión que no resuelve es la que se pidió con `--dimension`, porque entonces no queda nada que devolver.
+
 ## Forma 3: archivo → todos los endpoints que lo referencian
 
 ### `get <file>` lista todo endpoint que referencia el archivo
@@ -307,17 +401,19 @@ La tercera fila es la que `apply` no puede explicar: sin rename detectado el cap
 | Código | Condición |
 |---|---|
 | 0 | Operación exitosa (puede haber 0 resultados en forma 1 y 3). |
-| 1 | Error: archivo no encontrado, UUID inválido, endpoint sin capture, el capture del fragmento sin resolver, capa adyacente no accesible. |
+| 1 | Error: archivo no encontrado, UUID inválido, endpoint sin capture, el capture del fragmento sin resolver, capa adyacente no accesible, una dimensión que el endpoint no declara o que no resuelve pedida con `--dimension`, `--raw` sin `--dimension` sobre un endpoint con dimensiones. |
 
-Un vecino que no resuelve no entra en esa lista. El fragmento pedido salió, y lo que no resolvió se imprimió con su referencia.
+Un vecino que no resuelve no entra en esa lista, y una dimensión que no resuelve y no se pidió tampoco. El fragmento pedido salió, y lo que no resolvió se imprimió con su referencia.
 
 ### Propiedades garantizadas de `get`
 
 - Independencia de git: `get` sin `--diff` no requiere control de versiones.
 - Sin efectos secundarios: `get` no escribe ningún archivo.
 - Un endpoint que no resuelve imprime su referencia igual: archivo, id del capture, y query. Falla después.
-- `--raw` imprime el fragmento y nada más: el mismo texto que `check` hashea, byte por byte. Es la única salida de la que eso se puede afirmar, y por eso el flag existe.
-- Una línea del archivo sale una sola vez, aunque la toquen varias partes.
+- `--raw` imprime el fragmento y nada más: el mismo texto que `check` hashea, byte por byte. Es la única salida de la que eso se puede afirmar, y por eso el flag existe. Con dimensiones, es el texto de la que pide `--dimension`.
+- Una línea del archivo sale una sola vez, aunque la toquen varias partes o varias dimensiones.
+- Con dimensiones, se imprimen sus partes y nada más, y cada línea lleva los nombres de las dimensiones que la tocan.
+- Un endpoint sin dimensiones se imprime igual que antes de que existieran.
 - El vecindario declarado sale con el fragmento, en el orden en que está escrito en `n.1.link` y con la misma vista, y cada vecino con su encabezado.
 - `get` no le pregunta al proveedor de vecindario: los vecinos son captures del bilink, y traerlos es resolverlos.
 - Un vecindario que no se puede traer se nombra, y sólo la ausencia de firma resoluble es silencio.
